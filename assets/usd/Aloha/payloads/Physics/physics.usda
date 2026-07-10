@@ -4,13 +4,13 @@
         string creator = "URDF USD Converter v0.1.3"
     }
     defaultPrim = "Aloha"
-    doc = """Generated from Composed Stage of root layer /tmp/tmp03zupo18/Aloha.usdc
+    doc = """Generated from Composed Stage of root layer /tmp/tmpx6xuvopn/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_s9vt7yza/usdex_Aloha/Aloha.usdc
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_sgq0w3gg/usdex_Aloha/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_s9vt7yza/temp_Aloha/Aloha.usd
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_sgq0w3gg/temp_Aloha/Aloha.usd
 
 
 Generated from Composed Stage of root layer /home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/Aloha/payloads/base.usd
@@ -258,9 +258,9 @@ over "Aloha"
             quatf physics:localRot0 = (1, 0, 0, 0)
             quatf physics:localRot1 = (1, 0, 0, 0)
             float physics:lowerLimit = 0
-            float physics:upperLimit = 0.3
+            float physics:upperLimit = 0.6
             custom float urdf:limit:effort = 200
-            custom float urdf:limit:velocity = 0.1
+            custom float urdf:limit:velocity = 0.15
         }
 
         def PhysicsRevoluteJoint "left_joint1" (

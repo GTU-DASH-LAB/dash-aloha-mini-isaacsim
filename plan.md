@@ -81,24 +81,31 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       `docs/scene_verification.png`.
 
 ## Phase 3 — Physics configuration
-- [ ] Apply patched joint limits from Phase 1
-- [ ] Arm joints: `ImplicitActuator`-equivalent drives with the stiffness/damping/effort
-      values ported from `so101.py` (see table in `CLAUDE.md` once transcribed)
-- [ ] Lift joint: position drive, conservative stiffness/damping (tune empirically)
-- [ ] Wheel joints: **decision point** — true wheel-ground friction contact for 3-wheel
-      omni bases is genuinely hard to get stable in a general rigid-body solver. Default
-      plan: real revolute joints + velocity drive per wheel (physically simulated
-      rotation), with a *simplified* collision proxy (cylinder, not the exact roller
-      mesh) and an isotropic-friction approximation. If that produces bad/unstable
-      holonomic motion in testing, fall back to a documented simplified mode (direct
-      base velocity command) as an alternative control path — will report back before
-      silently doing this, since it's a fidelity trade-off you should sign off on
-- [ ] Base_link: free rigid body (not fixed), resting on ground plane via wheel contacts
-- [ ] Masses/inertia: already present from the SolidWorks export — keep them, don't
-      overwrite, unless physics is visibly unstable
-- [ ] **Verify**: run N physics steps headless, assert no NaN/Inf in any joint state or
-      link pose, robot doesn't visibly explode/sink through the floor (check base height
-      stays sane across steps)
+- [x] Apply patched joint limits from Phase 1 (already baked into the URDF, re-imported)
+- [x] Arm joints: position drives (`UsdPhysics.DriveAPI`) with the stiffness/damping/
+      effort values ported from `so101.py` (table in `CLAUDE.md`/`alohamini1_specs.py`) —
+      `scripts/configure_physics.py`, applied on all 12 `{side}_joint{1-6}` joints
+- [x] Lift joint: position drive, `alohamini1_specs.LIFT_STIFFNESS/DAMPING` (engineering
+      estimates — real hardware spec is velocity/tick-based, not N/(m/s), see
+      `alohamini1_specs.py` comments)
+- [x] Wheel joints: velocity drives applied (target=0 for now), using real geometry —
+      **kinematics resolved, contact-physics fidelity not yet stress-tested**. Got the
+      exact LeKiwi holonomic drive equations from liyiteng/lerobot_alohamini (verified
+      against raw source, including a real wheel-name-to-angle mapping bug caught along
+      the way — see `alohamini1_specs.py`). What's still open: whether the Convex-Hull
+      collision proxy on the real wheel mesh (not simplified) gives stable/accurate
+      holonomic sliding once nonzero velocities are actually commanded — that's a Phase 4
+      test (driving the base), not this phase's physics-didn't-explode check. Will report
+      back if it needs a simplified collision proxy instead.
+- [x] Base_link: free rigid body (not fixed), confirmed resting stably on ground plane
+      (height constant at ~0.007m across 120 steps, not sinking/floating)
+- [x] Masses/inertia: kept as-is from the SolidWorks export (not overwritten)
+- [x] **Verify**: `scripts/verify_physics.py` — 120 steps, zero NaN/Inf in joint state,
+      base height stable, all joints hold rest pose under gravity (drift <0.004 rad on
+      arm joints with drives; wheels drift more under velocity-drive-to-zero but don't
+      explode). Commanded `left_joint1` to 0.5 rad, **achieved exactly 0.5 rad (zero
+      error) after 180 steps** — position drive control loop confirmed working.
+      Screenshot (`docs/physics_verification.png`) visually confirms the arm moved.
 
 ## Phase 4 — Control: terminal script
 - [ ] Standalone Python script (`scripts/control_terminal.py`) using Isaac Sim's

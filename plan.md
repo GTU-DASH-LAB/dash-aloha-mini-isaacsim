@@ -68,13 +68,17 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       **Gotcha**: needs `--ros-package "Aloha:<path to upstream_alohamini1>"` or the
       `package://Aloha/meshes/...` paths silently fail to resolve and mesh geometry
       comes out empty with no error — see CLAUDE.md.
-- [ ] Load a ready-made Isaac Sim environment (Simple Room or flat grid) as the stage
-- [ ] Place the imported robot on the ground plane
-- [x] **Verify**: headless script loads the stage, computes world bbox on `/Aloha`
-      (≈ 0.42m × 0.46m × 1.09m tall — plausible), frames the camera on it with
-      `frame_viewport_prims`, and captures a screenshot — geometry confirmed present
-      and correctly shaped (dark/unlit silhouette, expected with no light source yet;
-      lighting comes next via the ready-made environment)
+- [x] Load a ready-made Isaac Sim environment as the stage. Tried `Simple_Room` first —
+      works, but the robot spawned partly inside a piece of room furniture (a
+      ramp/bench prop), obscuring the base. Switched to `Isaac/Environments/Grid/
+      default_environment.usd` (flat grid, no furniture) — clean, robot fully visible.
+- [x] Place the imported robot on the ground plane (origin, `(0,0,0)` — matches the
+      URDF's own base_link origin, sits correctly on the grid with no floating/sinking)
+- [x] **Verify**: `scripts/build_scene.py` composes environment + robot into
+      `assets/usd/scene.usda`, screenshot confirms — base grounded correctly, lift
+      column visible, both arms symmetric with visible gripper/jaw geometry, proper
+      lighting/shadows/materials all rendering. This is the milestone screenshot:
+      `docs/scene_verification.png`.
 
 ## Phase 3 — Physics configuration
 - [ ] Apply patched joint limits from Phase 1

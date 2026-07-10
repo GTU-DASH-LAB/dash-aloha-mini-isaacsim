@@ -111,14 +111,28 @@ CLAUDE.md                     this file
 
 ## Current status
 
-Phase 0 done. Phase 1 (URDF joint-limit patch) done and verified. First successful
-full-geometry import done: `assets/usd/Aloha/Aloha.usda`, bbox ≈ 0.42m × 0.46m ×
-1.09m tall (plausible). Collision strategy for this import: `--collision-from-visuals
---collision-type "Convex Hull"` applied uniformly -- wheels not yet specially handled
-(see plan.md Phase 3 note on omni-wheel physics).
+**Phase 0, 1, 2 all done and verified.** Working pipeline: patched URDF ->
+`isaacsim.asset.importer.urdf` -> `assets/usd/Aloha/Aloha.usda` -> composed with a
+ready-made environment -> `assets/usd/scene.usda` (`scripts/build_scene.py`). Milestone
+screenshot at `docs/scene_verification.png` confirms the whole robot renders correctly:
+base grounded, lift column visible, both arms symmetric with gripper geometry, proper
+lighting. Environment used: `Isaac/Environments/Grid/default_environment.usd` (plain
+flat grid -- `Simple_Room` also works but has a furniture prop that the robot spawned
+partly inside; switched to Grid to keep the base fully visible for now, revisit later
+if a proper room look is wanted).
+
+Isaac Sim's asset CDN root on this machine resolves to
+`https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0`
+(confirmed reachable, network access works for streaming ready-made environments).
+
+Not yet done: Phase 3 (per-joint drive stiffness/damping -- importer warned "Stiffness
+and damping not available" for every joint, since the URDF has no `<dynamics>` tags --
+expected, this is exactly what Phase 3 adds), wheel physics decision, terminal control
+script, UI control verification.
 
 ## Next step
 
-Load a ready-made Isaac Sim environment (Simple Room or flat grid) under the robot for
-proper lighting/ground, take a clean lit screenshot, then move into Phase 3 (per-joint
-drives using the SO-101 gains table above).
+Phase 3: apply the SO-101 actuator gains table (above) as per-joint drives on
+`left_joint1..6`/`right_joint1..6` in `scene.usda`, set a lift joint drive, and tackle
+the wheel-drive decision (real per-wheel velocity drive + simplified collision proxy,
+with a documented fallback if that's unstable -- see plan.md Phase 3).

@@ -168,10 +168,23 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       (`set_joint_position_targets`) works correctly (exact convergence).
 - [ ] **Cannot verify by clicking an actual slider from here** — this environment has
       no display and scripting can't drive the GUI's own widgets. This is a genuine
-      limitation of headless verification, not a claim of "probably fine." See
-      `CLAUDE.md` for exact steps to check yourself in a non-headless Isaac Sim
-      session (Window > Physics > Articulation Inspector, or select a joint prim's
-      Property panel).
+      limitation of headless verification, not a claim of "probably fine." Steps to
+      check yourself:
+      1. Launch Isaac Sim normally (no `--no-window`/headless): `~/isaacsim/isaac-sim.sh`
+      2. File → Open → `assets/usd/scene.usda`
+      3. Press Play (the physics timeline needs to be running for drives to respond)
+      4. Window → Physics → Articulation Inspector, then select `/World/Aloha` (or
+         click the robot in the viewport) — you should see all 16 DOF listed with
+         sliders (`wheel1/2/3`, `vertical_move`, `left/right_joint1-6`)
+      5. Drag a slider for e.g. `left_joint1` — the corresponding arm segment should
+         rotate in the viewport in real time
+      6. Alternatively: select the joint prim directly in the Stage tree (e.g.
+         `/World/Aloha/Geometry/base_link/vertical_link/left_link1`'s parent joint
+         under the `Physics` scope) and look at the Property panel's Physics tab for
+         the same drive target field
+      If a slider doesn't appear or doesn't move anything, that's a real finding worth
+      reporting back — the drives are authored correctly per every script-based check
+      done so far, so a UI-specific issue would be new information.
 
 ## Phase 6 — ROS2 (optional, off by default)
 - [ ] **Do not implement unless asked.** If wanted later: enable the ROS2 bridge

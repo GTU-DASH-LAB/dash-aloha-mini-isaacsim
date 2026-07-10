@@ -88,15 +88,23 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
 - [x] Lift joint: position drive, `alohamini1_specs.LIFT_STIFFNESS/DAMPING` (engineering
       estimates — real hardware spec is velocity/tick-based, not N/(m/s), see
       `alohamini1_specs.py` comments)
-- [x] Wheel joints: velocity drives applied (target=0 for now), using real geometry —
-      **kinematics resolved, contact-physics fidelity not yet stress-tested**. Got the
+- [x] Wheel joints: velocity drives applied, using real geometry + kinematics. Got the
       exact LeKiwi holonomic drive equations from liyiteng/lerobot_alohamini (verified
       against raw source, including a real wheel-name-to-angle mapping bug caught along
-      the way — see `alohamini1_specs.py`). What's still open: whether the Convex-Hull
-      collision proxy on the real wheel mesh (not simplified) gives stable/accurate
-      holonomic sliding once nonzero velocities are actually commanded — that's a Phase 4
-      test (driving the base), not this phase's physics-didn't-explode check. Will report
-      back if it needs a simplified collision proxy instead.
+      the way — see `alohamini1_specs.py`).
+      **Update from Phase 4 stress-testing**: found and fixed a genuine collision bug
+      first — `base_link`'s own shell collision (both Convex Hull and Convex
+      Decomposition) extended down far enough to block ground contact before the
+      wheels ever touched (confirmed via raycast diagnostics: probing straight down at
+      each wheel's XY position hit `base_link`, not the wheel, at the wrong height).
+      Fixed by disabling the shell's collision and giving each wheel an explicit
+      sphere collider + friction material (`scripts/fix_wheel_collision.py` — also had
+      to work around USD instance-proxy restrictions, since the offending prims were
+      point-instanced). After that fix, wheel-ground contact was correctly registered,
+      but **actual traction stayed near zero** even for one wheel spinning alone in
+      isolation. Diminishing returns on further physics tuning, so per the plan's
+      pre-approved fallback: base locomotion is now kinematically driven (see Phase 4
+      for the full story) while wheel joints still spin at the correct visual rate.
 - [x] Base_link: free rigid body (not fixed), confirmed resting stably on ground plane
       (height constant at ~0.007m across 120 steps, not sinking/floating)
 - [x] Masses/inertia: kept as-is from the SolidWorks export (not overwritten)
@@ -108,22 +116,62 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       Screenshot (`docs/physics_verification.png`) visually confirms the arm moved.
 
 ## Phase 4 — Control: terminal script
-- [ ] Standalone Python script (`scripts/control_terminal.py`) using Isaac Sim's
-      Articulation API to command: arm joint positions (left/right independently),
-      gripper open/close, lift height, base velocity (subject to Phase 3 outcome)
-- [ ] Simple CLI interface — args or an interactive REPL loop (exact UX to be decided
-      once Phase 3 lands; default plan is argparse for one-shot commands + a `--repl` mode)
-- [ ] **Verify**: script commands a joint, read back actual joint state after settling,
-      confirm it matches target within tolerance — for at least one arm joint, the lift,
-      and (if implemented) base motion
+- [x] `scripts/control_terminal.py` — one-shot (`--arm/--lift/--base`) and interactive
+      `--repl` modes. Commands: `arm`, `gripper`, `lift`, `base`, `stop`, `status`,
+      `pose`, `screenshot`, `wait`, `quit`.
+- [x] Both UX modes implemented (one-shot argparse + REPL, as planned)
+- [x] **Verify**: real bugs found and fixed along the way, not just "ran without
+      crashing":
+      1. **Wheel-ground collision bug** (see Phase 3 update below) — fixed via
+         `scripts/fix_wheel_collision.py`.
+      2. **Wheel velocity-drive oscillation** — damping of 1e5 was wildly oversized for
+         the wheel's tiny rotational inertia (~5e-5 kg·m²), causing bang-bang
+         oscillation (wheel hit -19.7 rad/s against a -2.6 rad/s target). Fixed:
+         damping=2.0, solver velocity iterations 1→4.
+      3. **Even after fixing collision + oscillation, real wheel traction stayed near
+         zero** — a single wheel spinning alone in isolation produced ~200x less
+         translation than expected (physically plausible root cause: sphere/mesh
+         rolling-friction resolution not properly tuned; not fully diagnosed further,
+         diminishing returns on continued tuning). **Per the plan's pre-approved
+         fallback condition, switched base locomotion to kinematic drive**: wheel
+         joints still spin at the visually-correct commanded rate (real joint
+         physics), but actual translation comes from directly setting the
+         articulation root's pose each step via `art.set_world_poses()` (verified
+         this is necessary — raw USD transform edits get silently ignored once
+         physics is actively stepping; `set_world_poses()` goes through
+         `physics_view.set_root_transforms()`, which properly syncs).
+      4. **A real, separate, more important bug**: `set_arm_joint`/`set_lift` were
+         each doing `targets = art.get_joint_positions()` (actual current position,
+         not the previously-commanded target) then modifying one index before
+         resending — so issuing a second command before the first settled silently
+         reset the first command's target back to wherever it currently was.
+         Fixed by maintaining a persistent `_position_targets` array instead of
+         repeatedly re-reading actual state. This was **not** related to the base
+         work at all, but was only exposed once multiple commands were chained.
+      5. Final verified behavior: base-only driving (0.15 m/s × 3s → x≈0.42m, close to
+         the 0.45m theoretical), sequential arm-after-base commands converge exactly
+         (`left_joint1` → 0.5000 rad exact), combined lift+gripper+arm+base commands
+         all land correctly when driven sequentially. **Known limitation**:
+         teleporting the base root every step *while simultaneously* issuing new arm
+         commands measurably degrades arm convergence (verified) — recommended usage
+         is sequential (drive base, `stop`, then command arms), not simultaneous.
+         Documented in `control_terminal.py`'s own comments and `CLAUDE.md`.
+      6. Screenshots confirm all of this visually: `docs/control_demo.png` shows lift
+         extended, both arms in different commanded poses, and the robot visibly
+         repositioned on the grid from base driving.
 
 ## Phase 5 — Control: Isaac Sim UI
-- [ ] Confirm the imported articulation shows up correctly in the Property panel /
-      Articulation Inspector with per-joint sliders (this should come "for free" once
-      Phase 3 drives are configured correctly — mostly a verification step, not new work)
-- [ ] **Verify**: manually move a joint slider in the UI, confirm the robot responds
-      (screenshot before/after)
-- [ ] Document exact UI steps (which panel, how to select the articulation) in `CLAUDE.md`
+- [x] The articulation has proper `UsdPhysics.DriveAPI` position/velocity drives
+      authored on every joint (Phase 3/4) — this is exactly the mechanism the Property
+      panel / Articulation Inspector's sliders read and write, so UI control has
+      everything it needs. Confirmed via script that the same underlying API
+      (`set_joint_position_targets`) works correctly (exact convergence).
+- [ ] **Cannot verify by clicking an actual slider from here** — this environment has
+      no display and scripting can't drive the GUI's own widgets. This is a genuine
+      limitation of headless verification, not a claim of "probably fine." See
+      `CLAUDE.md` for exact steps to check yourself in a non-headless Isaac Sim
+      session (Window > Physics > Articulation Inspector, or select a joint prim's
+      Property panel).
 
 ## Phase 6 — ROS2 (optional, off by default)
 - [ ] **Do not implement unless asked.** If wanted later: enable the ROS2 bridge

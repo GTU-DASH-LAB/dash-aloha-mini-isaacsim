@@ -62,10 +62,16 @@ def configure_position_drive(prim, stiffness, damping, effort, target=0.0, dof_t
 
 
 def configure_velocity_drive(prim, effort, target=0.0, dof_type="angular"):
+    # damping is a viscous gain (Nm per rad/s of velocity error). Wheel rotational
+    # inertia is tiny (~5e-5 kg*m^2, from the URDF's own inertial values), so a huge
+    # damping value causes bang-bang oscillation/chatter at 60Hz with only a few
+    # velocity solver iterations -- verified empirically (wheel hit -19.7 rad/s
+    # against a -2.6 rad/s target before this fix). A small damping is already enough
+    # torque to reach these velocities given how little inertia there is to overcome.
     drive = UsdPhysics.DriveAPI.Apply(prim, dof_type)
     drive.CreateTypeAttr("force")
     drive.CreateStiffnessAttr(0.0)
-    drive.CreateDampingAttr(1e5)  # high damping = effectively a velocity servo
+    drive.CreateDampingAttr(2.0)
     drive.CreateMaxForceAttr(float(effort))
     drive.CreateTargetVelocityAttr(float(target))
 

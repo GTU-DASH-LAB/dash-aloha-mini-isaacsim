@@ -3,13 +3,13 @@
     customLayerData = {
         string creator = "URDF USD Converter v0.1.3"
     }
-    doc = """Generated from Composed Stage of root layer /tmp/tmpx6xuvopn/Aloha.usdc
+    doc = """Generated from Composed Stage of root layer /tmp/tmp_90zpz3g/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_sgq0w3gg/usdex_Aloha/Aloha.usdc
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_dq9ukb1m/usdex_Aloha/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_sgq0w3gg/temp_Aloha/Aloha.usd
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_dq9ukb1m/temp_Aloha/Aloha.usd
 
 
 Generated from Composed Stage of root layer /home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/Aloha/payloads/base.usd
@@ -31,7 +31,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/base_link/VisualMaterials/material_1>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -55,7 +55,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/wheel1/VisualMaterials/material_2>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -79,7 +79,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/wheel2/VisualMaterials/material_3>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -103,7 +103,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/wheel3/VisualMaterials/material_4>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -127,7 +127,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/vertical_link/VisualMaterials/material_5>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -151,7 +151,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_base/VisualMaterials/material_6>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -175,7 +175,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/right_base/VisualMaterials/material_7>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -199,7 +199,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link1/VisualMaterials/material_8>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -223,7 +223,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link1_1/VisualMaterials/material_14>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -247,7 +247,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link2/VisualMaterials/material_9>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -271,7 +271,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link2_1/VisualMaterials/material_15>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -295,7 +295,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link3/VisualMaterials/material_10>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -319,7 +319,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link3_1/VisualMaterials/material_16>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -343,7 +343,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link4/VisualMaterials/material_11>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -367,7 +367,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link4_1/VisualMaterials/material_17>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -391,7 +391,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link5/VisualMaterials/material_12>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -415,7 +415,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link5_1/VisualMaterials/material_18>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -439,7 +439,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link6/VisualMaterials/material_13>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"
@@ -463,7 +463,7 @@ def Scope "Instances"
         {
             custom rel material:binding
             prepend rel material:binding = </Instances/left_link6_1/VisualMaterials/material_19>
-            token physics:approximation = "convexHull"
+            token physics:approximation = "convexDecomposition"
         }
 
         def Scope "VisualMaterials"

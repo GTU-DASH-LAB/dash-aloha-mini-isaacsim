@@ -21,7 +21,18 @@ ARM_JOINT_GAINS = {
     6: {"name": "Jaw", "stiffness": 4, "damping": 0.3, "effort": 30},
 }
 ARM_SOLVER_POSITION_ITERATIONS = 32
-ARM_SOLVER_VELOCITY_ITERATIONS = 1
+# NVIDIA's SO-101 config uses 1, but the wheel velocity drives needed more velocity
+# iterations to converge without oscillating (verified empirically -- see
+# configure_physics.py's configure_velocity_drive comment).
+ARM_SOLVER_VELOCITY_ITERATIONS = 4
+
+# Jaw (joint6) limits in radians, from the patched URDF (real SO-101 spec: -10 to 100
+# degrees) -- used by control_terminal.py's gripper open/close shorthand.
+# NOTE: which extreme is physically "open" vs "closed" has NOT been visually verified
+# against this URDF's own axis convention -- same caveat as the other joint polarities
+# (see plan.md/CLAUDE.md). Assumed lower=open/upper=closed for now; flip if wrong.
+JAW_OPEN_RAD = -0.174533
+JAW_CLOSED_RAD = 1.745329
 
 # --- Lift (vertical_move, prismatic) ---
 LIFT_MIN_M = 0.0

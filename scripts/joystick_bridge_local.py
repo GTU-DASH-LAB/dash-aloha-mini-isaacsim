@@ -61,19 +61,27 @@ except ImportError:
 
 # Common pygame/SDL PS4 controller mapping. Varies by OS/driver -- verify with --debug.
 DEFAULT_MAPPING = {
-    "button_l1": 4,
-    "button_r1": 5,
-    "button_l2": 6,   # some drivers expose L2 only as a digital button at this index
-    "button_r2": 7,   # ...ditto for R2
+    # Verified against a real PS4 Controller on macOS (pygame 2.6.1 / SDL 2.28.4,
+    # buttons=16, axes=6, hats=0) via targeted single-button debug tests -- NOT the
+    # generic cross-platform guess this used to be. L1/R1 in particular are NOT where
+    # they commonly are on Linux/Windows (4/5) -- confirmed 9/10 here instead.
+    "button_l1": 9,
+    "button_r1": 10,
+    "button_l2": 6,   # unconfirmed fallback -- L2/R2 came through as axes only in
+    "button_r2": 7,   # testing (axis_l2/axis_r2 below), no separate button event seen
     "button_cross": 0,
     "button_circle": 1,
     "axis_lx": 0,
     "axis_ly": 1,
     "axis_rx": 2,
     "axis_ry": 3,
-    "axis_l2": None,  # set via --axis-l2 if your controller has an analog trigger axis
-    "axis_r2": None,
-    "hat_index": 0,
+    "axis_l2": 4,   # confirmed: clean -1 (released) -> 1 (pressed) pattern in testing
+    "axis_r2": 5,   # confirmed: same pattern, other trigger
+    "hat_index": 0,  # NOTE: this controller reports hats=0 -- the d-pad does NOT come
+                     # through as a hat on this setup, so joint5 (Wrist_Roll) control
+                     # via d-pad currently does nothing here. Not yet root-caused which
+                     # button indices the d-pad actually uses (13/14 are candidates from
+                     # earlier multi-button testing, but not confirmed one-at-a-time).
 }
 for key, cli_val in (
     ("button_l1", args.button_l1), ("button_r1", args.button_r1),

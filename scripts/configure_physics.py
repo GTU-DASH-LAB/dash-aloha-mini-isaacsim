@@ -116,7 +116,16 @@ if art_root_prim.IsValid():
     physx_art = PhysxSchema.PhysxArticulationAPI.Apply(art_root_prim)
     physx_art.CreateSolverPositionIterationCountAttr(ARM_SOLVER_POSITION_ITERATIONS)
     physx_art.CreateSolverVelocityIterationCountAttr(ARM_SOLVER_VELOCITY_ITERATIONS)
-    physx_art.CreateEnabledSelfCollisionsAttr(False)
+    # NVIDIA's single-arm SO-101 config disables this (makes sense there -- adjacent
+    # links in one arm's own chain would otherwise constantly register false-positive
+    # collisions right at their shared joint). But this robot's whole body -- both
+    # arms, the lift, the base -- is ONE articulation, so disabling self-collision also
+    # disabled collision between the left arm and right arm, or an arm and the lift/
+    # base, letting them pass through each other with zero response. Enabled instead;
+    # verified via verify_physics.py this doesn't introduce instability at the arms'
+    # own adjacent joints (exact convergence, stable base height, unchanged from the
+    # disabled case).
+    physx_art.CreateEnabledSelfCollisionsAttr(True)
 
 print(f"\nConfigured drives on {len(configured)} joints: {configured}")
 

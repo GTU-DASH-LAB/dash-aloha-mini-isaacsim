@@ -35,7 +35,7 @@ a Permission Denied error reading /dev/input):
     Left stick  X/Y -> joint1 (Rotation) / joint2 (Pitch)
     Right stick X/Y -> joint3 (Elbow) / joint4 (Wrist_Pitch)
     D-pad up/down    -> joint5 (Wrist_Roll)
-    Cross / Circle   -> gripper open / close (joint6)
+    Cross / Circle   -> gripper open / close (joint6), gradually while held (not a snap)
   Within base mode (R2 held):
     Left stick  X/Y -> vx / vy (m/s)
     Right stick X    -> omega (rad/s)
@@ -451,6 +451,7 @@ JOYSTICK_MAP = {
 ANALOG_TRIGGER_PRESS_THRESHOLD = 128  # out of 0..255 -- treat L2/R2 as "held" past this
 STICK_DEADZONE = 0.15  # normalized -1..1, ignore noise near center
 ARM_RATE_RAD_PER_SEC = 1.0  # max joint speed at full stick deflection
+GRIPPER_RATE_RAD_PER_SEC = 1.0  # gripper open/close speed while Cross/Circle is held
 BASE_RATE_M_PER_SEC = 0.3
 BASE_ROTATE_RATE_RAD_PER_SEC = 1.0
 
@@ -542,10 +543,20 @@ def apply_joystick_state(state: dict, button_state: dict, last_gripper_press: di
             if state.get("hat_y", 0) != 0:
                 j5 = get_arm_joint_target(side, 5) + sign * state["hat_y"] * ARM_RATE_RAD_PER_SEC * dt
                 set_arm_joint(side, 5, j5, quiet=True)
+            # Proportional gripper control, not snap-to-extreme: holding Cross/Circle
+            # moves the jaw gradually (like every other joint here) so you can stop
+            # at any width, release when it looks right. Also sidesteps needing to
+            # know for certain which direction is physically "open" vs "closed" --
+            # visually verify by watching it move (see CLAUDE.md: this was flagged
+            # as unverified, and user-reported behavior with the old snap-to-extreme
+            # version suggested the labels might have been backwards).
+            lo, hi = ARM_JOINT_LIMITS_RAD[6]
             if last_gripper_press.get("south"):
-                set_gripper(side, "open", quiet=True)
+                j6 = max(lo, min(hi, get_arm_joint_target(side, 6) + GRIPPER_RATE_RAD_PER_SEC * dt))
+                set_arm_joint(side, 6, j6, quiet=True)
             elif last_gripper_press.get("east"):
-                set_gripper(side, "close", quiet=True)
+                j6 = max(lo, min(hi, get_arm_joint_target(side, 6) - GRIPPER_RATE_RAD_PER_SEC * dt))
+                set_arm_joint(side, 6, j6, quiet=True)
 
 
 def run_joystick():

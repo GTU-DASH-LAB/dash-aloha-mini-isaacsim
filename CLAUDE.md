@@ -155,6 +155,29 @@ CLAUDE.md                     this file
   (connected, drove it through all four modes, clean disconnect handling) — the local
   half (pygame reading an actual controller on someone else's machine) is inherently
   untestable from here.
+- **A real PS4 controller's button mapping on macOS differs from the generic Linux
+  default** — confirmed via targeted single-button tests (not a guess): L1=button 9,
+  R1=button 10 (not 4/5 as commonly assumed), L2/R2 are analog-only on axes 4/5 (no
+  separate digital button event), and the d-pad reports as `hats=0` -- doesn't come
+  through as a hat at all on this setup, so wrist-roll (joint5) control via d-pad
+  doesn't work yet on this specific controller/OS combo (not root-caused further).
+  `DEFAULT_MAPPING` in `joystick_bridge_local.py` reflects the verified values.
+- **`enabled_self_collisions=False` (copied from NVIDIA's single-arm SO-101 config)
+  let the left arm, right arm, lift, and base pass through each other.** Made sense
+  for NVIDIA's case (a single arm's own adjacent links would otherwise constantly
+  false-positive at their shared joint) but this robot's whole body is one
+  articulation, so it silently disabled collision between logically-separate parts
+  too. Flipped to `True` in `configure_physics.py`; verified via `verify_physics.py`
+  this doesn't introduce instability at the arms' own joints (identical exact
+  convergence and base-height stability to the disabled case).
+- **Gripper control was snap-to-extreme, not proportional** — `set_gripper()` jumped
+  straight to `JAW_OPEN_RAD`/`JAW_CLOSED_RAD` the instant a button was pressed, with
+  no way to stop partway. Live user testing also suggested the open/closed labels
+  might be backwards from physical reality (flagged as unverified when first
+  written). Fixed by making joystick gripper control incremental/rate-based like
+  every other joint (hold to move gradually, release to stop) -- this also sidesteps
+  needing to know for certain which label is physically correct, since you can just
+  watch it move and release when it looks right.
 
 ## Current status
 

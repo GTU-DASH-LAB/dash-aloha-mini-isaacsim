@@ -58,3 +58,37 @@ Control it from the terminal:
 Note: drive the base, then `stop` it, *before* issuing new arm commands — see
 `CLAUDE.md`'s "kinematic root-teleporting fights concurrent arm-joint convergence" note
 for why simultaneous base+arm commands don't converge as cleanly.
+
+Type `help` in the REPL to list all commands, or `help <command>` (e.g. `help arm`)
+for usage/limits on one of them — also shown automatically if you type a command name
+with the wrong number of arguments (e.g. just `arm` or `base` alone). Command history
+(Up arrow to recall the previous command) works if `gnureadline` is installed:
+
+```bash
+~/isaacsim/python.sh -m pip install gnureadline
+```
+
+## PS4 controller control
+
+```bash
+~/isaacsim/python.sh scripts/control_terminal.py --joystick --gui
+```
+
+Needs the `evdev` package (`~/isaacsim/python.sh -m pip install evdev`) and your user
+in the `input` group — check with `groups | grep input`; if it's not listed:
+
+```bash
+sudo usermod -aG input $USER   # then log out and back in
+```
+
+Mapping: **L1**=control right arm, **L2**=control left arm, **L1+L2 together**=control
+both arms mirrored (opposite movement), **R2**=control the base. Left stick and right
+stick move different joints/axes depending on which mode is active — see the full
+mapping table in `scripts/control_terminal.py`'s module docstring.
+
+**This has not been tested against a physical controller** — none was connected in the
+environment it was built in. It's implemented against the standard Linux `evdev` codes
+for a DualShock 4, but exact button/axis codes can vary by driver. Run
+`scripts/control_terminal.py --joystick-debug` first to print raw events from your
+controller and confirm they match `JOYSTICK_MAP` at the top of the joystick section —
+adjust the numbers there if your controller reports different codes.

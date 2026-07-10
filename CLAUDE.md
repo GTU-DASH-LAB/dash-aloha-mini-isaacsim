@@ -124,6 +124,15 @@ CLAUDE.md                     this file
   point) — likely needs proper rolling-friction/anisotropic-friction tuning beyond a
   first pass. **Resolution**: kinematic base drive (see below), the plan's
   pre-approved fallback for exactly this situation.
+- **Isaac Sim's bundled Python has no stdlib `readline` module** (built without
+  libreadline). `import readline` raises `ModuleNotFoundError`. Fix:
+  `~/isaacsim/python.sh -m pip install gnureadline`, then `import gnureadline as
+  readline` (drop-in). Made this an optional import with a graceful fallback message
+  rather than a hard dependency, since it only affects REPL command history/editing.
+- **The user account on this machine is not in the `input` group**, so `evdev` can't
+  open `/dev/input/eventN` device nodes (owned `root:input`, mode 0660) even once a
+  controller is connected. Needs `sudo usermod -aG input $USER` + re-login. Documented
+  prominently since it's a real blocker the first time someone tries `--joystick`.
 - **Kinematic root-teleporting fights concurrent arm-joint convergence.**
   Continuously calling `set_world_poses()` on the articulation root every physics step
   while also trying to drive arm joints to new targets measurably degrades arm

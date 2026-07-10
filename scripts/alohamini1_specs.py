@@ -20,6 +20,19 @@ ARM_JOINT_GAINS = {
     5: {"name": "Wrist_Roll", "stiffness": 7, "damping": 0.5, "effort": 30},
     6: {"name": "Jaw", "stiffness": 4, "damping": 0.3, "effort": 30},
 }
+
+# Joint limits in radians, same numbers as scripts/patch_urdf_joint_limits.py's
+# ARM_JOINT_LIMITS (that script converts from the degree values read off
+# SO-ARM101-USD.usd; kept as a separate radian copy here for convenience -- if you
+# ever change one, change both). Used for REPL help text and clamping.
+ARM_JOINT_LIMITS_RAD = {
+    1: (-1.919862, 1.919862),   # Rotation
+    2: (-1.745331, 1.745331),   # Pitch
+    3: (-1.745331, 1.570800),   # Elbow
+    4: (-1.658061, 1.658061),   # Wrist_Pitch
+    5: (-2.792519, 2.792519),   # Wrist_Roll
+    6: (-0.174533, 1.745329),   # Jaw (gripper)
+}
 ARM_SOLVER_POSITION_ITERATIONS = 32
 # NVIDIA's SO-101 config uses 1, but the wheel velocity drives needed more velocity
 # iterations to converge without oscillating (verified empirically -- see

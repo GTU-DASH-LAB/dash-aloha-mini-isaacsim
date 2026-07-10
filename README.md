@@ -92,3 +92,38 @@ for a DualShock 4, but exact button/axis codes can vary by driver. Run
 `scripts/control_terminal.py --joystick-debug` first to print raw events from your
 controller and confirm they match `JOYSTICK_MAP` at the top of the joystick section —
 adjust the numbers there if your controller reports different codes.
+
+### Controller plugged into a *different* machine (e.g. controlling this box over AnyDesk)
+
+AnyDesk (and most remote-desktop tools) only forwards keyboard/mouse/screen, not
+USB/gamepad devices. If your controller is plugged into your own local machine and
+you're remoting into this one, use the network bridge instead of `--joystick`:
+
+**On this machine** (the one running Isaac Sim):
+```bash
+~/isaacsim/python.sh scripts/control_terminal.py --joystick-network --port 9999 --gui
+```
+
+**On your local machine**:
+```bash
+python3 -m pip install pygame
+python3 scripts/joystick_bridge_local.py --host <this-machine> --port 9999
+```
+
+If your local machine can reach this one directly (same LAN — this machine's address
+is `10.1.18.165`), point `--host` straight at it. If not (likely, since you're going
+through AnyDesk — probably a different network), tunnel over SSH instead. From your
+local machine:
+```bash
+ssh -L 9999:localhost:9999 <your-username>@10.1.18.165
+```
+Leave that running in its own terminal/tab, then run `joystick_bridge_local.py --host
+localhost --port 9999` — the tunnel forwards it through. This works with a plain SSH
+tunnel (no extra VPN/tooling needed) because the bridge uses TCP, not UDP.
+
+Verified end-to-end on the remote side (a real TCP client was connected and driven
+through all four modes — `right_arm`, `both_sync`, `base`, back to `none` — with clean
+disconnect handling). **The local half (pygame reading your actual controller) is not
+verified** — I don't have access to your machine. Run `joystick_bridge_local.py --debug`
+first to confirm the button/axis indices match `DEFAULT_MAPPING` in that script before
+trusting it; override with `--button-l1`, `--axis-l2`, etc. if they don't.

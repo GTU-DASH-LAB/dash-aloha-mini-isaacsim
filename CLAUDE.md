@@ -144,6 +144,17 @@ CLAUDE.md                     this file
   teleport-based kinematic drive for the base, used **sequentially** (drive base,
   `stop`, then command arms) rather than simultaneously. This is a known, documented
   limitation, not a silent one.
+- **AnyDesk (and remote desktop tools generally) don't forward USB/gamepad devices**,
+  only keyboard/mouse/screen — confirmed via web search, not assumed. If the
+  controller is on a different machine than the one running Isaac Sim, use
+  `--joystick-network` (`control_terminal.py`) + `scripts/joystick_bridge_local.py`
+  (runs on the controller's machine) instead of `--joystick`. Deliberately built on
+  **TCP, not UDP**, specifically so a plain `ssh -L` tunnel works with no extra tools
+  — `ssh -L` only forwards TCP by default, and getting UDP through would need
+  sshuttle/a VPN. Verified end-to-end on the remote side with a real TCP client
+  (connected, drove it through all four modes, clean disconnect handling) — the local
+  half (pygame reading an actual controller on someone else's machine) is inherently
+  untestable from here.
 
 ## Current status
 

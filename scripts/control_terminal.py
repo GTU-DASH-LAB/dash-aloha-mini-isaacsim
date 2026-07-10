@@ -192,6 +192,10 @@ parser.add_argument("--base", nargs=3, type=float, metavar=("VX", "VY", "OMEGA")
 parser.add_argument("--settle", type=float, default=2.0, help="Seconds to step physics after a one-shot command")
 parser.add_argument("--gui", action="store_true", help="Open a visible window instead of running headless")
 parser.add_argument("--joystick", action="store_true", help="PS4 controller control mode (see module docstring)")
+parser.add_argument("--joystick-network", action="store_true",
+                     help="Same as --joystick, but reads controller state from UDP packets sent by "
+                          "scripts/joystick_bridge_local.py on another machine, instead of a local device")
+parser.add_argument("--port", type=int, default=9999, help="UDP port for --joystick-network")
 parser.add_argument("--joystick-debug", action="store_true",
                      help="Just print raw controller events (no simulation) -- use this to verify/calibrate "
                           "button and axis codes against JOYSTICK_MAP before trusting --joystick")
@@ -474,6 +478,76 @@ def _apply_deadzone(v: float) -> float:
     return 0.0 if abs(v) < STICK_DEADZONE else v
 
 
+def apply_joystick_state(state: dict, button_state: dict, last_gripper_press: dict, mode_tracker: dict):
+    """Shared control logic for both the local-controller (`run_joystick`) and
+    network-bridge (`run_joystick_network`) paths -- takes normalized state
+    (lx/ly/rx/ry in -1..1, l2/r2 in 0..255 or as booleans via button_state,
+    hat_y as -1/0/1) and applies the same mode-select + axis-mapping rules either
+    way, so the two entry points can't drift out of sync with each other.
+    """
+    l2_held = button_state.get("l2_held", False) or state.get("l2", 0) > ANALOG_TRIGGER_PRESS_THRESHOLD
+    r2_held = button_state.get("r2_held", False) or state.get("r2", 0) > ANALOG_TRIGGER_PRESS_THRESHOLD
+    l1_held = button_state.get("l1_held", False)
+
+    if r2_held:
+        mode = "base"
+    elif l1_held and l2_held:
+        mode = "both_sync"
+    elif l1_held:
+        mode = "right_arm"
+    elif l2_held:
+        mode = "left_arm"
+    else:
+        mode = "none"
+
+    if mode != mode_tracker.get("last"):
+        print(f"Mode: {mode}")
+        mode_tracker["last"] = mode
+
+    dt = PHYSICS_DT
+    if mode == "base":
+        set_base_velocity(
+            state["ly"] * BASE_RATE_M_PER_SEC,
+            -state["lx"] * BASE_RATE_M_PER_SEC,
+            -state["rx"] * BASE_ROTATE_RATE_RAD_PER_SEC,
+            quiet=True,
+        )
+    else:
+        set_base_velocity(0.0, 0.0, 0.0, quiet=True)
+
+        sides = []
+        mirror = {"left": 1.0, "right": 1.0}
+        if mode == "right_arm":
+            sides = ["right"]
+        elif mode == "left_arm":
+            sides = ["left"]
+        elif mode == "both_sync":
+            sides = ["left", "right"]
+            mirror = {"left": -1.0, "right": 1.0}  # opposite movement, per spec
+
+        for side in sides:
+            sign = mirror[side]
+            if state["lx"] != 0.0:
+                j1 = get_arm_joint_target(side, 1) + sign * state["lx"] * ARM_RATE_RAD_PER_SEC * dt
+                set_arm_joint(side, 1, j1, quiet=True)
+            if state["ly"] != 0.0:
+                j2 = get_arm_joint_target(side, 2) + sign * state["ly"] * ARM_RATE_RAD_PER_SEC * dt
+                set_arm_joint(side, 2, j2, quiet=True)
+            if state["rx"] != 0.0:
+                j3 = get_arm_joint_target(side, 3) + sign * state["rx"] * ARM_RATE_RAD_PER_SEC * dt
+                set_arm_joint(side, 3, j3, quiet=True)
+            if state["ry"] != 0.0:
+                j4 = get_arm_joint_target(side, 4) + sign * state["ry"] * ARM_RATE_RAD_PER_SEC * dt
+                set_arm_joint(side, 4, j4, quiet=True)
+            if state.get("hat_y", 0) != 0:
+                j5 = get_arm_joint_target(side, 5) + sign * state["hat_y"] * ARM_RATE_RAD_PER_SEC * dt
+                set_arm_joint(side, 5, j5, quiet=True)
+            if last_gripper_press.get("south"):
+                set_gripper(side, "open", quiet=True)
+            elif last_gripper_press.get("east"):
+                set_gripper(side, "close", quiet=True)
+
+
 def run_joystick():
     import evdev
 
@@ -511,7 +585,7 @@ def run_joystick():
     reader.start()
 
     print("Reading controller input. Ctrl+C to stop.")
-    last_mode = None
+    mode_tracker = {"last": None}
     try:
         while True:
             kit.update()
@@ -549,69 +623,100 @@ def run_joystick():
             except queue.Empty:
                 pass
 
-            # Analog triggers might not send a digital BTN event on every driver --
-            # also treat crossing the threshold as "held" directly from the axis value.
-            l2_held = button_state["l2_held"] or state["l2"] > ANALOG_TRIGGER_PRESS_THRESHOLD
-            r2_held = button_state["r2_held"] or state["r2"] > ANALOG_TRIGGER_PRESS_THRESHOLD
-            l1_held = button_state["l1_held"]
+            apply_joystick_state(state, button_state, last_gripper_press, mode_tracker)
+    except KeyboardInterrupt:
+        print("\nStopped.")
 
-            if r2_held:
-                mode = "base"
-            elif l1_held and l2_held:
-                mode = "both_sync"
-            elif l1_held:
-                mode = "right_arm"
-            elif l2_held:
-                mode = "left_arm"
+
+def run_joystick_network(port: int):
+    """Same control logic as run_joystick(), but the controller state comes from
+    newline-delimited JSON messages sent over a TCP connection by
+    scripts/joystick_bridge_local.py running on a different machine, instead of a
+    locally-connected /dev/input device. See that script and README.md for the local
+    side and network setup.
+
+    TCP, not UDP: this is specifically so a plain `ssh -L <port>:localhost:<port>`
+    tunnel works out of the box if the two machines aren't on the same reachable
+    network (very likely if you're connecting via AnyDesk) -- ssh -L only forwards
+    TCP by default, and getting UDP through an SSH tunnel needs extra tooling
+    (sshuttle, a VPN, etc.) that most people don't have set up already.
+
+    Message format: one JSON object per line (newline-delimited), all keys optional
+    (missing keys keep their last known value): {"lx":F,"ly":F,"rx":F,"ry":F,"l1":B,
+    "l2":B,"r2":B,"hat_y":I,"gripper_open":B,"gripper_close":B} where F=float -1..1,
+    B=bool, I=int -1/0/1.
+    """
+    import json
+    import socket
+
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind(("0.0.0.0", port))
+    server_sock.listen(1)
+    server_sock.setblocking(False)
+    print(f"Listening for a joystick bridge TCP connection on 0.0.0.0:{port}")
+    print("L1=right arm  L2=left arm  L1+L2=both (mirrored)  R2=base  -- see module docstring for axis mapping")
+    print("Waiting for scripts/joystick_bridge_local.py to connect from the other machine...")
+
+    state = {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0, "l2": 0, "r2": 0, "hat_y": 0}
+    button_state = {"l1_held": False, "l2_held": False, "r2_held": False}
+    last_gripper_press = {"south": False, "east": False}
+    mode_tracker = {"last": None}
+    client_sock = None
+    recv_buffer = b""
+
+    def apply_packet(packet: dict):
+        for key in ("lx", "ly", "rx", "ry", "hat_y"):
+            if key in packet:
+                state[key] = packet[key]
+        if "l1" in packet:
+            button_state["l1_held"] = bool(packet["l1"])
+        if "l2" in packet:
+            button_state["l2_held"] = bool(packet["l2"])
+        if "r2" in packet:
+            button_state["r2_held"] = bool(packet["r2"])
+        if "gripper_open" in packet:
+            last_gripper_press["south"] = bool(packet["gripper_open"])
+        if "gripper_close" in packet:
+            last_gripper_press["east"] = bool(packet["gripper_close"])
+
+    try:
+        while True:
+            kit.update()
+            _apply_kinematic_base_step(PHYSICS_DT)
+
+            if client_sock is None:
+                try:
+                    client_sock, client_addr = server_sock.accept()
+                    client_sock.setblocking(False)
+                    print(f"Joystick bridge connected from {client_addr}")
+                except BlockingIOError:
+                    pass
             else:
-                mode = "none"
+                try:
+                    while True:
+                        chunk = client_sock.recv(4096)
+                        if not chunk:
+                            print("Joystick bridge disconnected -- waiting for reconnect")
+                            client_sock.close()
+                            client_sock = None
+                            recv_buffer = b""
+                            break
+                        recv_buffer += chunk
+                        while b"\n" in recv_buffer:
+                            line, recv_buffer = recv_buffer.split(b"\n", 1)
+                            if line.strip():
+                                try:
+                                    apply_packet(json.loads(line))
+                                except json.JSONDecodeError:
+                                    pass
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    client_sock = None
+                    recv_buffer = b""
 
-            if mode != last_mode:
-                print(f"Mode: {mode}")
-                last_mode = mode
-
-            dt = PHYSICS_DT
-            if mode == "base":
-                set_base_velocity(
-                    state["ly"] * BASE_RATE_M_PER_SEC,
-                    -state["lx"] * BASE_RATE_M_PER_SEC,
-                    -state["rx"] * BASE_ROTATE_RATE_RAD_PER_SEC,
-                    quiet=True,
-                )
-            else:
-                set_base_velocity(0.0, 0.0, 0.0, quiet=True)
-
-                sides = []
-                mirror = {"left": 1.0, "right": 1.0}
-                if mode == "right_arm":
-                    sides = ["right"]
-                elif mode == "left_arm":
-                    sides = ["left"]
-                elif mode == "both_sync":
-                    sides = ["left", "right"]
-                    mirror = {"left": -1.0, "right": 1.0}  # opposite movement, per spec
-
-                for side in sides:
-                    sign = mirror[side]
-                    if state["lx"] != 0.0:
-                        j1 = get_arm_joint_target(side, 1) + sign * state["lx"] * ARM_RATE_RAD_PER_SEC * dt
-                        set_arm_joint(side, 1, j1, quiet=True)
-                    if state["ly"] != 0.0:
-                        j2 = get_arm_joint_target(side, 2) + sign * state["ly"] * ARM_RATE_RAD_PER_SEC * dt
-                        set_arm_joint(side, 2, j2, quiet=True)
-                    if state["rx"] != 0.0:
-                        j3 = get_arm_joint_target(side, 3) + sign * state["rx"] * ARM_RATE_RAD_PER_SEC * dt
-                        set_arm_joint(side, 3, j3, quiet=True)
-                    if state["ry"] != 0.0:
-                        j4 = get_arm_joint_target(side, 4) + sign * state["ry"] * ARM_RATE_RAD_PER_SEC * dt
-                        set_arm_joint(side, 4, j4, quiet=True)
-                    if state["hat_y"] != 0:
-                        j5 = get_arm_joint_target(side, 5) + sign * state["hat_y"] * ARM_RATE_RAD_PER_SEC * dt
-                        set_arm_joint(side, 5, j5, quiet=True)
-                    if last_gripper_press["south"]:
-                        set_gripper(side, "open", quiet=True)
-                    elif last_gripper_press["east"]:
-                        set_gripper(side, "close", quiet=True)
+            apply_joystick_state(state, button_state, last_gripper_press, mode_tracker)
     except KeyboardInterrupt:
         print("\nStopped.")
 
@@ -720,6 +825,8 @@ def run_repl():
 
 if args.joystick:
     run_joystick()
+elif args.joystick_network:
+    run_joystick_network(args.port)
 elif args.repl:
     run_repl()
 else:

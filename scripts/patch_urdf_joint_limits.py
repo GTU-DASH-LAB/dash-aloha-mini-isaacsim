@@ -39,8 +39,10 @@ ARM_JOINT_LIMITS = {
     6: (-10.000003814697266, 100.00003814697266, 30, 3.0),   # Jaw (gripper)
 }
 
-# Placeholder -- no spec found, correcting empirically in Phase 2 (see plan.md)
-LIFT_LIMIT = (0.0, 0.30, 200, 0.1)  # meters, meters; effort in N, velocity in m/s
+# Real spec from liyiteng/lerobot_alohamini (src/lerobot/robots/alohamini/lift_axis.py):
+# soft min 0mm, soft max 600mm, lead screw 84mm/rev (alohamini1). Effort/velocity are
+# still engineering estimates (the real hardware spec is in motor ticks, not N/(m/s)).
+LIFT_LIMIT = (0.0, 0.60, 200, 0.15)  # meters, meters; effort in N, velocity in m/s
 
 
 def make_limit_block(indent: str, lower: float, upper: float, effort: float, velocity: float) -> str:

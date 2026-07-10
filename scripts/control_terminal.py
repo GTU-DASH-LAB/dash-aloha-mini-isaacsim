@@ -4,6 +4,10 @@ Two modes:
   One-shot:  ~/isaacsim/python.sh scripts/control_terminal.py --arm left 1 0.5 --settle 2
   REPL:      ~/isaacsim/python.sh scripts/control_terminal.py --repl
 
+Add --gui to open a visible Isaac Sim window (needs a display) so you can watch the
+robot while typing commands in the same terminal:
+  ~/isaacsim/python.sh scripts/control_terminal.py --repl --gui
+
 REPL commands:
   arm <left|right> <1-6> <radians>   set one arm joint position target
   gripper <left|right> <open|close>  shorthand for joint6 to its limit
@@ -40,11 +44,12 @@ parser.add_argument("--arm", nargs=3, metavar=("SIDE", "JOINT", "RAD"), help="On
 parser.add_argument("--lift", type=float, metavar="METERS", help="One-shot: set lift height")
 parser.add_argument("--base", nargs=3, type=float, metavar=("VX", "VY", "OMEGA"), help="One-shot: set base velocity")
 parser.add_argument("--settle", type=float, default=2.0, help="Seconds to step physics after a one-shot command")
+parser.add_argument("--gui", action="store_true", help="Open a visible window instead of running headless")
 args = parser.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+kit = SimulationApp({"headless": not args.gui})
 
 import math  # noqa: E402
 import omni.usd  # noqa: E402
@@ -70,6 +75,12 @@ for _ in range(5):
 art = Articulation(prim_paths_expr="/World/Aloha/Geometry/base_link")
 art.initialize()
 dof_names = art.dof_names
+
+if args.gui:
+    from omni.kit.viewport.utility import get_active_viewport, frame_viewport_prims
+    frame_viewport_prims(get_active_viewport(), prims=["/World/Aloha"])
+    for _ in range(15):
+        kit.update()
 
 # Maintain our own persistent target arrays instead of repeatedly reading back
 # art.get_joint_positions()/get_joint_velocities() (the ACTUAL current position, not

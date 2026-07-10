@@ -39,6 +39,8 @@ a Permission Denied error reading /dev/input):
   Within base mode (R2 held):
     Left stick  X/Y -> vx / vy (m/s)
     Right stick X    -> omega (rad/s)
+  Always available, regardless of mode:
+    Triangle / Square -> lift up / down, gradually while held (not tied to L1/L2/R2)
 
   NOTE: this mapping is implemented against the standard Linux evdev codes for a
   DualShock 4 (BTN_TL/BTN_TR for L1/R1, ABS_Z/ABS_RZ for analog L2/R2, ABS_X/Y and
@@ -439,6 +441,8 @@ JOYSTICK_MAP = {
     "BTN_TR2": 313,      # R2 digital
     "BTN_SOUTH": 304,    # Cross -- gripper open
     "BTN_EAST": 305,     # Circle -- gripper close
+    "BTN_NORTH": 308,    # Triangle -- lift up
+    "BTN_WEST": 307,     # Square -- lift down
     "ABS_X": 0,          # left stick X
     "ABS_Y": 1,          # left stick Y
     "ABS_Z": 2,          # L2 analog (0..255, 0=released)
@@ -452,6 +456,7 @@ ANALOG_TRIGGER_PRESS_THRESHOLD = 128  # out of 0..255 -- treat L2/R2 as "held" p
 STICK_DEADZONE = 0.15  # normalized -1..1, ignore noise near center
 ARM_RATE_RAD_PER_SEC = 1.0  # max joint speed at full stick deflection
 GRIPPER_RATE_RAD_PER_SEC = 1.0  # gripper open/close speed while Cross/Circle is held
+LIFT_RATE_M_PER_SEC = 0.15  # lift up/down speed while Triangle/Square is held
 BASE_RATE_M_PER_SEC = 0.3
 BASE_ROTATE_RATE_RAD_PER_SEC = 1.0
 
@@ -506,6 +511,14 @@ def apply_joystick_state(state: dict, button_state: dict, last_gripper_press: di
         mode_tracker["last"] = mode
 
     dt = PHYSICS_DT
+
+    # Lift (vertical_move) -- Triangle/Square, independent of L1/L2/R2 mode so it
+    # works no matter which arm/base mode is currently selected.
+    if last_gripper_press.get("north"):
+        set_lift(get_lift_target() + LIFT_RATE_M_PER_SEC * dt, quiet=True)
+    elif last_gripper_press.get("west"):
+        set_lift(get_lift_target() - LIFT_RATE_M_PER_SEC * dt, quiet=True)
+
     if mode == "base":
         set_base_velocity(
             state["ly"] * BASE_RATE_M_PER_SEC,
@@ -582,7 +595,7 @@ def run_joystick():
         "l2": 0, "r2": 0, "l1": False, "hat_y": 0,
     }
     button_state = {"l1_held": False, "l2_held": False, "r2_held": False}
-    last_gripper_press = {"south": False, "east": False}
+    last_gripper_press = {"south": False, "east": False, "north": False, "west": False}
     event_queue: queue.Queue = queue.Queue()
 
     def read_events():
@@ -631,6 +644,10 @@ def run_joystick():
                             last_gripper_press["south"] = bool(event.value)
                         elif event.code == JOYSTICK_MAP["BTN_EAST"]:
                             last_gripper_press["east"] = bool(event.value)
+                        elif event.code == JOYSTICK_MAP["BTN_NORTH"]:
+                            last_gripper_press["north"] = bool(event.value)
+                        elif event.code == JOYSTICK_MAP["BTN_WEST"]:
+                            last_gripper_press["west"] = bool(event.value)
             except queue.Empty:
                 pass
 
@@ -654,8 +671,8 @@ def run_joystick_network(port: int):
 
     Message format: one JSON object per line (newline-delimited), all keys optional
     (missing keys keep their last known value): {"lx":F,"ly":F,"rx":F,"ry":F,"l1":B,
-    "l2":B,"r2":B,"hat_y":I,"gripper_open":B,"gripper_close":B} where F=float -1..1,
-    B=bool, I=int -1/0/1.
+    "l2":B,"r2":B,"hat_y":I,"gripper_open":B,"gripper_close":B,"lift_up":B,
+    "lift_down":B} where F=float -1..1, B=bool, I=int -1/0/1.
     """
     import json
     import socket
@@ -671,7 +688,7 @@ def run_joystick_network(port: int):
 
     state = {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0, "l2": 0, "r2": 0, "hat_y": 0}
     button_state = {"l1_held": False, "l2_held": False, "r2_held": False}
-    last_gripper_press = {"south": False, "east": False}
+    last_gripper_press = {"south": False, "east": False, "north": False, "west": False}
     mode_tracker = {"last": None}
     client_sock = None
     recv_buffer = b""
@@ -690,6 +707,10 @@ def run_joystick_network(port: int):
             last_gripper_press["south"] = bool(packet["gripper_open"])
         if "gripper_close" in packet:
             last_gripper_press["east"] = bool(packet["gripper_close"])
+        if "lift_up" in packet:
+            last_gripper_press["north"] = bool(packet["lift_up"])
+        if "lift_down" in packet:
+            last_gripper_press["west"] = bool(packet["lift_down"])
 
     try:
         while True:

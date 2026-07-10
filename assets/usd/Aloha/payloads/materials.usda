@@ -3,13 +3,13 @@
     customLayerData = {
         string creator = "URDF USD Converter v0.1.3"
     }
-    doc = """Generated from Composed Stage of root layer /tmp/tmp67lhoyae/Aloha.usdc
+    doc = """Generated from Composed Stage of root layer /tmp/tmpp4lo4na3/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_qj2erc1e/usdex_Aloha/Aloha.usdc
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_bhz_ku6h/usdex_Aloha/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_qj2erc1e/temp_Aloha/Aloha.usd
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_bhz_ku6h/temp_Aloha/Aloha.usd
 
 
 Generated from Composed Stage of root layer /home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/Aloha/payloads/base.usd

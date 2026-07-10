@@ -49,6 +49,8 @@ parser.add_argument("--button-l2", type=int, default=None)
 parser.add_argument("--button-r2", type=int, default=None)
 parser.add_argument("--button-cross", type=int, default=None)
 parser.add_argument("--button-circle", type=int, default=None)
+parser.add_argument("--button-square", type=int, default=None, help="Lift down")
+parser.add_argument("--button-triangle", type=int, default=None, help="Lift up")
 parser.add_argument("--axis-l2", type=int, default=None, help="Analog L2 trigger axis, if your controller has one")
 parser.add_argument("--axis-r2", type=int, default=None, help="Analog R2 trigger axis, if your controller has one")
 args = parser.parse_args()
@@ -71,6 +73,10 @@ DEFAULT_MAPPING = {
     "button_r2": 7,   # testing (axis_l2/axis_r2 below), no separate button event seen
     "button_cross": 0,
     "button_circle": 1,
+    "button_square": 2,     # lift down -- inferred from standard SDL face-button
+    "button_triangle": 3,   # lift up -- ordering (0-3), not individually confirmed
+                            # one-at-a-time the way L1/R1 were. Verify with --debug
+                            # if lift control doesn't respond to Triangle/Square.
     "axis_lx": 0,
     "axis_ly": 1,
     "axis_rx": 2,
@@ -87,6 +93,7 @@ for key, cli_val in (
     ("button_l1", args.button_l1), ("button_r1", args.button_r1),
     ("button_l2", args.button_l2), ("button_r2", args.button_r2),
     ("button_cross", args.button_cross), ("button_circle", args.button_circle),
+    ("button_square", args.button_square), ("button_triangle", args.button_triangle),
     ("axis_l2", args.axis_l2), ("axis_r2", args.axis_r2),
 ):
     if cli_val is not None:
@@ -176,6 +183,8 @@ try:
             "hat_y": hat_y,
             "gripper_open": get_button_safe(m["button_cross"]),
             "gripper_close": get_button_safe(m["button_circle"]),
+            "lift_up": get_button_safe(m["button_triangle"]),
+            "lift_down": get_button_safe(m["button_square"]),
         }
         try:
             sock.sendall((json.dumps(packet) + "\n").encode("utf-8"))

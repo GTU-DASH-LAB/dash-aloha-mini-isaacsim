@@ -201,6 +201,25 @@ CLAUDE.md                     this file
   CAD/mesh than what's actually being simulated, the number can be confidently wrong
   for this specific geometry. Render a close-up screenshot at the extremes and
   actually look, the same way this was caught.
+- **Widened the gripper close limit a bit further** (-1.570796 -> -1.85 rad, ~-106 deg)
+  per user request for more squeeze margin (e.g. gripping thin objects) -- verified
+  visually clean at -1.85 and even -2.0 (no bad mesh interpenetration), settled on
+  -1.85 as a reasonable margin without excessive over-rotation.
+- **Arm-to-arm self-collision verified actually working**, not just "doesn't destabilize
+  rest pose" -- direct test: drove both arms' joint1 toward each other, and they got
+  physically stuck partway (commanded -1.9 rad, actual only reached 0.66 rad) with
+  heavily overlapping bounding boxes on the wrist links, confirming a real collision
+  stopped the motion. (First attempt at this test used the wrong rotation sign and
+  showed the arms moving apart instead of together, which looked like nothing was
+  happening -- always double check the direction actually brings parts together
+  before concluding collision "isn't working".)
+- **Added lift control to the joystick scheme**: Triangle=up, Square=down, using the
+  same increment-while-held pattern as the gripper, and independent of the L1/L2/R2
+  arm/base mode selection (works no matter what's currently selected). On
+  `joystick_bridge_local.py` (the macOS/pygame side actually in use), button indices
+  2/3 for square/triangle are inferred from the standard SDL face-button ordering,
+  not individually confirmed one-at-a-time the way L1/R1 were -- verify with --debug
+  if it doesn't respond.
 
 ## Current status
 

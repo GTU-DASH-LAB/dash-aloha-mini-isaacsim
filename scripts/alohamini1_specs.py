@@ -35,9 +35,11 @@ ARM_JOINT_LIMITS_RAD = {
     # 1.745329) -- that range doesn't match how THIS mesh's fingers actually close
     # (different CAD source than NVIDIA's reference asset). Empirically verified by
     # rendering close-up screenshots at several angles: -0.174533 leaves a visible gap
-    # (not closed), 1.745329 is genuinely fully open, and the fingers actually meet at
-    # -1.570796 (-90 deg). Corrected in the URDF itself, not just here.
-    6: (-1.570796, 1.745329),   # Jaw (gripper) -- lower=closed, upper=open
+    # (not closed), 1.745329 is genuinely fully open, fingers first meet at -1.570796
+    # (-90 deg), and -1.85 (~-106 deg) gives a bit of extra squeeze margin for gripping
+    # thin objects while still looking visually clean (no bad mesh interpenetration).
+    # Corrected in the URDF itself, not just here.
+    6: (-1.85, 1.745329),   # Jaw (gripper) -- lower=closed, upper=open
 }
 ARM_SOLVER_POSITION_ITERATIONS = 32
 # NVIDIA's SO-101 config uses 1, but the wheel velocity drives needed more velocity
@@ -49,7 +51,7 @@ ARM_SOLVER_VELOCITY_ITERATIONS = 4
 # shorthand. Confirmed visually via close-up rendered screenshots at several joint
 # angles (see ARM_JOINT_LIMITS_RAD[6] comment): lower=closed, upper=open.
 JAW_OPEN_RAD = 1.745329
-JAW_CLOSED_RAD = -1.570796
+JAW_CLOSED_RAD = -1.85
 
 # --- Lift (vertical_move, prismatic) ---
 LIFT_MIN_M = 0.0

@@ -4,13 +4,13 @@
         string creator = "URDF USD Converter v0.1.3"
     }
     defaultPrim = "Aloha"
-    doc = """Generated from Composed Stage of root layer /tmp/tmp67lhoyae/Aloha.usdc
+    doc = """Generated from Composed Stage of root layer /tmp/tmpp4lo4na3/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_qj2erc1e/usdex_Aloha/Aloha.usdc
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_bhz_ku6h/usdex_Aloha/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_qj2erc1e/temp_Aloha/Aloha.usd
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_bhz_ku6h/temp_Aloha/Aloha.usd
 
 
 Generated from Composed Stage of root layer /home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/Aloha/payloads/base.usd
@@ -377,7 +377,7 @@ over "Aloha"
             point3f physics:localPos1 = (0, 0, 0)
             quatf physics:localRot0 = (0.007425247, 0, 0.5875591, 0.80914724)
             quatf physics:localRot1 = (0.007425247, 0, 0.5875591, 0.80914724)
-            float physics:lowerLimit = -89.999985
+            float physics:lowerLimit = -105.99719
             float physics:upperLimit = 100.000046
             custom float urdf:limit:effort = 30
             custom float urdf:limit:velocity = 3
@@ -497,7 +497,7 @@ over "Aloha"
             point3f physics:localPos1 = (0, 0, 0)
             quatf physics:localRot0 = (0.007425247, 0, 0.5875591, 0.80914724)
             quatf physics:localRot1 = (0.007425247, 0, 0.5875591, 0.80914724)
-            float physics:lowerLimit = -89.999985
+            float physics:lowerLimit = -105.99719
             float physics:upperLimit = 100.000046
             custom float urdf:limit:effort = 30
             custom float urdf:limit:velocity = 3

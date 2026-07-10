@@ -83,11 +83,42 @@ plan.md                       phased task list, checkboxes
 CLAUDE.md                     this file
 ```
 
+## Gotchas hit so far
+
+- **`package://` URDF mesh paths need `--ros-package` or meshes silently vanish.**
+  `Aloha.urdf` references meshes as `package://Aloha/meshes/base_link.STL`. The URDF
+  importer (`isaacsim.asset.importer.urdf`) does **not** error if it can't resolve that
+  -- it just imports the robot with zero mesh geometry (correct link/joint hierarchy,
+  correct physics, but literally invisible). No warning in the log either. Always pass
+  `--ros-package "Aloha:/absolute/path/to/assets/upstream_alohamini1"` (the directory
+  that contains `meshes/`) when importing this URDF. Caught by: import "succeeded" but
+  a headless screenshot showed nothing at the origin, and a full stage prim dump
+  showed zero `def Mesh` prims anywhere until this was added.
+- **`stage.Traverse()` + `UsdGeom.Mesh` type-checking is unreliable on the imported
+  asset** -- the importer's output uses point-instancing (`payloads/instances.usda`,
+  `payloads/geometries.usd`) for the many symmetric/repeated parts, so a naive
+  `prim.IsA(UsdGeom.Mesh)` walk from the root undercounts (reports 0 even when meshes
+  are genuinely present and rendering). Don't trust that check for "did it import
+  correctly" -- trust a bounding-box computation (`UsdGeom.BBoxCache` on `/Aloha`) and
+  an actual rendered screenshot instead. `frame_viewport_prims(viewport,
+  prims=["/Aloha"])` (from `omni.kit.viewport.utility`) is the reliable way to aim a
+  headless camera at freshly imported geometry -- the default camera does not
+  auto-frame it.
+- **Screenshots of an empty stage are unlit (solid black except a dark silhouette).**
+  Expected -- there's no light source yet. Don't mistake "dark but correctly shaped
+  silhouette at the right bounding box" for a failure; it means geometry is fine and
+  the next step (loading a proper ready-made environment) will supply lighting.
+
 ## Current status
 
-Phase 0 (scaffolding) done except the initial commit/push. Phase 1 not started.
+Phase 0 done. Phase 1 (URDF joint-limit patch) done and verified. First successful
+full-geometry import done: `assets/usd/Aloha/Aloha.usda`, bbox ≈ 0.42m × 0.46m ×
+1.09m tall (plausible). Collision strategy for this import: `--collision-from-visuals
+--collision-type "Convex Hull"` applied uniformly -- wheels not yet specially handled
+(see plan.md Phase 3 note on omni-wheel physics).
 
 ## Next step
 
-Patch `Aloha.urdf` joint limits (Phase 1), starting with reading real limits off
-`SO-ARM101-USD.usd` via an Isaac Sim script.
+Load a ready-made Isaac Sim environment (Simple Room or flat grid) under the robot for
+proper lighting/ground, take a clean lit screenshot, then move into Phase 3 (per-joint
+drives using the SO-101 gains table above).

@@ -44,32 +44,37 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       (Apache-2.0, LICENSE + attribution included)
 - [x] Write this `plan.md`
 - [x] Write `CLAUDE.md` (living doc, updated as work progresses)
-- [ ] Git init, initial commit, push to `GTU-DASH-LAB/dash-aloha-mini-isaacsim` (public)
+- [x] Git init, initial commit, push to `GTU-DASH-LAB/dash-aloha-mini-isaacsim` (public)
 
 ## Phase 1 — Asset prep (fix the URDF before it ever touches physics)
-- [ ] Read joint limits/effort/velocity off the existing `SO-ARM101-USD.usd` (via a
+- [x] Read joint limits/effort/velocity off the existing `SO-ARM101-USD.usd` (via a
       small Isaac Sim script using the USD Physics schema) and apply the same numbers to
       `left_joint1..6` / `right_joint1..6` in `Aloha.urdf`
-- [ ] Set a sensible `vertical_move` (lift) travel range — no authoritative spec value
-      found; start from the mesh's visual travel bound (measure in Isaac Sim after first
-      import) and correct once we can see it move
-- [ ] Decide + document collision geometry strategy per link:
-  - Arm links / base / lift: convex hull or convex decomposition of the STL (visual mesh
-    is CAD-detailed; raw triangle-mesh colliders on moving parts are typically unstable)
-  - Wheels: **flag for Phase 3** — true omni-wheel roller contact is a hard physics
-    problem; likely simplified collision proxy, see Phase 3 notes
-- [ ] Verify the patched URDF parses (`urdf_usd_converter` dry run or Python `xml` parse)
-- [ ] **Verify**: patched URDF loads without errors in the URDF importer's validation step
+      (`scripts/read_so101_joint_limits.py`, `scripts/patch_urdf_joint_limits.py`)
+- [x] Set a placeholder `vertical_move` (lift) travel range (0-0.30m) — no authoritative
+      spec value found; **still needs empirical correction**, tracked as an open item
+- [x] Decide + document collision geometry strategy: used `--collision-from-visuals
+      --collision-type "Convex Hull"` uniformly for the first successful import.
+      Wheels not specially handled yet — still flagged for Phase 3 (true omni-wheel
+      contact is a hard physics problem, see Phase 3 notes)
+- [x] Verify the patched URDF parses (Python `xml.etree` parse: 18 joints, 19 links,
+      matches expectations; zero remaining zeroed `<limit>` blocks)
+- [x] **Verify**: patched URDF loads without errors in the URDF importer — real import
+      run, "Import complete - 1 succeeded, 0 failed"
 
 ## Phase 2 — Import into Isaac Sim 6.0.1
-- [ ] Import `Aloha.urdf` via `isaacsim.asset.importer.urdf` into a USD, fixed_base=**False**
-      (it's a mobile robot — base must be a free rigid body, not welded to world)
+- [x] Import `Aloha.urdf` via `isaacsim.asset.importer.urdf` into a USD, `--no-fix-base`
+      (it's a mobile robot — base must be a free rigid body, not welded to world).
+      **Gotcha**: needs `--ros-package "Aloha:<path to upstream_alohamini1>"` or the
+      `package://Aloha/meshes/...` paths silently fail to resolve and mesh geometry
+      comes out empty with no error — see CLAUDE.md.
 - [ ] Load a ready-made Isaac Sim environment (Simple Room or flat grid) as the stage
 - [ ] Place the imported robot on the ground plane
-- [ ] **Verify**: headless script loads the stage, confirms articulation root + all 20
-      links (base, 3 wheels, lift, 2×(base+6 links)) resolved, no missing-mesh warnings;
-      capture a viewport screenshot to PNG and visually inspect it (Read the image) to
-      confirm the mesh isn't inside-out, disconnected, or floating
+- [x] **Verify**: headless script loads the stage, computes world bbox on `/Aloha`
+      (≈ 0.42m × 0.46m × 1.09m tall — plausible), frames the camera on it with
+      `frame_viewport_prims`, and captures a screenshot — geometry confirmed present
+      and correctly shaped (dark/unlit silhouette, expected with no light source yet;
+      lighting comes next via the ready-made environment)
 
 ## Phase 3 — Physics configuration
 - [ ] Apply patched joint limits from Phase 1

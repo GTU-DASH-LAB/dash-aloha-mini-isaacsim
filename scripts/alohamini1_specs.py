@@ -31,7 +31,13 @@ ARM_JOINT_LIMITS_RAD = {
     3: (-1.745331, 1.570800),   # Elbow
     4: (-1.658061, 1.658061),   # Wrist_Pitch
     5: (-2.792519, 2.792519),   # Wrist_Roll
-    6: (-0.174533, 1.745329),   # Jaw (gripper)
+    # Jaw (gripper): NOT the value read off NVIDIA's SO-ARM101-USD.usd (-0.174533,
+    # 1.745329) -- that range doesn't match how THIS mesh's fingers actually close
+    # (different CAD source than NVIDIA's reference asset). Empirically verified by
+    # rendering close-up screenshots at several angles: -0.174533 leaves a visible gap
+    # (not closed), 1.745329 is genuinely fully open, and the fingers actually meet at
+    # -1.570796 (-90 deg). Corrected in the URDF itself, not just here.
+    6: (-1.570796, 1.745329),   # Jaw (gripper) -- lower=closed, upper=open
 }
 ARM_SOLVER_POSITION_ITERATIONS = 32
 # NVIDIA's SO-101 config uses 1, but the wheel velocity drives needed more velocity
@@ -39,13 +45,11 @@ ARM_SOLVER_POSITION_ITERATIONS = 32
 # configure_physics.py's configure_velocity_drive comment).
 ARM_SOLVER_VELOCITY_ITERATIONS = 4
 
-# Jaw (joint6) limits in radians, from the patched URDF (real SO-101 spec: -10 to 100
-# degrees) -- used by control_terminal.py's gripper open/close shorthand.
-# NOTE: which extreme is physically "open" vs "closed" has NOT been visually verified
-# against this URDF's own axis convention -- same caveat as the other joint polarities
-# (see plan.md/CLAUDE.md). Assumed lower=open/upper=closed for now; flip if wrong.
-JAW_OPEN_RAD = -0.174533
-JAW_CLOSED_RAD = 1.745329
+# Jaw (joint6) limits in radians -- used by control_terminal.py's gripper open/close
+# shorthand. Confirmed visually via close-up rendered screenshots at several joint
+# angles (see ARM_JOINT_LIMITS_RAD[6] comment): lower=closed, upper=open.
+JAW_OPEN_RAD = 1.745329
+JAW_CLOSED_RAD = -1.570796
 
 # --- Lift (vertical_move, prismatic) ---
 LIFT_MIN_M = 0.0

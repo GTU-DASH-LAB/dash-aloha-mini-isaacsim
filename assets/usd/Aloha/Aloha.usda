@@ -4,13 +4,13 @@
         string creator = "URDF USD Converter v0.1.3"
     }
     defaultPrim = "Aloha"
-    doc = """Generated from Composed Stage of root layer /tmp/tmp_90zpz3g/Aloha.usdc
+    doc = """Generated from Composed Stage of root layer /tmp/tmp67lhoyae/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_dq9ukb1m/usdex_Aloha/Aloha.usdc
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_qj2erc1e/usdex_Aloha/Aloha.usdc
 
 
-Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_dq9ukb1m/temp_Aloha/Aloha.usd
+Generated from Composed Stage of root layer /tmp/urdf_import_Aloha_qj2erc1e/temp_Aloha/Aloha.usd
 
 
 Generated from Composed Stage of root layer /home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/Aloha/payloads/base.usd

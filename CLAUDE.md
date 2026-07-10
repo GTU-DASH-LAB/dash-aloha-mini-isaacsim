@@ -178,6 +178,29 @@ CLAUDE.md                     this file
   every other joint (hold to move gradually, release to stop) -- this also sidesteps
   needing to know for certain which label is physically correct, since you can just
   watch it move and release when it looks right.
+- **The Jaw joint's limits from NVIDIA's reference asset (-0.174533 to 1.745329 rad)
+  do NOT correspond to a fully-closed gripper on THIS mesh.** Different CAD source
+  than NVIDIA's SO-ARM101-USD.usd (same physical arm design, different jaw linkage
+  geometry) -- so even though those numbers are real, verified values read directly
+  off NVIDIA's asset, they don't transfer to this specific STL's finger geometry.
+  User reported the gripper "wasn't closing all the way"; confirmed empirically by
+  rendering close-up screenshots at several joint angles with the limit temporarily
+  widened for testing: -0.174533 leaves a visible gap (not closed at all), 1.745329
+  is genuinely fully open, and the fingers actually meet at **-1.570796 (-90 deg)** --
+  well outside the original range. Corrected the real limit in `Aloha.urdf` itself
+  (not just a script-side clamp) for both `left_joint6` and `right_joint6`, and
+  updated `JAW_OPEN_RAD`/`JAW_CLOSED_RAD` + `ARM_JOINT_LIMITS_RAD[6]` in
+  `alohamini1_specs.py` to match. Re-ran the full pipeline (reimport -> rebuild scene
+  -> reconfigure physics -> refix wheel collision) and reverified: `docs/
+  gripper_closed_final.png` shows the fingers actually touching, and
+  `verify_physics.py` still passes (no NaN/Inf, exact convergence, stable base
+  height) with the wider range.
+- **Lesson for any other visually-unverified limit/direction assumption still in the
+  codebase**: don't trust a reference asset's numeric range just because it's a real,
+  correctly-read number from a legitimate source -- if the source is a *different*
+  CAD/mesh than what's actually being simulated, the number can be confidently wrong
+  for this specific geometry. Render a close-up screenshot at the extremes and
+  actually look, the same way this was caught.
 
 ## Current status
 

@@ -22,9 +22,25 @@ No ROS2 dependency by default. Isaac Sim 6.0.1 install expected at `~/isaacsim`.
 
 ## Quick start
 
-Rebuild the scene from scratch (only needed if you change the URDF or want a clean
-rebuild — `assets/usd/scene.usda` is already committed and ready to use as-is):
+`assets/usd/scene.usda` is already committed and ready to use as-is — the default
+environment is `Office` (a reception scene) with a small pick-and-place table and two
+graspable cubes positioned within the arms' actual reach envelope.
 
+If you change the URDF, or want to swap the environment, **always use
+`scripts/rebuild_all.sh`**, not the individual scripts by hand:
+
+```bash
+./scripts/rebuild_all.sh                                    # rebuild with defaults
+./scripts/rebuild_all.sh --environment-url <other CDN url>   # swap environment
+./scripts/rebuild_all.sh --no-pick-place-props               # skip the table/cubes
+```
+
+Why not just `build_scene.py`: it recreates `scene.usda` from scratch every time,
+which silently wipes out the joint drives and wheel-collision fixes that
+`configure_physics.py`/`fix_wheel_collision.py` layer on top — `rebuild_all.sh` always
+runs all three in the right order, plus a final `verify_physics.py` sanity check.
+
+If you change the URDF itself, re-import first:
 ```bash
 ~/isaacsim/python.sh -m standalone_examples.api.isaacsim.asset.importer.urdf.urdf_import \
   --urdf assets/upstream_alohamini1/urdf/Aloha.urdf \
@@ -32,9 +48,7 @@ rebuild — `assets/usd/scene.usda` is already committed and ready to use as-is)
   --ros-package "Aloha:$(pwd)/assets/upstream_alohamini1" \
   --collision-from-visuals --collision-type "Convex Decomposition" \
   --no-fix-base --merge-fixed-joints
-~/isaacsim/python.sh scripts/build_scene.py
-~/isaacsim/python.sh scripts/configure_physics.py
-~/isaacsim/python.sh scripts/fix_wheel_collision.py
+./scripts/rebuild_all.sh
 ```
 
 Control it from the terminal:

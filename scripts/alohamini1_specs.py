@@ -41,11 +41,22 @@ ARM_JOINT_LIMITS_RAD = {
     # Corrected in the URDF itself, not just here.
     6: (-1.85, 1.745329),   # Jaw (gripper) -- lower=closed, upper=open
 }
-ARM_SOLVER_POSITION_ITERATIONS = 32
-# NVIDIA's SO-101 config uses 1, but the wheel velocity drives needed more velocity
-# iterations to converge without oscillating (verified empirically -- see
-# configure_physics.py's configure_velocity_drive comment).
-ARM_SOLVER_VELOCITY_ITERATIONS = 4
+# NVIDIA's SO-101 config uses position=32/velocity=1, tuned for a FIXED-base single
+# arm. Our robot is floating-base (mobile), and the lift joint (vertical_move) sits
+# directly between the floating root (base_link, heavy: wheels + everything) and
+# vertical_link (carrying both arms) -- that specific joint needed far more solver
+# iterations to converge at all. Empirically verified: at position=32/velocity=4 (the
+# old values) and even position=64/velocity=8, the lift joint gets physically stuck
+# near 0 regardless of commanded target or drive force (tried up to 5000N/50000
+# stiffness -- still stuck), while position=128/velocity=16 converges to the exact
+# target reliably. Ruled out self-collision and external furniture collision as causes
+# first (same result with self-collision off, same result in an empty Grid
+# environment) -- this is purely a solver-iteration insufficiency for this specific
+# floating-root-adjacent joint. Arm joints (revolute, further down the chain) never
+# needed this many iterations on their own, but the whole articulation shares one
+# iteration count, so this covers everything.
+ARM_SOLVER_POSITION_ITERATIONS = 128
+ARM_SOLVER_VELOCITY_ITERATIONS = 16
 
 # Jaw (joint6) limits in radians -- used by control_terminal.py's gripper open/close
 # shorthand. Confirmed visually via close-up rendered screenshots at several joint

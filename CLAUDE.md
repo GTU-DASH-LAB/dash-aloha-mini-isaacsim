@@ -220,6 +220,51 @@ CLAUDE.md                     this file
   2/3 for square/triangle are inferred from the standard SDL face-button ordering,
   not individually confirmed one-at-a-time the way L1/R1 were -- verify with --debug
   if it doesn't respond.
+- **`isaacsim-mcp-server` (whats2000/isaacsim-mcp-server, set up in the separate
+  `isaac-sim-ros2-mcp-setup` repo) does NOT work reliably against Isaac Sim 6.0.1**,
+  confirmed directly, not just by trusting its own "5.1.0 only" documentation. Basic
+  tools (`load_environment`, `load_usd`, `create_object`, `get_prim_info`,
+  `step_simulation`) worked fine, but `capture_image` and even a trivial
+  `execute_script` both failed, and the extension's log showed a real asyncio
+  reentrancy bug in its `socket_server.py` (`_dispatch_command`/`execute_wrapper`
+  trying to re-enter an already-executing task) -- a genuine event-loop
+  incompatibility with how Kit 6.0.1 schedules tasks differently than 5.1.0, not a
+  transient fluke. Useful for quick interactive exploration (e.g. discovering the
+  `list_environments` catalog) but not reliable enough to depend on for this
+  project -- stick with the direct `python.sh` scripts.
+- **The default environment is `Office`** (a reception-area scene), swapped from
+  `Grid` per request, plus a small purpose-built pick-and-place table + 2 graspable
+  4cm cubes (`--pick-place-props`, on by default in `build_scene.py`). The table/cube
+  position was NOT guessed from human-arm intuition -- an initial placement at
+  X=+0.3..0.35, Z=0.45 (assuming ~30-40cm human-like reach) was empirically wrong.
+  Real joint sweeps (with properly-configured drives -- see the solver-iteration
+  finding below) showed this robot's actual reach envelope is much smaller and closer
+  to the base: X=-0.07..+0.03, Y=-0.09..-0.20 for the right arm (Z=0.87..1.05),
+  mirrored in Y for the left arm. Repositioned to X=-0.03, cubes at Y=-0.15/+0.15,
+  table top Z=0.80 -- verified a real joint config gets the wrist within 4.2cm of the
+  target cube.
+- **Real bug, not a mystery: the lift joint (`vertical_move`) was physically stuck
+  near 0 regardless of commanded target**, confirmed by the user reporting "the up
+  down limits are wrong." Root-caused properly rather than guessed at: ruled out
+  insufficient drive force (still stuck at 5000N/50000 stiffness, 25x/10x the
+  original), ruled out self-collision (still stuck with it disabled), ruled out
+  external furniture collision (identical result in an empty Grid environment,
+  nothing to do with the Office swap). The actual cause: `ARM_SOLVER_POSITION_
+  ITERATIONS`/`_VELOCITY_ITERATIONS` (32/4, from NVIDIA's fixed-base single-arm
+  config) were insufficient for this floating-base robot's lift joint specifically --
+  it sits directly between the floating root (base_link, heavy: wheels + everything)
+  and vertical_link (carrying both arms), which apparently needs far more solver
+  iterations to converge than a revolute joint further down the chain. 64 position
+  iterations still failed; 128 works reliably (verified: target 0.6 -> actual
+  0.5990-0.5994 across multiple rebuilds). Raised to position=128/velocity=16.
+- **Process safeguard added**: `build_scene.py` recreates `scene.usda` from scratch
+  every time (fresh references), which silently wipes out everything
+  `configure_physics.py`/`fix_wheel_collision.py` layered on top -- this exact mistake
+  happened once (an environment swap left every joint drive at stiffness=0/damping=0,
+  no error, just non-functional joints, only caught because a reach test showed
+  target=-1.9 converging to actual=0.30). Added `scripts/rebuild_all.sh` to always run
+  the three steps in the correct order plus a final `verify_physics.py` check -- use
+  this instead of calling `build_scene.py` alone.
 
 ## Current status
 

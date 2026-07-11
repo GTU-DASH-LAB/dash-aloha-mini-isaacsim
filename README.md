@@ -23,8 +23,21 @@ No ROS2 dependency by default. Isaac Sim 6.0.1 install expected at `~/isaacsim`.
 ## Quick start
 
 `assets/usd/scene.usda` is already committed and ready to use as-is — the default
-environment is `Office` (a reception scene) with a small pick-and-place table and two
-graspable cubes positioned within the arms' actual reach envelope.
+environment is `Simple_Warehouse` (a "factory" setting) with two official NVIDIA
+packing tables (real legs, totes/crates, collision physics) flanking the robot, and
+four official colored blocks (red/green/blue/yellow, full rigid-body physics) resting
+on their work surfaces. The tables sit just outside the base's in-place rotation
+radius, so you can turn freely and drive up to either one for pick-and-place. The
+default camera starts framed close to the robot regardless of environment size.
+
+`scene.usda` is intentionally tiny (~18KB): it holds *references* to the environment
+/props (Isaac's CDN) and the robot (relative path in this repo) plus the physics
+overrides — opening it needs network the first time, then Kit caches the assets. See
+`CLAUDE.md` before swapping in a different `--environment-url`: not all of Isaac
+Sim's official environments are safe as-is (the `Office` environment used to be the
+default here and had to be replaced — it's real-world building scale, ~1000m across,
+which caused both a camera-framing bug and a physics explosion at spawn; `Simple_Room`
+has furniture parked right at the origin).
 
 If you change the URDF, or want to swap the environment, **always use
 `scripts/rebuild_all.sh`**, not the individual scripts by hand:

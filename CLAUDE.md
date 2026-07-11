@@ -232,17 +232,73 @@ CLAUDE.md                     this file
   transient fluke. Useful for quick interactive exploration (e.g. discovering the
   `list_environments` catalog) but not reliable enough to depend on for this
   project -- stick with the direct `python.sh` scripts.
-- **The default environment is `Office`** (a reception-area scene), swapped from
-  `Grid` per request, plus a small purpose-built pick-and-place table + 2 graspable
-  4cm cubes (`--pick-place-props`, on by default in `build_scene.py`). The table/cube
-  position was NOT guessed from human-arm intuition -- an initial placement at
-  X=+0.3..0.35, Z=0.45 (assuming ~30-40cm human-like reach) was empirically wrong.
-  Real joint sweeps (with properly-configured drives -- see the solver-iteration
-  finding below) showed this robot's actual reach envelope is much smaller and closer
-  to the base: X=-0.07..+0.03, Y=-0.09..-0.20 for the right arm (Z=0.87..1.05),
-  mirrored in Y for the left arm. Repositioned to X=-0.03, cubes at Y=-0.15/+0.15,
-  table top Z=0.80 -- verified a real joint config gets the wrist within 4.2cm of the
-  target cube.
+- **The `Office` environment was a real bug, not just an aesthetic choice, and got
+  replaced by `Simple_Warehouse`.** User reported "the scene starts from over the
+  building very far" and "the robot is not standing but 45 degree falling."
+  Root-caused both to the same asset: `Office/office.usd`'s world bbox is roughly
+  -528..535m in X, -294..382m in Y (verified via `BBoxCache` -- it's a full
+  multi-story building, not a reception room). (1) The robot spawned overlapping some
+  part of that building's geometry, and PhysX's separation impulse launched the whole
+  articulation across the room within ~30 physics steps (traced step-by-step: ends up
+  ~7.7m away, tipped 181 degrees). (2) Isaac Sim's "frame all" on stage-open zooms the
+  camera out to fit the *entire* stage bbox, which for a 1000m-scale building is what
+  looked like "over the building far away." Tested three replacements head-to-head
+  with the same 270-step translate/rotation trace: `Grid`, `Simple_Room`, and
+  `Simple_Warehouse` are all physically stable. `Simple_Room` was rejected anyway:
+  its big center table (`table_low_327`, 3.2x1.6m) sits at the origin with its top at
+  Z~=0.01 and the environment's invisible ground collision plane is AT table height
+  (visible wood floor is 78cm lower, Z~=-0.77) -- the robot unavoidably spawns
+  standing on furniture and driving off the edge leaves it hovering mid-air on the
+  invisible plane. `Simple_Warehouse/warehouse.usd` has a real floor at Z=0 and fits
+  the "factory" request. A close-up default camera pose is now baked into
+  `scene.usda` (`/OmniverseKit_Persp`, translate=(3.2,3.2,2.4)) so the GUI's initial
+  view never depends on "frame all" behavior, regardless of environment scale.
+- **`stage.Export()` FLATTENS the whole composition -- `scene.usda` must be written
+  via root-layer export instead.** Export() bakes every referenced asset's geometry
+  inline (verified: no reference arcs survive, only local `Flattened_Prototype_N`
+  prims); with the warehouse environment that produced a 233MB `scene.usda`, which
+  GitHub *rejected on push* (100MB hard limit). `build_scene.py` now authors the
+  stage directly into the output layer (`Sdf.Layer.CreateNew` + `Usd.Stage.Open`) and
+  saves that layer -- `scene.usda` stays ~18KB of reference arcs + overrides.
+  Consequences to keep in mind: (a) the robot must be referenced by RELATIVE path
+  (`./Aloha/Aloha.usda`) or the committed file breaks off this machine; (b) opening
+  the scene needs network the first time (CDN assets; Kit caches them); (c) diag/CI
+  scripts should open `scene.usda` by ABSOLUTE path -- in one verified case a
+  relative `--scene` arg made the relative robot reference silently fail to resolve
+  (environment loaded, robot missing, empty bbox) while absolute-path opens of the
+  same file were fine.
+- **A raw-authored root layer has NO physics scene -- Play simulates nothing without
+  one.** The old `new_stage()+Export()` flow silently inherited Isaac Sim's new-stage
+  template, which injects a physics scene prim; `Usd.Stage.Open` on a fresh layer
+  starts truly empty. Symptom: healthy rigid-body blocks (rigidBodyEnabled=True,
+  kinematic=False, collision+mass all composed -- checked attribute by attribute)
+  hung frozen mid-air through 300 played steps, in GUI-equivalent
+  `timeline.play()` runs. `verify_physics.py` PASSed the whole time and masked the
+  bug, because `isaacsim.core`'s SimulationManager bootstraps its own physics context
+  -- do not take "verify_physics passes" as proof that plain GUI Play works.
+  `build_scene.py` now authors `/World/PhysicsScene` explicitly.
+- **Pick-and-place setup: two official NVIDIA packing tables + four official colored
+  blocks, not hand-authored slabs.** Per request, tables are real props with legs
+  (`Props/PackingTable/packing_table.usd`: 2.474x0.782x1.083m, floor pivot, collision
+  physics baked in, comes with totes/crates) and must NOT overlap the robot anywhere
+  (an earlier slab-table attempt that overlapped the resting arms reproduced the
+  same PhysX separation-impulse explosion as the Office spawn: robot ended ~13.5m
+  away, tipped 252 degrees). Asset gotchas found while choosing (all BBoxCache-
+  measured): the raw `SM_HeavyDutyPackingTable_C02_01_physics.usd` variant is
+  authored in CENTIMETERS and composes 247m wide in a meters stage -- only the
+  assembled `packing_table.usd` is meter-scale; `SeattleLabTable/table.usd`'s pivot
+  sits 1.04m below its own geometry. Blocks are `Props/Blocks/{red,green,blue,
+  yellow}_block.usd` (4.7cm, RigidBody+Collision+Mass baked in). Placement: tables at
+  Y=+-0.85, long side facing the robot -- nearest edge |Y|=0.46 clears both the robot
+  bbox (0.31) and its in-place rotation swing radius sqrt(0.21^2+0.31^2)=0.375 (any
+  closer and turning the base in place clips a table corner). Blocks spawn ~3cm above
+  the work surface and settle at Z=1.0173 within ~30 steps (measured; the table's
+  bbox zmax=1.083 is the shelf frame, NOT the work surface, which is at ~0.994m).
+  **Measurement gotcha**: PhysX writes simulated transforms to the prim carrying
+  RigidBodyAPI -- in these block assets that's the Cube MESH CHILD
+  (`/World/Block*/Cube`), not the wrapper Xform. Tracking the wrapper shows the block
+  "frozen at spawn" forever while it is actually falling -- this false reading burned
+  a full debugging round before being caught.
 - **Real bug, not a mystery: the lift joint (`vertical_move`) was physically stuck
   near 0 regardless of commanded target**, confirmed by the user reporting "the up
   down limits are wrong." Root-caused properly rather than guessed at: ruled out

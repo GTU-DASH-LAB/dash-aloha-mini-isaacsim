@@ -152,6 +152,16 @@ COMMAND_HELP = {
                         "Use this after `base`/`arm`/`lift` commands to let motion settle.",
         "limits": "None, but very long waits will make the REPL unresponsive until done.",
     },
+    "sim": {
+        "usage": "sim <stop|play>",
+        "description": "Stop or restart the simulation timeline -- same effect as the "
+                        "Stop/Play buttons in the Isaac Sim GUI. While stopped, all "
+                        "motion commands are suspended (they print a notice instead of "
+                        "spamming PhysX warnings); on play, the articulation is "
+                        "re-initialized automatically and commands work again.",
+        "limits": "Joint targets reset to the actual joint state on resume -- "
+                  "commands sent before the stop do not carry over.",
+    },
     "help": {
         "usage": "help [command]",
         "description": "List all commands, or show detailed usage/limits for one command.",
@@ -277,6 +287,62 @@ if args.gui:
 _position_targets = art.get_joint_positions().copy()
 _velocity_targets = art.get_joint_velocities().copy()
 
+# --- Stop/Play guard ---
+# When the timeline is STOPPED (user presses Stop in the GUI, or `sim stop` in the
+# REPL), PhysX destroys the simulation view. Any set_joint_*_targets /
+# get_joint_positions / *_world_poses call after that logs a carb warning ("Physics
+# Simulation View is not created yet ...") -- and the control loops here issue those
+# calls EVERY FRAME, so a single GUI Stop press used to produce an endless warning
+# spam (~one per 5ms). On top of that, after Play is pressed again the Articulation
+# wrapper's physics handle is stale and must be re-initialize()d before commands work.
+_sim_guard = {"suspended": False}
+
+
+def sim_command_ready() -> bool:
+    """Per-frame gate for anything that touches PhysX through `art`.
+
+    Returns True when it's safe to send commands. Handles both transitions:
+    - playing -> stopped: prints ONE suspend notice, then returns False silently.
+    - stopped -> playing: re-initializes the articulation (the old physics view is
+      gone for good -- is_physics_handle_valid() documents that initialize() must be
+      called again), refreshes the cached target arrays (stale pre-stop targets must
+      not fire on resume), and resets the kinematic base-pose cache.
+    """
+    global _position_targets, _velocity_targets
+    if not timeline.is_playing():
+        if not _sim_guard["suspended"]:
+            _sim_guard["suspended"] = True
+            print("Simulation stopped -- commands suspended until Play resumes "
+                  "(press Play in the GUI, or `sim play` in the REPL).")
+        return False
+    if _sim_guard["suspended"] or not art.is_physics_handle_valid():
+        # Timeline is playing but the physics view is (or may be) stale -- rebuild.
+        # This can legitimately fail on the very first frame after Play while PhysX
+        # is still creating the view; return False and retry next frame.
+        try:
+            art.initialize()
+        except Exception:
+            return False
+        if not art.is_physics_handle_valid():
+            return False
+        _position_targets = art.get_joint_positions().copy()
+        _velocity_targets = art.get_joint_velocities().copy()
+        _base_pose["initialized"] = False
+        _sim_guard["suspended"] = False
+        print("Simulation resumed -- articulation re-initialized, commands active again.")
+    return True
+
+
+def _require_sim(quiet: bool = False) -> bool:
+    """Guard for user-triggered commands: like sim_command_ready() but tells the
+    user why their command did nothing."""
+    if sim_command_ready():
+        return True
+    if not quiet:
+        print("(ignored -- simulation is stopped; press Play in the GUI or type `sim play`)")
+    return False
+
+
 base_prim = stage.GetPrimAtPath("/World/Aloha/Geometry/base_link")
 xform_cache = UsdGeom.XformCache()
 
@@ -340,10 +406,13 @@ def _apply_kinematic_base_step(dt: float):
 def step_seconds(seconds: float):
     for _ in range(int(seconds / PHYSICS_DT)):
         kit.update()
-        _apply_kinematic_base_step(PHYSICS_DT)
+        if sim_command_ready():
+            _apply_kinematic_base_step(PHYSICS_DT)
 
 
 def set_arm_joint(side: str, joint_idx: int, radians: float, quiet: bool = False):
+    if not _require_sim(quiet=quiet):
+        return
     name = f"{side}_joint{joint_idx}"
     if name not in dof_names:
         if not quiet:
@@ -367,6 +436,8 @@ def set_gripper(side: str, action: str, quiet: bool = False):
 
 
 def set_lift(meters: float, quiet: bool = False):
+    if not _require_sim(quiet=quiet):
+        return
     meters = max(LIFT_MIN_M, min(LIFT_MAX_M, meters))
     if "vertical_move" not in dof_names:
         if not quiet:
@@ -384,6 +455,8 @@ def get_lift_target() -> float:
 
 
 def set_base_velocity(vx: float, vy: float, omega: float, quiet: bool = False):
+    if not _require_sim(quiet=quiet):
+        return
     # Wheel joints still spin at the visually-correct rate (real joint-level physics).
     wheel_speeds = body_to_wheel_speeds(vx, vy, omega)
     for wheel_name, speed in zip(WHEEL_NAMES, wheel_speeds):
@@ -404,6 +477,8 @@ def set_base_velocity(vx: float, vy: float, omega: float, quiet: bool = False):
 
 
 def print_status():
+    if not _require_sim():
+        return
     positions = art.get_joint_positions()[0].tolist()
     for name, pos in zip(dof_names, positions):
         print(f"  {name}: {pos:.4f}")
@@ -613,7 +688,11 @@ def run_joystick():
     try:
         while True:
             kit.update()
-            _apply_kinematic_base_step(PHYSICS_DT)
+            # Keep draining controller events even while stopped (so stale stick/
+            # button state doesn't fire on resume), but suspend all commands.
+            sim_ready = sim_command_ready()
+            if sim_ready:
+                _apply_kinematic_base_step(PHYSICS_DT)
 
             try:
                 while True:
@@ -651,7 +730,8 @@ def run_joystick():
             except queue.Empty:
                 pass
 
-            apply_joystick_state(state, button_state, last_gripper_press, mode_tracker)
+            if sim_ready:
+                apply_joystick_state(state, button_state, last_gripper_press, mode_tracker)
     except KeyboardInterrupt:
         print("\nStopped.")
 
@@ -715,7 +795,11 @@ def run_joystick_network(port: int):
     try:
         while True:
             kit.update()
-            _apply_kinematic_base_step(PHYSICS_DT)
+            # Same stop/play handling as run_joystick: keep the socket serviced even
+            # while stopped (so the bridge doesn't time out), but suspend commands.
+            sim_ready = sim_command_ready()
+            if sim_ready:
+                _apply_kinematic_base_step(PHYSICS_DT)
 
             if client_sock is None:
                 try:
@@ -748,7 +832,8 @@ def run_joystick_network(port: int):
                     client_sock = None
                     recv_buffer = b""
 
-            apply_joystick_state(state, button_state, last_gripper_press, mode_tracker)
+            if sim_ready:
+                apply_joystick_state(state, button_state, last_gripper_press, mode_tracker)
     except KeyboardInterrupt:
         print("\nStopped.")
 
@@ -799,7 +884,8 @@ def run_repl():
     running = True
     while running:
         kit.update()
-        _apply_kinematic_base_step(PHYSICS_DT)
+        if sim_command_ready():
+            _apply_kinematic_base_step(PHYSICS_DT)
         try:
             line = cmd_queue.get_nowait()
         except queue.Empty:
@@ -845,6 +931,14 @@ def run_repl():
                     take_screenshot(parts[1])
                 else:
                     print_command_help("screenshot")
+            elif cmd == "sim":
+                if len(parts) == 2 and parts[1] in ("stop", "play"):
+                    if parts[1] == "stop":
+                        timeline.stop()
+                    else:
+                        timeline.play()
+                else:
+                    print_command_help("sim")
             elif cmd == "help":
                 print_command_help(parts[1].lower() if len(parts) == 2 else None)
             elif cmd in ("quit", "exit"):

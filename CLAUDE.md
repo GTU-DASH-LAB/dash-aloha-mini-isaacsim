@@ -10,7 +10,7 @@
 Isaac Sim 6.0.1 simulation of **AlohaMini1** — a mobile robot (3-wheel omni base +
 vertical lift) carrying two SO-101 arms — built from the real URDF/mesh assets in
 [liyiteng/alohamini](https://github.com/liyiteng/alohamini) (Apache-2.0). Full physics,
-controllable from `scripts/control_terminal.py` (terminal) and, in principle, from the
+controllable from `scripts/control/control_terminal.py` (terminal) and, in principle, from the
 Isaac Sim UI (see Phase 5 caveat below — not independently verifiable from a headless
 environment). No ROS2 by default (see `plan.md` Phase 6 — ask before adding it).
 
@@ -46,7 +46,7 @@ environment). No ROS2 by default (see `plan.md` Phase 6 — ask before adding it
   17 DOF: `wheel1/2/3` (continuous), `vertical_move` (prismatic, base_link→vertical_link),
   `left_joint1..6` / `right_joint1..6` (revolute, mirror SO-101's Rotation/Pitch/Elbow/
   Wrist_Pitch/Wrist_Roll/Jaw). Joint limits/effort/velocity were all zeroed by the
-  exporter originally — now patched (`scripts/patch_urdf_joint_limits.py`).
+  exporter originally — now patched (`scripts/pipeline/patch_urdf_joint_limits.py`).
 - **19 mesh files** vendored under `assets/upstream_alohamini1/meshes/` (~15MB, no
   git-lfs needed).
 - **All constants (arm gains, lift range, wheel kinematics, jaw limits) live in one
@@ -67,22 +67,26 @@ environment). No ROS2 by default (see `plan.md` Phase 6 — ask before adding it
 
 ## File map
 
+See `ARCHITECTURE.md` for the full annotated layout + data-flow diagram. Short form:
+
 ```
-assets/upstream_alohamini1/   vendored URDF + meshes + config from liyiteng/alohamini
-assets/usd/Aloha/             imported USD (regenerate via urdf_import.py if URDF changes)
-assets/usd/scene.usda         composed scene: environment + robot + drives + collision fixes
-                               (regenerate: build_scene.py -> configure_physics.py -> fix_wheel_collision.py)
-scripts/alohamini1_specs.py   single source of truth for all physical constants
-scripts/patch_urdf_joint_limits.py   patches the URDF's joint limits (already applied)
-scripts/build_scene.py        composes environment + robot -> scene.usda
-scripts/configure_physics.py  applies joint drives (arms, lift, wheels) onto scene.usda
-scripts/fix_wheel_collision.py   fixes the base-shell-blocks-wheels collision bug (see Gotchas)
-scripts/verify_import.py      headless import sanity check + screenshot
-scripts/verify_physics.py     headless physics stability check + joint command test
-scripts/control_terminal.py   Phase 4 terminal control (one-shot + REPL)
-docs/                         milestone screenshots + import logs
-plan.md                       phased task list, checkboxes
-CLAUDE.md                     this file
+assets/upstream_alohamini1/   vendored URDF + meshes (liyiteng/alohamini, Apache-2.0)
+assets/usd/Aloha/             imported robot USD (regenerate if URDF changes)
+assets/usd/scene.usda         composed scene (~18KB of references + overrides --
+                               regenerate ONLY via scripts/rebuild_all.sh)
+scripts/alohamini1_specs.py   single source of truth for all constants + camera paths
+scripts/rebuild_all.sh        the 4-step pipeline runner + verification
+scripts/pipeline/             build_scene -> configure_physics -> fix_wheel_collision
+                               -> add_cameras (+ verify_physics, patch_urdf_joint_limits)
+scripts/control/              control_terminal.py (REPL/joystick/network) +
+                               joystick_bridge_local.py (runs on YOUR laptop)
+scripts/cameras/              capture_cameras.py (LeRobot frames) + view_cameras.py
+                               (GUI live viewports)
+scripts/tools/                one-off debug/inspection helpers
+third_party/lerobot_alohamini git submodule -- official LeRobot integration (camera
+                               specs + kinematics source of truth)
+docs/                         verification screenshots ; ARCHITECTURE.md ; plan.md ;
+                               CLAUDE.md (this file)
 ```
 
 ## Gotchas hit so far
@@ -105,7 +109,7 @@ CLAUDE.md                     this file
   diagnostics (probing straight down at each wheel's XY position consistently hit
   `base_link`, not the wheel, at the wrong height). Fixed by disabling the shell's
   collision entirely and giving each wheel its own explicit sphere collider + friction
-  material (`scripts/fix_wheel_collision.py`).
+  material (`scripts/pipeline/fix_wheel_collision.py`).
 - **USD instance proxies can't be edited directly.** The offending collision prims
   were point-instanced (shared prototypes); authoring overrides on them raised
   `"authoring to an instance proxy is not allowed"`. Fix: walk up the prim ancestry
@@ -147,7 +151,7 @@ CLAUDE.md                     this file
 - **AnyDesk (and remote desktop tools generally) don't forward USB/gamepad devices**,
   only keyboard/mouse/screen — confirmed via web search, not assumed. If the
   controller is on a different machine than the one running Isaac Sim, use
-  `--joystick-network` (`control_terminal.py`) + `scripts/joystick_bridge_local.py`
+  `--joystick-network` (`control_terminal.py`) + `scripts/control/joystick_bridge_local.py`
   (runs on the controller's machine) instead of `--joystick`. Deliberately built on
   **TCP, not UDP**, specifically so a plain `ssh -L` tunnel works with no extra tools
   — `ssh -L` only forwards TCP by default, and getting UDP through would need
@@ -338,9 +342,9 @@ CLAUDE.md                     this file
   `third_party/lerobot_alohamini` (submodule -- the official LeRobot integration for
   this robot, same repo the wheel/lift constants came from) defines cameras
   `forward` / `wrist_left` / `wrist_right` (plus `backward`/`chest`, not implemented),
-  all OpenCV 640x480 @ 30fps -- see `config_alohamini.py`. `scripts/add_cameras.py`
+  all OpenCV 640x480 @ 30fps -- see `config_alohamini.py`. `scripts/pipeline/add_cameras.py`
   (step 4/4 of `rebuild_all.sh`) authors matching USD cameras on the robot links;
-  `scripts/capture_cameras.py` returns frames as `observation.images.<name>` HxWx3
+  `scripts/cameras/capture_cameras.py` returns frames as `observation.images.<name>` HxWx3
   uint8 dicts (LeRobot convention), sampling every 2nd physics step = 30fps.
   Findings baked into the mount poses (all measured, see comments in
   `add_cameras.py`):
@@ -374,7 +378,7 @@ environment → joint drives applied → wheel collision fixed → terminal cont
   robot visibly repositioned from base driving).
 - **Physics**: zero NaN/Inf across all verification runs, base height stable, arm/lift
   joints converge exactly to commanded targets (position drives, verified repeatedly).
-- **Terminal control** (`scripts/control_terminal.py`): arm joints, gripper, lift all
+- **Terminal control** (`scripts/control/control_terminal.py`): arm joints, gripper, lift all
   work correctly, including when chained together (after fixing the target-clobbering
   bug). Base locomotion works via kinematic drive, **used sequentially, not
   simultaneously with new arm commands** (documented limitation above).

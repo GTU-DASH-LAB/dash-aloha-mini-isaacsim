@@ -6,12 +6,14 @@ from the Isaac Sim UI.
 
 ![Robot after a control sequence: lift extended, arms moved, base driven](docs/control_demo.png)
 
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — **start here to understand the repo**: layout,
+  data flow, the scene pipeline, control paths, cameras
 - [`plan.md`](plan.md) — phased implementation plan with checkboxes
 - [`CLAUDE.md`](CLAUDE.md) — living project doc (facts, decisions, gotchas — kept current
   as work progresses)
 - [`assets/upstream_alohamini1/`](assets/upstream_alohamini1/) — vendored URDF + meshes
   from [liyiteng/alohamini](https://github.com/liyiteng/alohamini) (Apache-2.0)
-- [`scripts/control_terminal.py`](scripts/control_terminal.py) — terminal control (see
+- [`scripts/control/control_terminal.py`](scripts/control/control_terminal.py) — terminal control (see
   Quick Start below)
 
 Status: Phases 0-4 done and verified (import, physics, terminal control). Phase 5 (UI
@@ -68,10 +70,10 @@ Control it from the terminal:
 
 ```bash
 # One-shot
-~/isaacsim/python.sh scripts/control_terminal.py --arm left 1 0.5 --settle 2
+~/isaacsim/python.sh scripts/control/control_terminal.py --arm left 1 0.5 --settle 2
 
 # Interactive
-~/isaacsim/python.sh scripts/control_terminal.py --repl
+~/isaacsim/python.sh scripts/control/control_terminal.py --repl
 > arm left 1 0.5
 > gripper right close
 > lift 0.3
@@ -108,12 +110,24 @@ submodule; run `git submodule update --init` after cloning):
 | `wrist_left` | left gripper body (link5) | along the gripper, fingers at frame bottom |
 | `wrist_right` | right gripper body (link5) | mirror of wrist_left |
 
+**See all camera views live in Isaac Sim** (main viewport + one window per camera,
+physics running — command the robot from a second terminal and watch the wrist views
+move):
+
+```bash
+~/isaacsim/python.sh scripts/cameras/view_cameras.py
+```
+
+(Or manually in any Isaac Sim viewport: camera icon → Cameras → `camera_forward` /
+`camera_wrist_left` / `camera_wrist_right`; Window → Viewport → Viewport 2 for extra
+viewports.)
+
 Grab frames in LeRobot's observation format (`observation.images.<name>` →
 480×640×3 uint8):
 
 ```bash
 # one frame per camera to docs/, plus a motion self-test
-~/isaacsim/python.sh scripts/capture_cameras.py --save-dir docs --motion-test
+~/isaacsim/python.sh scripts/cameras/capture_cameras.py --save-dir docs --motion-test
 ```
 
 For episode recording, import `get_camera_observation()` from that script (or copy
@@ -128,7 +142,7 @@ Note: the cameras are part of the scene build — if you rebuild, always use
 ## PS4 controller control
 
 ```bash
-~/isaacsim/python.sh scripts/control_terminal.py --joystick --gui
+~/isaacsim/python.sh scripts/control/control_terminal.py --joystick --gui
 ```
 
 Needs the `evdev` package (`~/isaacsim/python.sh -m pip install evdev`) and your user
@@ -141,12 +155,12 @@ sudo usermod -aG input $USER   # then log out and back in
 Mapping: **L1**=control right arm, **L2**=control left arm, **L1+L2 together**=control
 both arms mirrored (opposite movement), **R2**=control the base. Left stick and right
 stick move different joints/axes depending on which mode is active — see the full
-mapping table in `scripts/control_terminal.py`'s module docstring.
+mapping table in `scripts/control/control_terminal.py`'s module docstring.
 
 **This has not been tested against a physical controller** — none was connected in the
 environment it was built in. It's implemented against the standard Linux `evdev` codes
 for a DualShock 4, but exact button/axis codes can vary by driver. Run
-`scripts/control_terminal.py --joystick-debug` first to print raw events from your
+`scripts/control/control_terminal.py --joystick-debug` first to print raw events from your
 controller and confirm they match `JOYSTICK_MAP` at the top of the joystick section —
 adjust the numbers there if your controller reports different codes.
 
@@ -158,13 +172,13 @@ you're remoting into this one, use the network bridge instead of `--joystick`:
 
 **On this machine** (the one running Isaac Sim):
 ```bash
-~/isaacsim/python.sh scripts/control_terminal.py --joystick-network --port 9999 --gui
+~/isaacsim/python.sh scripts/control/control_terminal.py --joystick-network --port 9999 --gui
 ```
 
 **On your local machine**:
 ```bash
 python3 -m pip install pygame
-python3 scripts/joystick_bridge_local.py --host <this-machine> --port 9999
+python3 scripts/control/joystick_bridge_local.py --host <this-machine> --port 9999
 ```
 
 If your local machine can reach this one directly (same LAN — this machine's address

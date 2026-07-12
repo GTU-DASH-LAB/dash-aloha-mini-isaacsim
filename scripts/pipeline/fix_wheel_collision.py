@@ -16,14 +16,14 @@ Fix:
    ZERO physics materials anywhere before this -- confirmed via a full stage traverse).
 
 Usage:
-    ~/isaacsim/python.sh scripts/fix_wheel_collision.py
+    ~/isaacsim/python.sh scripts/pipeline/fix_wheel_collision.py
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
 from alohamini1_specs import WHEEL_RADIUS_M  # noqa: E402
 
 parser = argparse.ArgumentParser()

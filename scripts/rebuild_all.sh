@@ -12,16 +12,16 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 echo "=== 1/4 build_scene.py ==="
-~/isaacsim/python.sh scripts/build_scene.py "$@"
+~/isaacsim/python.sh scripts/pipeline/build_scene.py "$@"
 
 echo "=== 2/4 configure_physics.py ==="
-~/isaacsim/python.sh scripts/configure_physics.py
+~/isaacsim/python.sh scripts/pipeline/configure_physics.py
 
 echo "=== 3/4 fix_wheel_collision.py ==="
-~/isaacsim/python.sh scripts/fix_wheel_collision.py
+~/isaacsim/python.sh scripts/pipeline/fix_wheel_collision.py
 
 echo "=== 4/4 add_cameras.py ==="
-~/isaacsim/python.sh scripts/add_cameras.py
+~/isaacsim/python.sh scripts/pipeline/add_cameras.py
 
 echo "=== Done. Verifying... ==="
-~/isaacsim/python.sh scripts/verify_physics.py
+~/isaacsim/python.sh scripts/pipeline/verify_physics.py

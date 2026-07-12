@@ -2,7 +2,7 @@
 position and confirm it actually reaches the target.
 
 Usage:
-    ~/isaacsim/python.sh scripts/verify_physics.py
+    ~/isaacsim/python.sh scripts/pipeline/verify_physics.py
 """
 
 import argparse
@@ -23,6 +23,7 @@ from pxr import UsdGeom  # noqa: E402
 from isaacsim.core.prims import Articulation  # noqa: E402
 import numpy as np  # noqa: E402
 
+# STEP 1: open the composed scene and wait for all referenced assets to load.
 usd_context = omni.usd.get_context()
 usd_context.open_stage(args.scene)
 stage = usd_context.get_stage()
@@ -32,6 +33,7 @@ stage.Load()
 for _ in range(10):
     kit.update()
 
+# STEP 2: start physics and wrap the robot in an Articulation handle.
 timeline = omni.timeline.get_timeline_interface()
 timeline.play()
 for _ in range(5):
@@ -53,6 +55,8 @@ def get_base_height():
     return m.ExtractTranslation()[2]
 
 
+# STEP 3: stability check -- 120 steps under gravity; the base must neither sink nor
+# float, and no joint may go NaN/Inf.
 heights = []
 for i in range(120):
     kit.update()
@@ -68,7 +72,9 @@ inf_found = np.any(np.isinf(positions)) or np.any(np.isinf(velocities))
 print(f"NaN in joint state: {nan_found}, Inf in joint state: {inf_found}")
 print(f"Joint positions after 120 steps: {dict(zip(dof_names, positions[0].tolist()))}")
 
-# Command left_joint1 (Rotation) to a nonzero target and see if it gets there
+# STEP 4: convergence check -- command one arm joint to a nonzero target and require
+# it to actually get there (this is what catches a scene whose drives were wiped by a
+# bare build_scene.py run -- see rebuild_all.sh).
 if "left_joint1" in dof_names:
     idx = dof_names.index("left_joint1")
     target = 0.5  # radians, well within the +-1.92 rad limit

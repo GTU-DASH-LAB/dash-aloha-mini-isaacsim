@@ -1,12 +1,12 @@
 """Phase 4: terminal control for the AlohaMini1 simulation.
 
 Two modes:
-  One-shot:  ~/isaacsim/python.sh scripts/control_terminal.py --arm left 1 0.5 --settle 2
-  REPL:      ~/isaacsim/python.sh scripts/control_terminal.py --repl
+  One-shot:  ~/isaacsim/python.sh scripts/control/control_terminal.py --arm left 1 0.5 --settle 2
+  REPL:      ~/isaacsim/python.sh scripts/control/control_terminal.py --repl
 
 Add --gui to open a visible Isaac Sim window (needs a display) so you can watch the
 robot while typing commands in the same terminal:
-  ~/isaacsim/python.sh scripts/control_terminal.py --repl --gui
+  ~/isaacsim/python.sh scripts/control/control_terminal.py --repl --gui
 
 REPL commands:
   arm <left|right> <1-6> <radians>   set one arm joint position target
@@ -23,7 +23,7 @@ REPL commands:
 PS4 controller mode (needs a controller connected + the `evdev` package + your user
 in the `input` group -- run `sudo usermod -aG input $USER` and log back in if you get
 a Permission Denied error reading /dev/input):
-  ~/isaacsim/python.sh scripts/control_terminal.py --joystick --gui
+  ~/isaacsim/python.sh scripts/control/control_terminal.py --joystick --gui
 
   L1 held            -> control the RIGHT arm
   L2 held             -> control the LEFT arm
@@ -48,6 +48,24 @@ a Permission Denied error reading /dev/input):
   a physical controller in this environment (none was connected). Run with
   --joystick-debug first to print raw events and confirm/adjust the codes in
   JOYSTICK_MAP below if your controller reports something different.
+
+How this file is organized (top to bottom):
+  1. COMMAND_HELP + print_command_help()   -- REPL help text, one entry per command
+  2. argparse + SimulationApp startup      -- must create SimulationApp before any
+                                              omni/isaacsim import (Kit loads then)
+  3. Stage open + timeline.play() + Articulation init
+  4. sim_command_ready() / _require_sim()  -- the Stop/Play guard: everything that
+                                              touches PhysX goes through this
+  5. Kinematic base drive                  -- _apply_kinematic_base_step(), called
+                                              every frame by every loop (see comment
+                                              there for why it's kinematic)
+  6. Command functions                     -- set_arm_joint / set_gripper / set_lift /
+                                              set_base_velocity / status / screenshot
+  7. Joystick machinery                    -- JOYSTICK_MAP, rates, apply_joystick_state()
+                                              (shared by local + network paths)
+  8. The four entry modes                  -- run_joystick / run_joystick_network /
+                                              run_one_shot / run_repl, selected at the
+                                              bottom of the file
 """
 
 import argparse
@@ -69,7 +87,7 @@ except ImportError:
         print("Note: no readline module available -- command history (Up arrow) is "
               "disabled. Run: ~/isaacsim/python.sh -m pip install gnureadline")
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
 from alohamini1_specs import (  # noqa: E402
     ARM_JOINT_GAINS,
     ARM_JOINT_LIMITS_RAD,
@@ -206,7 +224,7 @@ parser.add_argument("--gui", action="store_true", help="Open a visible window in
 parser.add_argument("--joystick", action="store_true", help="PS4 controller control mode (see module docstring)")
 parser.add_argument("--joystick-network", action="store_true",
                      help="Same as --joystick, but reads controller state from UDP packets sent by "
-                          "scripts/joystick_bridge_local.py on another machine, instead of a local device")
+                          "scripts/control/joystick_bridge_local.py on another machine, instead of a local device")
 parser.add_argument("--port", type=int, default=9999, help="UDP port for --joystick-network")
 parser.add_argument("--joystick-debug", action="store_true",
                      help="Just print raw controller events (no simulation) -- use this to verify/calibrate "
@@ -739,7 +757,7 @@ def run_joystick():
 def run_joystick_network(port: int):
     """Same control logic as run_joystick(), but the controller state comes from
     newline-delimited JSON messages sent over a TCP connection by
-    scripts/joystick_bridge_local.py running on a different machine, instead of a
+    scripts/control/joystick_bridge_local.py running on a different machine, instead of a
     locally-connected /dev/input device. See that script and README.md for the local
     side and network setup.
 
@@ -764,7 +782,7 @@ def run_joystick_network(port: int):
     server_sock.setblocking(False)
     print(f"Listening for a joystick bridge TCP connection on 0.0.0.0:{port}")
     print("L1=right arm  L2=left arm  L1+L2=both (mirrored)  R2=base  -- see module docstring for axis mapping")
-    print("Waiting for scripts/joystick_bridge_local.py to connect from the other machine...")
+    print("Waiting for scripts/control/joystick_bridge_local.py to connect from the other machine...")
 
     state = {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0, "l2": 0, "r2": 0, "hat_y": 0}
     button_state = {"l1_held": False, "l2_held": False, "r2_held": False}

@@ -2,7 +2,7 @@
 be ported onto the AlohaMini1 URDF (whose exporter zeroed out all joint limits).
 
 Usage:
-    ~/isaacsim/python.sh scripts/read_so101_joint_limits.py
+    ~/isaacsim/python.sh scripts/tools/read_so101_joint_limits.py
 """
 
 from isaacsim import SimulationApp

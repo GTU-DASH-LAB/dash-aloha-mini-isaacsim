@@ -14,17 +14,17 @@ official cameras are 30 fps).
 
 Usage:
     # Save one frame per camera to docs/ and exit
-    ~/isaacsim/python.sh scripts/capture_cameras.py --save-dir docs
+    ~/isaacsim/python.sh scripts/cameras/capture_cameras.py --save-dir docs
 
     # Same, plus verify the wrist views actually change when the arm moves
-    ~/isaacsim/python.sh scripts/capture_cameras.py --motion-test
+    ~/isaacsim/python.sh scripts/cameras/capture_cameras.py --motion-test
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
 from alohamini1_specs import CAMERA_FPS, CAMERA_PRIM_PATHS, CAMERA_RESOLUTION  # noqa: E402
 
 parser = argparse.ArgumentParser()

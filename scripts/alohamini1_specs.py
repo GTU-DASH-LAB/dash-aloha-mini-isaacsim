@@ -21,7 +21,7 @@ ARM_JOINT_GAINS = {
     6: {"name": "Jaw", "stiffness": 4, "damping": 0.3, "effort": 30},
 }
 
-# Joint limits in radians, same numbers as scripts/patch_urdf_joint_limits.py's
+# Joint limits in radians, same numbers as scripts/pipeline/patch_urdf_joint_limits.py's
 # ARM_JOINT_LIMITS (that script converts from the degree values read off
 # SO-ARM101-USD.usd; kept as a separate radian copy here for convenience -- if you
 # ever change one, change both). Used for REPL help text and clamping.
@@ -77,7 +77,7 @@ LIFT_DAMPING = 200.0     # N*s/m -- engineering estimate
 # "wrist_left"/"wrist_right" are scaffolded in the same config) ---
 CAMERA_RESOLUTION = (640, 480)
 CAMERA_FPS = 30
-# Prim paths where scripts/add_cameras.py authors the USD cameras (children of the
+# Prim paths where scripts/pipeline/add_cameras.py authors the USD cameras (children of the
 # robot links so they move with the wrist/column). LeRobot observation keys are
 # "observation.images.<name>" for each <name> key here.
 _ARM_CHAIN = "/World/Aloha/Geometry/base_link/vertical_link"

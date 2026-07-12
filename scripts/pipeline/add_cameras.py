@@ -17,14 +17,14 @@ Runs as part of scripts/rebuild_all.sh (build_scene.py recreates scene.usda from
 scratch, wiping these -- same reason configure_physics.py must re-run).
 
 Usage:
-    ~/isaacsim/python.sh scripts/add_cameras.py
+    ~/isaacsim/python.sh scripts/pipeline/add_cameras.py
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
 from alohamini1_specs import CAMERA_PRIM_PATHS  # noqa: E402
 
 parser = argparse.ArgumentParser()

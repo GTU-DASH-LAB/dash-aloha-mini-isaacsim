@@ -10,14 +10,14 @@ Edits are authored directly onto scene.usda (sparse overrides on top of the refe
 Aloha.usda/environment content -- standard USD workflow, doesn't require flattening).
 
 Usage:
-    ~/isaacsim/python.sh scripts/configure_physics.py
+    ~/isaacsim/python.sh scripts/pipeline/configure_physics.py
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
 from alohamini1_specs import (  # noqa: E402
     ARM_JOINT_GAINS,
     ARM_SOLVER_POSITION_ITERATIONS,

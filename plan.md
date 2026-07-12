@@ -50,7 +50,7 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
 - [x] Read joint limits/effort/velocity off the existing `SO-ARM101-USD.usd` (via a
       small Isaac Sim script using the USD Physics schema) and apply the same numbers to
       `left_joint1..6` / `right_joint1..6` in `Aloha.urdf`
-      (`scripts/read_so101_joint_limits.py`, `scripts/patch_urdf_joint_limits.py`)
+      (`scripts/tools/read_so101_joint_limits.py`, `scripts/pipeline/patch_urdf_joint_limits.py`)
 - [x] Set a placeholder `vertical_move` (lift) travel range (0-0.30m) — no authoritative
       spec value found; **still needs empirical correction**, tracked as an open item
 - [x] Decide + document collision geometry strategy: used `--collision-from-visuals
@@ -74,7 +74,7 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       default_environment.usd` (flat grid, no furniture) — clean, robot fully visible.
 - [x] Place the imported robot on the ground plane (origin, `(0,0,0)` — matches the
       URDF's own base_link origin, sits correctly on the grid with no floating/sinking)
-- [x] **Verify**: `scripts/build_scene.py` composes environment + robot into
+- [x] **Verify**: `scripts/pipeline/build_scene.py` composes environment + robot into
       `assets/usd/scene.usda`, screenshot confirms — base grounded correctly, lift
       column visible, both arms symmetric with visible gripper/jaw geometry, proper
       lighting/shadows/materials all rendering. This is the milestone screenshot:
@@ -84,7 +84,7 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
 - [x] Apply patched joint limits from Phase 1 (already baked into the URDF, re-imported)
 - [x] Arm joints: position drives (`UsdPhysics.DriveAPI`) with the stiffness/damping/
       effort values ported from `so101.py` (table in `CLAUDE.md`/`alohamini1_specs.py`) —
-      `scripts/configure_physics.py`, applied on all 12 `{side}_joint{1-6}` joints
+      `scripts/pipeline/configure_physics.py`, applied on all 12 `{side}_joint{1-6}` joints
 - [x] Lift joint: position drive, `alohamini1_specs.LIFT_STIFFNESS/DAMPING` (engineering
       estimates — real hardware spec is velocity/tick-based, not N/(m/s), see
       `alohamini1_specs.py` comments)
@@ -98,7 +98,7 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       wheels ever touched (confirmed via raycast diagnostics: probing straight down at
       each wheel's XY position hit `base_link`, not the wheel, at the wrong height).
       Fixed by disabling the shell's collision and giving each wheel an explicit
-      sphere collider + friction material (`scripts/fix_wheel_collision.py` — also had
+      sphere collider + friction material (`scripts/pipeline/fix_wheel_collision.py` — also had
       to work around USD instance-proxy restrictions, since the offending prims were
       point-instanced). After that fix, wheel-ground contact was correctly registered,
       but **actual traction stayed near zero** even for one wheel spinning alone in
@@ -108,7 +108,7 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
 - [x] Base_link: free rigid body (not fixed), confirmed resting stably on ground plane
       (height constant at ~0.007m across 120 steps, not sinking/floating)
 - [x] Masses/inertia: kept as-is from the SolidWorks export (not overwritten)
-- [x] **Verify**: `scripts/verify_physics.py` — 120 steps, zero NaN/Inf in joint state,
+- [x] **Verify**: `scripts/pipeline/verify_physics.py` — 120 steps, zero NaN/Inf in joint state,
       base height stable, all joints hold rest pose under gravity (drift <0.004 rad on
       arm joints with drives; wheels drift more under velocity-drive-to-zero but don't
       explode). Commanded `left_joint1` to 0.5 rad, **achieved exactly 0.5 rad (zero
@@ -116,14 +116,14 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       Screenshot (`docs/physics_verification.png`) visually confirms the arm moved.
 
 ## Phase 4 — Control: terminal script
-- [x] `scripts/control_terminal.py` — one-shot (`--arm/--lift/--base`) and interactive
+- [x] `scripts/control/control_terminal.py` — one-shot (`--arm/--lift/--base`) and interactive
       `--repl` modes. Commands: `arm`, `gripper`, `lift`, `base`, `stop`, `status`,
       `pose`, `screenshot`, `wait`, `quit`.
 - [x] Both UX modes implemented (one-shot argparse + REPL, as planned)
 - [x] **Verify**: real bugs found and fixed along the way, not just "ran without
       crashing":
       1. **Wheel-ground collision bug** (see Phase 3 update below) — fixed via
-         `scripts/fix_wheel_collision.py`.
+         `scripts/pipeline/fix_wheel_collision.py`.
       2. **Wheel velocity-drive oscillation** — damping of 1e5 was wildly oversized for
          the wheel's tiny rotational inertia (~5e-5 kg·m²), causing bang-bang
          oscillation (wheel hit -19.7 rad/s against a -2.6 rad/s target). Fixed:
@@ -195,13 +195,13 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
 - [x] Add `third_party/lerobot_alohamini` submodule (official LeRobot integration for
       this robot) — source of truth for the camera set: `forward` + `wrist_left` +
       `wrist_right`, all 640x480 @ 30fps (`config_alohamini.py`).
-- [x] `scripts/add_cameras.py` (step 4/4 in `rebuild_all.sh`): USD cameras authored on
+- [x] `scripts/pipeline/add_cameras.py` (step 4/4 in `rebuild_all.sh`): USD cameras authored on
       the robot links — wrist cams on `link5` (gripper body; `link6` is the moving jaw
       finger), forward cam above the lift column facing the manipulation front (-Y,
       measured — both grippers work toward -Y). Poses tuned by rendering each camera
       and iterating (first attempt was upside down AND the forward cam faced +Y).
       **Verified**: `docs/cam_*.png` renders show correct framing.
-- [x] `scripts/capture_cameras.py`: LeRobot observation format
+- [x] `scripts/cameras/capture_cameras.py`: LeRobot observation format
       (`observation.images.<name>` → 480x640x3 uint8, sample every 2nd physics step
       for 30fps). **Verified**: all three frames correct shape/dtype; motion test
       PASS (mean abs pixel diff 50-92 after a lift+arm move — all views actually

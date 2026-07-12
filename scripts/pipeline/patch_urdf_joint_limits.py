@@ -5,7 +5,7 @@ out (lower=upper=effort=velocity=0), which is a known exporter artifact -- see
 CLAUDE.md. This script ports real values:
 
 - Arm joints (`{side}_joint1..6`): limits read off NVIDIA's SO-ARM101-USD.usd via
-  scripts/read_so101_joint_limits.py (degrees -> radians), effort from
+  scripts/tools/read_so101_joint_limits.py (degrees -> radians), effort from
   Sim-to-Real-SO-101-Workshop's so101.py (effort_limit_sim=30 for all joints, their
   tuned simulation value, not the raw servo torque spec).
 - `vertical_move` (lift): no authoritative spec found; placeholder range, flagged for

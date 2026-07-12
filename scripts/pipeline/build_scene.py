@@ -3,7 +3,7 @@ plus the imported AlohaMini1 robot, referenced on top of it. Saves the result so
 scripts (physics config, control) can just open scene.usda directly.
 
 Usage:
-    ~/isaacsim/python.sh scripts/build_scene.py
+    ~/isaacsim/python.sh scripts/pipeline/build_scene.py
 """
 
 import argparse

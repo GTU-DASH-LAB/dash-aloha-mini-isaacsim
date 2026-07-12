@@ -2,7 +2,7 @@
 tree, and capture a viewport screenshot for visual inspection.
 
 Usage:
-    ~/isaacsim/python.sh scripts/verify_import.py
+    ~/isaacsim/python.sh scripts/tools/verify_import.py
 """
 
 import argparse

@@ -1,7 +1,7 @@
 """Run this on YOUR LOCAL machine (the one with the PS4 controller plugged in), not on
 the Isaac Sim machine. Reads the controller with pygame and streams its state as
 newline-delimited JSON over a TCP connection to
-scripts/control_terminal.py --joystick-network running on the remote box.
+scripts/control/control_terminal.py --joystick-network running on the remote box.
 
 Setup on your Mac:
     python3 -m pip install pygame

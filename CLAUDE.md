@@ -315,12 +315,51 @@ CLAUDE.md                     this file
   0.5990-0.5994 across multiple rebuilds). Raised to position=128/velocity=16.
 - **Process safeguard added**: `build_scene.py` recreates `scene.usda` from scratch
   every time (fresh references), which silently wipes out everything
-  `configure_physics.py`/`fix_wheel_collision.py` layered on top -- this exact mistake
-  happened once (an environment swap left every joint drive at stiffness=0/damping=0,
-  no error, just non-functional joints, only caught because a reach test showed
-  target=-1.9 converging to actual=0.30). Added `scripts/rebuild_all.sh` to always run
-  the three steps in the correct order plus a final `verify_physics.py` check -- use
-  this instead of calling `build_scene.py` alone.
+  `configure_physics.py`/`fix_wheel_collision.py`/`add_cameras.py` layered on top --
+  this exact mistake happened once (an environment swap left every joint drive at
+  stiffness=0/damping=0, no error, just non-functional joints, only caught because a
+  reach test showed target=-1.9 converging to actual=0.30). Added
+  `scripts/rebuild_all.sh` to always run all four steps in the correct order plus a
+  final `verify_physics.py` check -- use this instead of calling `build_scene.py`
+  alone.
+- **GUI Stop used to spam "Physics Simulation View is not created yet" warnings
+  forever.** Timeline STOP destroys PhysX's simulation view; the control loops in
+  `control_terminal.py` command every frame, so each frame logged a carb warning
+  (~one per 5ms, user-reported). And after Play, the `Articulation`'s physics handle
+  is stale -- `is_physics_handle_valid()` documents that `initialize()` must be
+  called again, otherwise commands silently no-op. Fixed with a per-frame
+  `sim_command_ready()` gate: one suspend notice on stop, full re-init + cached
+  target-array refresh on resume (stale pre-stop targets must not fire), controller
+  events/sockets still serviced while suspended. `sim stop|play` REPL command mirrors
+  the GUI buttons and makes this path testable headless (verified: zero warnings in a
+  scripted stop/command/resume session; joint converged to exactly 0.8 rad after
+  resume).
+- **Robot cameras follow the OFFICIAL LeRobot camera set, not invented names.**
+  `third_party/lerobot_alohamini` (submodule -- the official LeRobot integration for
+  this robot, same repo the wheel/lift constants came from) defines cameras
+  `forward` / `wrist_left` / `wrist_right` (plus `backward`/`chest`, not implemented),
+  all OpenCV 640x480 @ 30fps -- see `config_alohamini.py`. `scripts/add_cameras.py`
+  (step 4/4 of `rebuild_all.sh`) authors matching USD cameras on the robot links;
+  `scripts/capture_cameras.py` returns frames as `observation.images.<name>` HxWx3
+  uint8 dicts (LeRobot convention), sampling every 2nd physics step = 30fps.
+  Findings baked into the mount poses (all measured, see comments in
+  `add_cameras.py`):
+  - Wrist cameras mount on `link5` (the gripper body after Wrist_Roll) -- `link6` is
+    the MOVING jaw finger, the wrong mount point (also an instance; link5 is not).
+  - The manipulation front is **-Y** -- BOTH grippers work toward -Y (arms are
+    mirrored in X, not Y; measured from link frames/bboxes) -- while the driving
+    "forward" (vx) is +X. The forward camera faces -Y.
+  - Rotation gotcha: with `rotateXYZ=(x, 0, 180)`, view = (0, -sin x, -cos x) and
+    image-up = (0, -cos x, sin x). The first naive attempt rendered upside down AND
+    the forward camera actually faced +Y (staring at the rear table) -- caught by
+    rendering every camera and LOOKING, not by trusting the math.
+  - The forward camera must sit in FRONT of the column's front face (world
+    y<=-0.31) and high above it (z~=1.21): behind-the-column placements are occluded
+    by the column's own top corner (ray-checked), and low placements sit nearly
+    level with the 0.994m table surface so the near tabletop fills the frame.
+  - Verified end-to-end: all three frames (480,640,3) uint8, and a motion test
+    (lift 0.3 + both arms pitch) changes every view (mean abs pixel diff 50-92) --
+    `docs/cam_*.png` and `docs/capture_*_moved.png`.
 
 ## Current status
 

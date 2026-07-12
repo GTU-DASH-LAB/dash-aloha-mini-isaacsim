@@ -95,6 +95,36 @@ with the wrong number of arguments (e.g. just `arm` or `base` alone). Command hi
 ~/isaacsim/python.sh -m pip install gnureadline
 ```
 
+## Robot cameras + data collection (LeRobot-compatible)
+
+The robot carries three cameras matching the **official AlohaMini LeRobot config**
+(names, 640x480 resolution, 30fps — from
+[`third_party/lerobot_alohamini`](third_party/lerobot_alohamini), vendored as a
+submodule; run `git submodule update --init` after cloning):
+
+| Camera | Mount | View |
+|---|---|---|
+| `forward` | above the lift column | front workspace/table ([docs/cam_forward.png](docs/cam_forward.png)) |
+| `wrist_left` | left gripper body (link5) | along the gripper, fingers at frame bottom |
+| `wrist_right` | right gripper body (link5) | mirror of wrist_left |
+
+Grab frames in LeRobot's observation format (`observation.images.<name>` →
+480×640×3 uint8):
+
+```bash
+# one frame per camera to docs/, plus a motion self-test
+~/isaacsim/python.sh scripts/capture_cameras.py --save-dir docs --motion-test
+```
+
+For episode recording, import `get_camera_observation()` from that script (or copy
+the ~15-line pattern) and sample every 2nd physics step — physics runs at 60Hz, the
+official cameras are 30fps. The camera prim paths live in
+`scripts/alohamini1_specs.py` (`CAMERA_PRIM_PATHS`) if you want to wire them into
+your own pipeline.
+
+Note: the cameras are part of the scene build — if you rebuild, always use
+`./scripts/rebuild_all.sh` (it runs `add_cameras.py` as step 4/4).
+
 ## PS4 controller control
 
 ```bash

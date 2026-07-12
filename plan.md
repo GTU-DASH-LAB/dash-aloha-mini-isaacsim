@@ -186,7 +186,28 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       reporting back — the drives are authored correctly per every script-based check
       done so far, so a UI-specific issue would be new information.
 
-## Phase 6 — ROS2 (optional, off by default)
+## Phase 6 — Robot cameras + LeRobot-compatible data collection (DONE)
+- [x] Fix "Physics Simulation View is not created yet" warning spam: GUI Stop destroys
+      the PhysX sim view while the control loops keep commanding every frame. Added a
+      per-frame `sim_command_ready()` gate + auto re-`initialize()` on Play resume +
+      `sim stop|play` REPL command. **Verified**: scripted stop/command/resume session,
+      zero warnings in log, joint converges exactly after resume.
+- [x] Add `third_party/lerobot_alohamini` submodule (official LeRobot integration for
+      this robot) — source of truth for the camera set: `forward` + `wrist_left` +
+      `wrist_right`, all 640x480 @ 30fps (`config_alohamini.py`).
+- [x] `scripts/add_cameras.py` (step 4/4 in `rebuild_all.sh`): USD cameras authored on
+      the robot links — wrist cams on `link5` (gripper body; `link6` is the moving jaw
+      finger), forward cam above the lift column facing the manipulation front (-Y,
+      measured — both grippers work toward -Y). Poses tuned by rendering each camera
+      and iterating (first attempt was upside down AND the forward cam faced +Y).
+      **Verified**: `docs/cam_*.png` renders show correct framing.
+- [x] `scripts/capture_cameras.py`: LeRobot observation format
+      (`observation.images.<name>` → 480x640x3 uint8, sample every 2nd physics step
+      for 30fps). **Verified**: all three frames correct shape/dtype; motion test
+      PASS (mean abs pixel diff 50-92 after a lift+arm move — all views actually
+      track the robot).
+
+## Phase 7 — ROS2 (optional, off by default)
 - [ ] **Do not implement unless asked.** If wanted later: enable the ROS2 bridge
       extension the same way documented in `GTU-DASH-LAB/isaac-sim-ros2-mcp-setup`
       (internal bundled Jazzy libs, not system ROS2, inside the Isaac Sim process), and

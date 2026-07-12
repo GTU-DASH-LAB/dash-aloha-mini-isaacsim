@@ -71,6 +71,22 @@ LIFT_LEAD_MM_PER_REV = 84.0  # lead screw pitch, alohamini1
 LIFT_STIFFNESS = 5000.0  # N/m -- engineering estimate, not measured
 LIFT_DAMPING = 200.0     # N*s/m -- engineering estimate
 
+# --- Cameras (names/resolution/fps from the OFFICIAL LeRobot integration:
+# third_party/lerobot_alohamini/src/lerobot/robots/alohamini/config_alohamini.py --
+# all cameras there are OpenCV 640x480 @ 30fps; "forward" is active by default,
+# "wrist_left"/"wrist_right" are scaffolded in the same config) ---
+CAMERA_RESOLUTION = (640, 480)
+CAMERA_FPS = 30
+# Prim paths where scripts/add_cameras.py authors the USD cameras (children of the
+# robot links so they move with the wrist/column). LeRobot observation keys are
+# "observation.images.<name>" for each <name> key here.
+_ARM_CHAIN = "/World/Aloha/Geometry/base_link/vertical_link"
+CAMERA_PRIM_PATHS = {
+    "forward": f"{_ARM_CHAIN}/camera_forward",
+    "wrist_left": f"{_ARM_CHAIN}/left_link1/left_link2/left_link3/left_link4/left_link5/camera_wrist_left",
+    "wrist_right": f"{_ARM_CHAIN}/right_link1/right_link2/right_link3/right_link4/right_link5/camera_wrist_right",
+}
+
 # --- Mobile base (LeKiwi 3-wheel omni base, alohamini1 dims) ---
 WHEEL_RADIUS_M = 0.05
 BASE_RADIUS_M = 0.125  # center to each wheel

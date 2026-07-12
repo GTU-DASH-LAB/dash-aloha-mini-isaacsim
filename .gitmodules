@@ -1,0 +1,3 @@
+[submodule "third_party/lerobot_alohamini"]
+	path = third_party/lerobot_alohamini
+	url = https://github.com/liyiteng/lerobot_alohamini.git

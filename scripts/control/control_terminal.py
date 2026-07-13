@@ -17,7 +17,9 @@ REPL commands:
   status                             print current joint positions
   pose                               print base_link's world position
   screenshot <path>                  save a viewport screenshot framed on the robot
+  cameras                            open a live viewport per robot camera (--gui only)
   wait <seconds>                     step physics for N seconds before next command
+  sim <stop|play>                    stop/resume the timeline (mirrors GUI buttons)
   quit / exit                        stop and close
 
 PS4 controller mode (needs a controller connected + the `evdev` package + your user
@@ -91,6 +93,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohami
 from alohamini1_specs import (  # noqa: E402
     ARM_JOINT_GAINS,
     ARM_JOINT_LIMITS_RAD,
+    CAMERA_PRIM_PATHS,
     JAW_CLOSED_RAD,
     JAW_OPEN_RAD,
     LIFT_MAX_M,
@@ -164,6 +167,15 @@ COMMAND_HELP = {
         "limits": "Only useful with --gui, or to inspect the file afterward -- "
                   "headless mode has no visible window but the file still gets written.",
     },
+    "cameras": {
+        "usage": "cameras",
+        "description": "Open one extra viewport window per robot camera (forward, "
+                        "wrist_left, wrist_right) so you can watch them live while "
+                        "driving the robot from this REPL. Safe to run more than once "
+                        "(does nothing to windows already open).",
+        "limits": "Needs --gui (start the REPL with --gui --repl, or pass --cameras "
+                  "at startup to open them automatically).",
+    },
     "wait": {
         "usage": "wait <seconds>",
         "description": "Step physics for N seconds before reading the next command. "
@@ -221,6 +233,9 @@ parser.add_argument("--lift", type=float, metavar="METERS", help="One-shot: set 
 parser.add_argument("--base", nargs=3, type=float, metavar=("VX", "VY", "OMEGA"), help="One-shot: set base velocity")
 parser.add_argument("--settle", type=float, default=2.0, help="Seconds to step physics after a one-shot command")
 parser.add_argument("--gui", action="store_true", help="Open a visible window instead of running headless")
+parser.add_argument("--cameras", action="store_true",
+                     help="Also open a live viewport window per robot camera (forward/wrist_left/"
+                          "wrist_right) at startup -- needs --gui, same as the REPL `cameras` command")
 parser.add_argument("--joystick", action="store_true", help="PS4 controller control mode (see module docstring)")
 parser.add_argument("--joystick-network", action="store_true",
                      help="Same as --joystick, but reads controller state from UDP packets sent by "
@@ -230,6 +245,12 @@ parser.add_argument("--joystick-debug", action="store_true",
                      help="Just print raw controller events (no simulation) -- use this to verify/calibrate "
                           "button and axis codes against JOYSTICK_MAP before trusting --joystick")
 args = parser.parse_args()
+
+if args.cameras and not args.gui:
+    print("ERROR: --cameras needs --gui (there's no window to show the extra "
+          "viewports in without one). Add --gui, or use the REPL `cameras` command "
+          "later once you're in a --gui session.")
+    sys.exit(1)
 
 if args.joystick_debug:
     # Bail out before touching Isaac Sim at all -- this is a pure hardware-calibration
@@ -288,11 +309,56 @@ art = Articulation(prim_paths_expr="/World/Aloha/Geometry/base_link")
 art.initialize()
 dof_names = art.dof_names
 
+# Captured here (before any camera viewport windows exist) and reused by
+# take_screenshot() below -- once open_camera_viewports() creates extra windows,
+# get_active_viewport() becomes ambiguous (it can return one of the NEW camera
+# windows instead of this one), which was verified to produce a black screenshot.
+_main_viewport = None
+
 if args.gui:
     from omni.kit.viewport.utility import get_active_viewport, frame_viewport_prims
-    frame_viewport_prims(get_active_viewport(), prims=["/World/Aloha"])
+    _main_viewport = get_active_viewport()
+    frame_viewport_prims(_main_viewport, prims=["/World/Aloha"])
     for _ in range(15):
         kit.update()
+
+# --- Robot camera viewports (forward / wrist_left / wrist_right) ---
+# Same idea as scripts/cameras/view_cameras.py, folded in here so you don't need a
+# second process just to watch the cameras while driving the robot from this one.
+_camera_windows: dict = {}
+
+
+def open_camera_viewports(quiet: bool = False):
+    """Open one extra viewport window per robot camera (see CAMERA_PRIM_PATHS), laid
+    out side by side, so you can watch e.g. the wrist views live while commanding
+    joints from this same REPL. Only does anything with --gui -- there's no display to
+    put a window on otherwise. Safe to call more than once (skips cameras that already
+    have a window open)."""
+    if not args.gui:
+        if not quiet:
+            print("(ignored -- no window without --gui)")
+        return
+    from omni.kit.viewport.utility import create_viewport_window
+
+    for i, (name, cam_path) in enumerate(CAMERA_PRIM_PATHS.items()):
+        if name in _camera_windows:
+            continue
+        _camera_windows[name] = create_viewport_window(
+            name=f"Camera: {name}",
+            camera_path=cam_path,
+            width=480,
+            height=360,
+            position_x=60 + i * 500,
+            position_y=440,  # below the main viewport framing done above
+        )
+        if not quiet:
+            print(f"Opened camera viewport '{name}' -> {cam_path}")
+    for _ in range(15):
+        kit.update()
+
+
+if args.cameras:
+    open_camera_viewports()
 
 # Maintain our own persistent target arrays instead of repeatedly reading back
 # art.get_joint_positions()/get_joint_velocities() (the ACTUAL current position, not
@@ -513,7 +579,10 @@ def take_screenshot(path: str):
     from omni.kit.viewport.utility import get_active_viewport, frame_viewport_prims
     import omni.kit.viewport.utility as vp_utility
 
-    viewport = get_active_viewport()
+    # Use the main viewport captured at startup, NOT get_active_viewport() again --
+    # with `cameras`/--cameras open, "active" is ambiguous between the main window
+    # and the camera windows (verified: falls back to one of them, black capture).
+    viewport = _main_viewport if _main_viewport is not None else get_active_viewport()
     frame_viewport_prims(viewport, prims=["/World/Aloha"])
     for _ in range(15):
         kit.update()
@@ -949,6 +1018,8 @@ def run_repl():
                     take_screenshot(parts[1])
                 else:
                     print_command_help("screenshot")
+            elif cmd == "cameras":
+                open_camera_viewports()
             elif cmd == "sim":
                 if len(parts) == 2 and parts[1] in ("stop", "play"):
                     if parts[1] == "stop":

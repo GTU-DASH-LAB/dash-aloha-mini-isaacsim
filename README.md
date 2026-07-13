@@ -110,12 +110,20 @@ submodule; run `git submodule update --init` after cloning):
 | `wrist_left` | left gripper body (link5) | along the gripper, fingers at frame bottom |
 | `wrist_right` | right gripper body (link5) | mirror of wrist_left |
 
-**See all camera views live in Isaac Sim** (main viewport + one window per camera,
-physics running — command the robot from a second terminal and watch the wrist views
-move):
+**See all camera views live in Isaac Sim.** Either as a standalone viewer (main
+viewport + one window per camera, physics running — command the robot from a second
+terminal and watch the wrist views move):
 
 ```bash
 ~/isaacsim/python.sh scripts/cameras/view_cameras.py
+```
+
+...or built into the control REPL itself, no second process needed — `--cameras`
+opens all three at startup, or type `cameras` at any point during the session:
+
+```bash
+~/isaacsim/python.sh scripts/control/control_terminal.py --repl --gui --cameras
+> arm left 1 0.5      # watch the wrist_left window move as this runs
 ```
 
 (Or manually in any Isaac Sim viewport: camera icon → Cameras → `camera_forward` /

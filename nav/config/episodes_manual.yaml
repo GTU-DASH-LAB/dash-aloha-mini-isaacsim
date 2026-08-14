@@ -1,0 +1,49 @@
+# Hand-written episodes, kept OUT of the generated ladder on purpose.
+#
+# `episodes.yaml` is regenerated from DynaNav's benchmark by
+# nav/sim/import_benchmark.py and anything written there by hand is lost on the
+# next regeneration. These two are not in DynaNav's scored set, so the generator
+# cannot produce them, but they are worth keeping:
+#
+#   warehouse         the original Aisle-05 task this project started from. DynaNav
+#                     defines it (episode_61) but has never scored it -- its
+#                     reference run covers 49 of 85 episodes, all hospital and
+#                     office. So there is no reference number here, and a failure
+#                     is not a regression against anything.
+#   warehouse_aisle6  a longer variant, and the most informative failure we have:
+#                     closed 92% of a 34.3 m gap to within 2.80 m, then drove past
+#                     and ended at 22 m. That is a STOPPING failure, not a steering
+#                     one, and it is the only episode that isolates it.
+#
+# The generator appends these verbatim after the ranked ladder.
+  warehouse:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
+    start: [-10.22, -7.36, 0.01]
+    start_yaw_deg: 90
+    goal: [-3.26, 7.61, 0.01]
+    instruction: "Proceed to the traffic cones at the entrance of Aisle 05 (the second aisle from the right)."
+    timeout_s: 70
+    notes: "starts 24.9 deg off the goal bearing, 16.5 m out; NOT VERIFIED by DynaNav"
+    # DynaNav's reference run on this machine (benchmark_results/20260813_090804)
+    # scored 49 of the 85 episodes -- all hospital and office. It never ran a single
+    # warehouse episode, so there is NO published result saying this task is solvable
+    # by TIC-VLA. The only warehouse number that exists anywhere here is the SMOKE
+    # episode, which DynaNav itself failed at 31.02 m. Do not treat a failure on this
+    # episode as evidence of a bug in this repo until a verified episode passes.
+
+  # DynaNav episode_76. The best-aimed warehouse episode in the whole benchmark, and a
+  # much longer run -- useful for checking the robot still tracks an instruction after
+  # it has had to commit to a turn.
+  warehouse_aisle6:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
+    start: [-13.22, -6.36, 0.01]
+    start_yaw_deg: 59
+    goal: [1.82, 24.5, 0.01]
+    instruction: "Go straight to enter Aisle 06 (the last aisle from the left), passing the yellow forklift to reach the end of the aisle."
+    timeout_s: 250
+    notes: "starts 5.0 deg off the goal bearing, 34.3 m out; NOT VERIFIED by DynaNav"
+
+  # DynaNav episode_6 -- and DynaNav FAILED it: navigation_error 17.86 m, spl 0.00.
+  # Kept because a known-failing episode is a useful negative control, but do not use
+  # it to judge this repo. Note how little separates it from episode_7 below, which
+  # DynaNav passes with spl 1.00: start x 19.7 vs 18.7, timeout 55 s vs 65 s.

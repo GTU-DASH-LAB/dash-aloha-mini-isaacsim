@@ -629,11 +629,94 @@ closest approach of **6.98 m** against a 1.5 m success threshold, and never turn
       From this viewpoint the model genuinely chooses straight. That is a model/viewpoint
       question, not a wiring one.
 
-**Open, and stated as open:** the policy will not commit to the ~25° turn this episode
-needs. The next test is an episode requiring no large turn — `warehouse_aisle6` (5.0° off
-bearing) or `hospital` (6.4° off, straight hallway) — to separate "the pipeline cannot
-turn" from "this episode is hard". Not fixed by widening the guard or nudging the
-controller, because either would make the benchmark stop measuring anything.
+---
+
+## Phase 16 — the controller was losing the turn (and what was left when it stopped)
+
+Prompted by an observation from the bench: *"it goes between 4 and 5 to the end, maybe
+because the controller is different and it needs theta rather than dx dy."* Half right,
+and the half that was right was worth two runs.
+
+**Bug 6 — `HolonomicController` converts turn intent into strafe, and breaks the loop.**
+
+TIC-VLA expresses "the target is off to your right" as a small **lateral offset**, because
+on the differential-drive Nova Carter it was trained on, that is the only thing a lateral
+offset *can* mean: you satisfy it by rotating. `HolonomicController` has an omni base, so
+it satisfies the identical offset by **translating**. The offset is discharged as sideways
+drift, the heading error is driven back to ~0 before the next replan, and the camera never
+rotates — so the next frame looks the same, the policy asks for the same small offset
+again, and a loop meant to converge sits still.
+
+`controllers.py` *predicted this in its own docstring* ("full holonomy is dangerous for a
+vision-language policy") and then assumed `yaw_align=0.8` defused it. Nobody measured that
+assumption for five runs.
+
+- [x] Measured, same episode, same policy, controller the only variable:
+
+      controller   yaw over the run       closest approach
+      holonomic    87.9° -> 94°           6.06 m / 6.98 m   (never turns)
+      pursuit      90°   -> 78.4°         5.77 m            (turns, sustained)
+
+- [x] Static comparison on identical plans: pursuit gives ~1.7× the yaw rate (1.7 vs
+      1.0 °/s at a 1.2° plan; 27.4 vs 16.0 °/s at 20°) — and, unlike holonomic, gives yaw.
+- [x] `pursuit` is now the default in `run.sh`, `run_navigation.py` and the UI dropdown.
+      The omni base's lateral DOF is still used by `collision_guard.py` for sliding along
+      obstacles, where there is no policy in the loop to confuse.
+
+**Bug 7 — we were logging outcome without intent.**
+
+Five runs were argued about on the basis of where the robot ended up. That cannot separate
+a robot obeying a straight plan from one ignoring a turning plan, and those have opposite
+fixes.
+
+- [x] `EpisodeResult.plans` records `(sim_time, plan_heading_deg, reach_m,
+      bearing_to_goal_deg)` per policy call. Both controllers steer at the same lookahead
+      point, so plan heading is the controller-independent statement of intent.
+      `bearing_to_goal` is scoring only, never fed to the policy.
+
+**What it measured, first run — and this closes the question.** Warehouse, pursuit,
+129 calls:
+
+    t       asked    needed   deficit
+    0.0     +0.1°    -24.9°    +25.1°
+   10.5     -2.9°    -43.9°    +41.1°
+   21.0     -0.7°    -80.3°    +79.6°
+   35.0     +1.2°   -135.7°   +136.9°
+
+    asked : min -8.9°  max +19.7°  mean +1.1°
+    calls asking more than 5° right: 2 / 129
+
+The policy is not being mis-executed. **It is not asking to turn.**
+
+- [x] Ruled out the lookahead rule, which was the natural next suspect. The 30 waypoints
+      are 10 Hz (`action_horizon_steps=30`), i.e. exactly 3.0 s of motion, so a
+      time-parameterized lookahead is a defensible alternative to arc length. Probed
+      against a real start-frame plan rather than assumed:
+
+      | rule | heading |
+      |---|---|
+      | arc-length 1.0 m (ours) | +1.4° |
+      | time-based 0.5 s | −2.3° |
+      | time-based 1.0 s | −0.6° |
+      | time-based 3.0 s | +3.8° |
+
+      Every waypoint from t=0.0 s to t=3.0 s is within ±4° of straight. No sampling rule
+      extracts a turn that is not in the plan. **Not implemented** — it would have been a
+      plausible-looking change that fixed nothing.
+- [x] Ruled out the conditioning. Sweeping `previous_waypoints_text` (none / 3 s / 20 s
+      straight / drifting left / drifting right) and `robot_state` vx (0.6 vs 1.5) moves
+      the answer only between −6.5° and +3.4°. Implied plan speed stays ~0.55 m/s.
+- [x] Ruled out "send theta instead of dx,dy": there is no theta.
+      `ticvla/models/ticvla.py` sets `action_dim=2,  # Offset (dx, dy)`, and the `(x,y,z)`
+      triples in the `<answer>` text are position plus height. Heading has to be inferred
+      from dx,dy by the controller — which is exactly why the controller choice mattered.
+
+**Open, and stated as open:** from this viewpoint the policy will not commit to the ~25°
+turn this episode needs. The next test is an episode requiring no large turn —
+`warehouse_aisle6` (5.0° off bearing) or `hospital` (6.4° off, straight hallway) — to
+separate "the pipeline cannot turn" from "this episode is hard". Not to be fixed by
+widening the guard or nudging controller gains, because either would make the benchmark
+stop measuring anything.
 
 ---
 

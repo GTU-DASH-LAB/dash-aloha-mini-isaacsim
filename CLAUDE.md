@@ -511,17 +511,45 @@ affect the *rest* of this repo:
   trace carries `(x, y, yaw)` per sample precisely because position alone cannot tell a
   robot that *chose* the wrong way from one that never turned. A 70 s episode is ~140
   points.
-- **Open: the policy will not commit to the ~25° turn the warehouse episode needs.** With
-  camera, episode, waypoint history, video input and guard all fixed, the run still times
-  out, and the trace says why: the robot holds yaw ~88–94° and drives dead straight north
-  up the aisle-mouth corridor, passing **7.1 m west** of the goal at t≈21 s (threshold is
-  1.5 m), then continues to 28.9 m away. It is not a wiring bug — probing the policy
-  directly on the start frame moves it exactly as instructed: "turn right" → −9.1°,
-  "turn left" → +14.3°, "Stop. Do not move." → reach collapses to 0.21 m, "go straight
-  ahead" → +2.1°. The benchmark's own instruction yields +1.2°, i.e. from that viewpoint
-  the model genuinely chooses straight. Next test is an episode that needs no big turn
-  (`warehouse_aisle6`, 5.0° off bearing; `hospital`, 6.4° off, straight hallway) to
-  separate "the pipeline can't turn" from "this episode is hard".
+- **Use the `pursuit` controller, not `holonomic`** (now the default everywhere). TIC-VLA
+  expresses "the target is off to your right" as a small *lateral offset*, because on the
+  differential-drive Nova Carter it was trained on, lateral offset can only be satisfied
+  by **rotating**. `HolonomicController` satisfies the same offset by **translating**: it
+  is discharged as sideways drift, the heading error is driven back to ~0 before the next
+  replan, and **the camera never rotates**. The next frame therefore looks identical, the
+  policy asks for the same small offset again, and the loop that was supposed to converge
+  sits still. Measured, controller the only variable: holonomic held yaw 87.9–94° for the
+  whole run (closest approach 6.06 / 6.98 m); pursuit turned 90° → 78.4° (closest 5.77 m).
+  On identical plans pursuit yields ~1.7× the yaw rate. `controllers.py` had *predicted*
+  this in its docstring — "full holonomy is dangerous for a vision-language policy" — and
+  the `yaw_align=0.8` mitigation was assumed sufficient without being measured. It was not.
+- **Instrument intent, not just outcome.** `EpisodeResult.plans` logs, per policy call,
+  `(sim_time, plan_heading_deg, reach_m, bearing_to_goal_deg)`. The trace says where the
+  robot *went*; it cannot distinguish a robot obeying a straight plan from one ignoring a
+  turning plan, and those have opposite fixes. Both controllers steer at the same
+  lookahead point, so plan heading is the controller-independent statement of policy
+  intent. `bearing_to_goal` is scoring only — never fed to the policy.
+- **Open: the policy does not ask to turn on the warehouse episode.** This is now measured
+  rather than inferred. Across **129 policy calls: 2 asked for a right turn greater than
+  5°**, mean asked **+1.1°** (very slightly *left*), while the bearing needed ran from
+  −24.9° at the start to −80° by t=21 s and −170° by the end. Things ruled out, each by
+  direct probe rather than argument:
+  - *Not the controller* — pursuit recovers the turn but the deficit is 25°, not 1.7×.
+  - *Not the lookahead rule.* The 30 waypoints are 10 Hz, i.e. exactly 3.0 s of motion, so
+    a time-parameterized lookahead is defensible. It changes nothing: on a real start-frame
+    plan, every waypoint from t=0.0 s to t=3.0 s lies within ±4° of straight (arc-length
+    1.0 m → +1.4°; time-based 0.5/1.0/3.0 s → −2.3°/−0.6°/+3.8°). No sampling rule can
+    extract a turn that is not in the plan.
+  - *Not the conditioning.* Sweeping `previous_waypoints_text` (none / 3 s / 20 s straight
+    / drifting left / drifting right) and `robot_state` vx (0.6 vs 1.5) moves the answer
+    only between −6.5° and +3.4°. Implied plan speed stays ~0.55 m/s throughout.
+  - *Not wiring* — directional language still moves it: "turn right" → −9.1°, "turn left"
+    → +14.3°, "Stop. Do not move." → reach collapses to 0.21 m.
+
+  There is no theta channel to send, either: `ticvla/models/ticvla.py` sets
+  `action_dim=2, # Offset (dx, dy)`, and the `(x, y, z)` triples in the `<answer>` text are
+  position plus height. Heading must be inferred from dx,dy by the controller — which is
+  why the controller choice matters at all.
 - **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
   Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
   wheel traction is poor but not zero. If anyone root-causes the traction issue below,

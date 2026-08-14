@@ -713,10 +713,10 @@ The policy is not being mis-executed. **It is not asking to turn.**
 - [x] Ruled out the conditioning. Sweeping `previous_waypoints_text` (none / 3 s / 20 s
       straight / drifting left / drifting right) and `robot_state` vx (0.6 vs 1.5) moves
       the answer only between −6.5° and +3.4°. Implied plan speed stays ~0.55 m/s.
-- [x] Ruled out "send theta instead of dx,dy": there is no theta.
-      `ticvla/models/ticvla.py` sets `action_dim=2,  # Offset (dx, dy)`, and the `(x,y,z)`
-      triples in the `<answer>` text are position plus height. Heading has to be inferred
-      from dx,dy by the controller — which is exactly why the controller choice mattered.
+- [x] Ruled out "send theta instead of dx,dy" **— and this one was wrong, see Phase 17.**
+      The action head genuinely has no theta (`action_dim=2, # Offset (dx, dy)`), but I
+      also claimed the `(x,y,z)` triples in `<answer>` were position plus height. They are
+      `(x, y, theta)`, and they reach 9 s. Corrected below.
 
 **Open, and stated as open:** from this viewpoint the policy will not commit to the ~25°
 turn this episode needs. The next test is an episode requiring no large turn —
@@ -724,6 +724,116 @@ turn this episode needs. The next test is an episode requiring no large turn —
 separate "the pipeline cannot turn" from "this episode is hard". Not to be fixed by
 widening the guard or nudging controller gains, because either would make the benchmark
 stop measuring anything.
+
+---
+
+## Phase 17 — two hidden channels: one was noise, one was the bug
+
+Phase 16 closed with "the policy is not asking to turn", measured on the action head.
+The action head is 3.0 s long. The policy has a second output that reaches 9 s, and I
+had mislabelled it.
+
+### 17a — the `<answer>` triples are `(x, y, theta)`, not `(x, y, z)`
+
+`ticvla/data/vlm_data.py:508-528`:
+
+```python
+for idx in [29, 59, 89]:          # 3s, 6s, 9s at 10 Hz
+    x, y = float(offset[0]), float(offset[1])
+    theta = math.atan2(y, x + 1e-3)
+    guidance_waypoint_list.extend([x, y, theta])
+```
+
+- [x] `nav/sim/guidance.py` decodes it, including the `-100` sentinel
+      (`vlm_data.py:519` — the model emits `(-100.00, -100.00, -100.00)` verbatim when
+      no 9 s future exists; reading it as a coordinate commands a hard left into a wall).
+- [x] Recomputes theta from `(x, y)` rather than trusting the printed value. It is
+      redundant by construction, so disagreement means mangled text — and a wrong heading
+      is the one parse error here that *steers* rather than stops.
+
+**Worth being precise about what "there is a theta" does and does not mean.** Theta is
+literally `atan2(y, x)` of the pair beside it — decoded values agree to text rounding
+(−18.9° vs −18.6°). It carries no information the coordinates don't. The only thing that
+differs between the heads is the **horizon**.
+
+### 17b — steering on the 9 s guidance: tried, measured, rejected
+
+One probe of the Aisle-05 start frame looked decisive:
+
+| source | horizon | heading |
+|---|---|---|
+| action head (driven on) | 3.0 s | −6.5° |
+| guidance `<answer>` | 6 s | **−18.9°** |
+| *needed* | — | *−24.9°* |
+
+- [x] Built `GuidedPursuitController`: same tracker, heading from the 6 s guidance,
+      speed still from the action head.
+- [x] Ran the full episode. **The result does not support the hypothesis.** Over 141 calls:
+
+      | channel | mean | median | min | max | asked >5° right |
+      |---|---|---|---|---|---|
+      | action head (3 s) | +0.9° | — | — | — | 7 / 141 |
+      | guidance (6 s) | +2.3° | +0.2° | −90.0° | +165.1° | 18 / 132 |
+
+      Same centre, 3–5× the spread. Guidance present in 94% of calls, so not a sentinel
+      artifact. Closest approach **7.51 m** against pursuit's 5.77/6.39, over a 60.2 m
+      path against 44.1 — the signature of tracking noise.
+
+**The −18.9° was one frame.** I generalised from a single sample and wrote it up as
+"the policy knows it has to turn". It doesn't. Kept as `guided`, not default, documented
+in `controllers.py` as a negative result so the next person spends a paragraph on this
+instead of a day.
+
+### 17c — the plan's arc length is a SPEED, and ignoring it cost aisle6 the episode
+
+`warehouse_aisle6` closed **92%** of a 34.3 m gap, reached **2.80 m** — 1.3 m short of
+the 1.5 m threshold — then drove past to 22.0 m. The plans show the policy braking:
+
+| t (s) | dist to goal | plan reach | implied speed | we drove |
+|---|---|---|---|---|
+| 101.5 | 4.14 m | 1.03 m | 0.34 m/s | 0.6 m/s |
+| 103.0 | 3.37 m | 0.71 m | 0.24 m/s | 0.6 m/s |
+| 105.5 | **2.80 m** | 0.65 m | **0.22 m/s** | 0.6 m/s |
+| 109.0 | 4.32 m | 0.35 m | 0.12 m/s | 0.6 m/s |
+
+The action head is always exactly 30 waypoints at 10 Hz, so arc length ÷ 3.0 s is a
+requested speed. Pure pursuit's `v_cmd = min(v_max, v_kappa)` has no term that knows how
+long the plan is. The robot could not stop where the policy was trying to stop it.
+
+- [x] `plan_speed()` + `obey_plan_speed`. Registered as `braking`, **now the default.**
+- [x] Left OFF in `pursuit`, which stays the clean DynaNav parity baseline.
+
+**The trap in copying DynaNav here:** they have the same blind spot and it costs them
+nothing, because their episode *terminates* the instant the robot is within 1.5 m and
+everything after is unscored. Ours terminates on the same rule — but only if it gets
+inside 1.5 m, and at 2.80 m aisle6 never did. **Parity with DynaNav's controller is not
+parity with DynaNav's scoring harness.**
+
+### 17d — the benchmark premise, checked
+
+The user's instruction was "at least it should work correct with this as the benchmark
+said". It doesn't say that.
+
+- `benchmark_full.yaml` defines **85** episodes: hospital 25, office 25, outdoor 10,
+  warehouse 25.
+- The reference run on this machine scored **49 — all hospital and office. Zero
+  warehouse, zero outdoor.**
+- `episode_61` (our Aisle-05 task) **has no published result at all.** The only warehouse
+  number anywhere here is the smoke episode, which DynaNav itself failed at 31.02 m.
+- The `hospital` episode previously in `episodes.yaml` was episode_6, which DynaNav also
+  **fails** (17.86 m, spl 0.00). My selection error.
+
+So episode choice is now *derived*, not chosen — `nav/sim/import_benchmark.py` joins the
+definitions against the results, keeps what DynaNav completes, and ranks by **our**
+difficulty (turn size weighted hardest), producing a ladder from −2.3° to −82.5°.
+
+- [x] `import_benchmark.py`, `bench.sh`, `summarize_runs.py`, `episodes_manual.yaml`.
+- [x] 29 completions dedupe to 11 tasks — DynaNav is a *dynamic* benchmark and reruns each
+      task under different pedestrian seeds. Our scenes are static, so those reruns cost
+      5× the wall clock for one data point.
+- [x] `summarize_runs.py` reports **closest approach** next to final distance. Aisle6 is
+      the argument: final distance alone reads as "went nowhere"; it went 92% of the way
+      and could not stop. Opposite fixes.
 
 ---
 

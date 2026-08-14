@@ -551,10 +551,49 @@ affect the *rest* of this repo:
   - *Not wiring* — directional language still moves it: "turn right" → −9.1°, "turn left"
     → +14.3°, "Stop. Do not move." → reach collapses to 0.21 m.
 
-  There is no theta channel to send, either: `ticvla/models/ticvla.py` sets
-  `action_dim=2, # Offset (dx, dy)`, and the `(x, y, z)` triples in the `<answer>` text are
-  position plus height. Heading must be inferred from dx,dy by the controller — which is
-  why the controller choice matters at all.
+  There is no theta channel in the **action head**: `ticvla/models/ticvla.py` sets
+  `action_dim=2, # Offset (dx, dy)`. Heading must be inferred from dx,dy by the
+  controller — which is why the controller choice matters at all.
+- **The `<answer>` triples are `(x, y, theta)` at 3 s / 6 s / 9 s — NOT `(x, y, z)`.**
+  This corrects an earlier claim here. `ticvla/data/vlm_data.py:508-528` builds them as
+  `for idx in [29, 59, 89]: theta = math.atan2(y, x + 1e-3)`, so the text head reaches
+  **three times** the action head's 3.0 s horizon. `nav/sim/guidance.py` decodes it,
+  including the `-100` sentinel (`vlm_data.py:519`) that the model legitimately emits
+  when no 9 s future exists — treating that as a coordinate commands a hard left turn.
+  Note theta is *redundant*: it is literally `atan2(y, x)` of the same pair, so nothing
+  is gained by "sending theta". Only the horizon differs.
+- **Steering on the 9 s guidance was tried and it does NOT work.** Recorded because the
+  idea is attractive and cheap to re-derive. A single probe of the Aisle-05 start frame
+  looked decisive — action head −6.5°, guidance −18.9°, needed −24.9° — but over a full
+  141-call run the two channels have the same centre and the guidance has 3–5× the
+  spread:
+
+  | channel | mean | median | min | max | asked >5° right |
+  |---|---|---|---|---|---|
+  | action head (3 s) | +0.9° | — | — | — | 7 / 141 |
+  | guidance (6 s) | +2.3° | +0.2° | −90.0° | +165.1° | 18 / 132 |
+
+  Guidance was present in 94% of calls, so this is not a sentinel artifact — the signal
+  is there and it is not informative. Steering on it made the episode *worse* (closest
+  7.51 m vs pursuit's 5.77/6.39, over a 60.2 m path vs 44.1). Kept as the `guided`
+  controller, not default, documented as a negative result.
+- **Do obey the plan's SPEED, though — that half held up.** The action head is always
+  exactly 30 waypoints at 10 Hz, so a plan's arc length over its fixed 3.0 s *is* a
+  requested speed. Ignoring it is what let `warehouse_aisle6` close **92%** of a 34.3 m
+  gap, reach **2.80 m** — 1.3 m short of the 1.5 m threshold — and then sail past to
+  22.0 m. The policy was braking hard and we drove through it:
+
+  | dist to goal | plan reach | implied speed | we drove |
+  |---|---|---|---|
+  | 4.14 m | 1.03 m | 0.34 m/s | 0.6 m/s |
+  | 2.80 m *(closest)* | 0.65 m | **0.22 m/s** | 0.6 m/s |
+  | 4.32 m | 0.35 m | 0.12 m/s | 0.6 m/s |
+
+  DynaNav has the same blind spot and it costs them nothing, which is the trap: their
+  episode *terminates* the instant the robot is within 1.5 m, so overshoot is unscored.
+  **Parity with DynaNav's controller is not parity with DynaNav's scoring harness.**
+  `braking` (= `pursuit` + `obey_plan_speed`) is now the default; `pursuit` keeps it off
+  so it stays a clean parity baseline.
 - **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
   Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
   wheel traction is poor but not zero. If anyone root-causes the traction issue below,

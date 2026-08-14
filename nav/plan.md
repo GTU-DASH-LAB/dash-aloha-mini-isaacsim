@@ -247,40 +247,89 @@ Two caveats that matter for later phases:
 - [ ] Commit + push
 
 ### Phase 11 — Sim side: scene, camera, controller, collision guard (GPU0)
-- [ ] `nav/sim/episode.py` — episode config (start, start_yaw, goal, instruction,
-      timeout) + success test + SPL/path-length metrics, mirroring DynaNav's definitions
-      so numbers are comparable
-- [ ] `nav/config/episodes.yaml` — the four DynaNav smoke episodes, re-homed to
-      AlohaMini (start poses re-validated: AlohaMini's footprint and camera height
-      differ from Nova Carter's, so a start pose that is collision-free for one is not
-      automatically free for the other)
-- [ ] `nav/sim/camera_source.py` — grab the `forward` camera each step, write PNG to a
-      scratch dir, maintain the rolling history `predict()` expects
-- [ ] `nav/sim/controllers.py` — `PursuitController` + `HolonomicController`, sharing a
-      waypoint-tracking base class
-- [ ] `nav/sim/collision_guard.py` — PhysX scene query ahead of the intended motion;
-      refuse the kinematic step on a hit and record it (finding 2)
-- [ ] `nav/sim/run_navigation.py` — the main loop tying it together
-- [ ] Commit + push after each of the above
+- [x] `nav/sim/episode.py` — episode config + success test + path metrics
+- [x] `nav/config/episodes.yaml` — DynaNav's four episodes, prompts verbatim
+- [x] `nav/sim/build_nav_scene.{py,sh}` — compose environment + robot (NOT in the plan
+      originally; turned out to be required, see below)
+- [x] `nav/sim/camera_source.py` — render the nav camera to a frame file
+- [x] `nav/sim/controllers.py` — `PursuitController` + `HolonomicController`
+- [x] `nav/sim/collision_guard.py` — PhysX ray fan, refuse the step on a hit
+- [x] `nav/sim/base_drive.py` — velocity → pose (also not in the original plan)
+- [x] `nav/sim/run_navigation.py` — the loop
+- [x] Commit + push after each
+
+**Four things the plan got wrong, all found by building it:**
+
+1. **The `forward` camera is the wrong camera.** All three LeRobot cameras face the
+   manipulation front (−Y); the base drives +X. The plan said "grab the `forward`
+   camera each step", which would have fed the policy the view 90° off its direction
+   of travel. Added a fourth camera, `camera_nav` (`rotateXYZ=(80,0,-90)` → view
+   `(0.985, 0, -0.174)`), deliberately kept OUT of `CAMERA_PRIM_PATHS` so the LeRobot
+   observation contract is unchanged.
+2. **A nav scene has to be built, not just opened.** `scene.usda` is the pick-and-place
+   setup and regenerating it is a documented footgun. A freshly authored layer has no
+   joint drives, no wheel colliders and no cameras — those are overrides in the *scene*
+   file, not in `Aloha.usda`.
+3. **Nothing after `SimulationApp.close()` executes.** The first builder authored the
+   layer, reported success, and applied none of the pipeline. Hence the `.sh` wrapper.
+4. **Episode timeouts must count sim time, not wall clock.** Inference is synchronous
+   and blocks ~1.0–1.5 s per call. Timing by wall clock spends most of a 70 s budget on
+   the policy thinking and cuts the episode to roughly a third of its intended length —
+   which would have looked like a navigation failure and been a stopwatch bug.
 
 ### Phase 12 — Web UI
-- [ ] `nav/ui/server.py` — FastAPI in a background thread of the sim process (same
-      pattern as `dash-so101`'s `ui/server.py`, which already solved the
-      load-model-once problem)
-- [ ] `nav/ui/static/index.html` — prompt box, **dropdown of the four DynaNav example
-      prompts**, Start/Stop/Reset, live MJPEG of the forward camera
-- [ ] Surface per-step: distance to goal, elapsed/timeout, current `(vx,vy,ω)`, the
-      VLM's reasoning text, and a top-down plot of the waypoints
-- [ ] Commit + push
+- [x] `nav/ui/ui_bridge.py` — uvicorn on a worker thread of the sim process. It cannot
+      be a second process (it needs live access to the running stage) and cannot own
+      the main thread (Kit must). It only pushes jobs onto a queue and reads a status
+      snapshot; the main loop executes them.
+- [x] `nav/ui/static/index.html` — prompt box, **the four DynaNav prompts as clickable
+      examples**, Run/Stop, live camera, controller selector. Zero external assets:
+      this machine's onboard ethernet is dead, and a CDN font would make the UI look
+      broken for reasons unrelated to the robot.
+- [x] Surfaces distance-to-goal, sim + wall elapsed, policy calls, guard stops, and the
+      VLM's reasoning text. Progress bar shows the *fraction of the initial gap closed*,
+      not distance remaining.
+- [ ] Top-down waypoint plot — deferred, not required for the deliverable
+- [x] Commit + push
 
 ### Phase 13 — Run it, measure it, write it down
-- [ ] Run all four episodes with `--controller pursuit`; save results JSON in DynaNav's
-      schema
-- [ ] Repeat with `--controller holonomic`; compare
-- [ ] Record success rate, SPL, path length, collisions — and state plainly how they
-      compare to DynaNav's own Nova Carter numbers
+- [x] First full end-to-end run (warehouse, holonomic)
+- [ ] Remaining episodes × both controllers
+- [ ] Compare against DynaNav's own Nova Carter numbers
 - [ ] Update `../CLAUDE.md` with every gotcha hit
-- [ ] Commit + push
+
+**Run 1 — warehouse, holonomic, the benchmark's own prompt:**
+
+```
+[TIMEOUT] warehouse (holonomic)
+  distance to goal : 26.32 m -> 14.89 m  (closed +11.43 m)
+  path travelled   : 50.85 m in 70.0 s sim (324.3 s wall, 4201 steps, 141 policy calls)
+  guard stops      : 0
+```
+
+Read this carefully, because "TIMEOUT" undersells it. The robot **spawns facing almost
+exactly away from the goal** — DynaNav's start yaw is −141° and the goal bearing is
++52°, a 193° turn — and the first captured frame is a bare wall corner. It turned
+around, drove out, and frame 140 shows it **inside an aisle between loaded pallet
+racks**. That is the task working: it read the instruction and went looking for aisles.
+
+It did not get there efficiently: 50.85 m of path to close 11.43 m of gap. Consistent
+with Phase 9's finding that turn authority is only ~±14° per plan — enough to curve,
+not enough to commit.
+
+**Two real issues this surfaced, both recorded rather than papered over:**
+
+- **Actual speed exceeds the commanded limit.** 50.85 m / 70.02 s = **0.726 m/s**
+  against a `max_speed_mps` of 0.6. Most likely the kinematic teleport and the wheel
+  spin *add*: `base_drive.apply()` teleports by `v·dt` **and** commands the wheel
+  velocity targets, and while wheel traction is poor (`../CLAUDE.md`) it is not zero.
+  Not yet confirmed — the honest statement is that there is ~20% unexplained
+  translation. Test by zeroing the wheel targets and re-measuring.
+- **Zero guard interventions needed checking, not celebrating.** 50 m through racking
+  with no stop is equally what a broken raycast looks like.
+  `nav/tools/check_collision_guard.py` sweeps the ray fan through a full circle:
+  **9/16 bearings hit** real walls and pillars at 6.8–12.5 m. The guard is live; the
+  robot genuinely kept its distance.
 
 ---
 

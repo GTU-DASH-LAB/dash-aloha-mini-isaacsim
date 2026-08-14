@@ -64,12 +64,14 @@ class NavigationRunner:
         scene_path: Path | None = None,
         scratch_dir: Path | str = "/tmp/alohamini-nav-frames",
         headless: bool = True,
+        sim_gpu: int = 0,
     ):
         self.episode = episode
         self.controller_name = controller_name
         self.scene_path = scene_path or (REPO / "assets" / "usd" / f"nav_{episode.name}.usda")
         self.scratch_dir = Path(scratch_dir)
         self.headless = headless
+        self.sim_gpu = sim_gpu
         self.policy = PolicyClient(policy_host, policy_port)
 
         self._lock = threading.Lock()
@@ -137,7 +139,20 @@ class NavigationRunner:
 
         from isaacsim import SimulationApp
 
-        self.kit = SimulationApp({"headless": self.headless})
+        # Pin the simulator to GPU0 through Kit's OWN config, never through
+        # CUDA_VISIBLE_DEVICES -- Kit warns that pinning it "can lead to undesired
+        # behavior or crashes", and memory/gtu-workstation-gpu-asymmetry.md is
+        # emphatic about it. The policy server does use the env var, which is safe
+        # there only because that process never starts Kit.
+        #
+        # This is not tidiness: GPU1 is already holding InternVL3-1B plus the
+        # checkpoint, and a DynaNav scene can take 25.4 GiB on its own.
+        self.kit = SimulationApp({
+            "headless": self.headless,
+            "active_gpu": self.sim_gpu,
+            "physics_gpu": self.sim_gpu,
+            "multi_gpu": False,
+        })
 
         import omni.timeline
         import omni.usd

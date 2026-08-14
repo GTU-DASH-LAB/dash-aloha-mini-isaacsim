@@ -166,26 +166,74 @@ Comparing the two on identical episodes is a real result and costs one flag.
 ## Phases
 
 ### Phase 8 — Spikes: prove the two risky assumptions before building on them
-- [ ] `nav/tools/check_scene_compat.py` — load DynaNav's `office.usd` (authored for
-      Isaac Sim **5.0**) in Isaac Sim **6.0.1** headless; report whether it opens, its
-      world-space bounding box, and whether the CDN references resolve
-- [ ] Check scale against `CLAUDE.md`'s warning: the *other* Office environment was
-      real-world scale (~1000 m across) and caused both a camera-framing bug and a
-      physics explosion at spawn. Confirm DynaNav's is sane before adopting it
-- [ ] `nav/tools/check_policy_server.py` — stand up the policy server, POST one frame,
-      confirm a `(T,2)` waypoint array comes back and log the latency
-- [ ] Record both results in this file. **If the scene will not load in 6.0.1**, fall
-      back to Isaac's `Simple_Warehouse` (already the repo default and known-good) and
-      keep the DynaNav *prompts* — note it as a deviation rather than hiding it
+- [x] `nav/tools/check_scene_compat.py` — load DynaNav's `office.usd` (authored for
+      Isaac Sim **5.0**) in Isaac Sim **6.0.1** headless
+- [x] Check scale against `CLAUDE.md`'s ~1000 m warning
+- [x] Stand up the policy server and confirm a `(T,2)` waypoint array comes back
+
+**Result — the version gap is NOT a blocker.** `office.usd` opens cleanly in 6.0.1:
+
+| | |
+|---|---|
+| opened | ✅ `True`, 188 s (CDN streaming) |
+| prims / meshes | 4665 / 140 |
+| invalid prims | **0** |
+| unloaded payloads | **0** — every reference resolved |
+| up axis / units | Z / 1.0 m per unit |
+
+**But it walked straight into this repo's known scale trap.** The measured extent is
+**1063.55 × 677.15 m**, and the stage references
+`Assets/Isaac/4.5/Isaac/Environments/Office/` — *the same NVIDIA Office asset*
+`../CLAUDE.md` says "had to be replaced — it's real-world building scale, ~1000 m
+across, which caused both a camera-framing bug and a physics explosion at spawn."
+
+This is survivable, because DynaNav itself drives Nova Carter through this scene
+successfully. The extent is dominated by distant scenery; the actual episode runs from
+`(-10.6, -12.1)` to `(-7.68, -25.53)`, about 13 m. So the two historical failures are
+addressable rather than fundamental, and Phase 11 must handle both explicitly:
+- **spawn** the robot at DynaNav's episode coordinates, never at the origin
+- **author the camera** explicitly instead of relying on a frame-all default
+
+**Policy server:** loads in **2.9 s** on physical GPU1 (`CUDA_VISIBLE_DEVICES=1`),
+checkpoint accepted with `strict=True`, `num_action_chunks=30`, `/predict` round-trip
+**1.0–1.5 s** per call.
 
 ### Phase 9 — Policy sanity (the gate; see finding 3)
-- [ ] `nav/tools/check_policy_sanity.py` — one fixed frame, N contradictory
-      instructions, compare the returned waypoint sets
-- [ ] Report per-instruction mean heading and lateral spread; assert the sets are
-      measurably different
-- [ ] Repeat with a frame captured from AlohaMini's own forward camera (different
-      mounting height and FOV to Nova Carter — a real distribution shift)
-- [ ] Write the verdict into this file, whatever it is
+- [x] `nav/tools/check_policy_sanity.py` — fixed frame, contradictory instructions,
+      repeats to separate language response from sampling noise
+- [x] Report per-instruction mean heading and path length
+- [ ] Repeat with a frame from AlohaMini's own forward camera (different mounting
+      height and FOV to Nova Carter — a real distribution shift). **Blocked on Phase 11**
+- [x] Write the verdict into this file, whatever it is
+
+**Verdict: PASS — TIC-VLA is genuinely language-conditioned.** Run on real
+`front_frame_*.jpg` captures from this machine's own outdoor run:
+
+| instruction | frame 000780 | frame 001167 |
+|---|---|---|
+| "Go straight ahead down the hallway." | −1.81°, len 1.52 | +0.16°, len 1.29 |
+| "Turn **left** immediately…" | −0.95°, len 1.38 | **+14.35°**, len 1.19 |
+| "Turn **right** immediately…" | **−23.80°**, len 1.24 | **−4.59°**, len 1.36 |
+| "Stop. Do not move." | −164.98°, **len 0.38** | +169.24°, **len 0.43** |
+
+Headings are FLU, so **+ is left and − is right — both frames are correctly signed**,
+and "stop" collapses path length to ~0.4 against ~1.3 for the others. The instruction
+changes the output far beyond sampling noise.
+
+Two caveats that matter for later phases:
+
+1. **Within-instruction spread is exactly 0.000°** across repeats. `predict()` sets
+   `do_sample=True` but with `temperature=0.1, top_k=10` (`ticvla.py:585`), which is
+   effectively greedy. Do not expect sampling to break the policy out of a stuck state
+   — retrying an identical observation returns an identical plan.
+2. **Turn authority is modest: ~±14° at the endpoint of a 30-chunk plan.** On frame
+   000780 the left turn was only −0.95° while the right turn was −23.80°; the asymmetry
+   did *not* reproduce on 001167, so it is frame-specific rather than a systematic
+   left-turn failure — but it does show the turn signal is weak and scene-dependent.
+   This is the most likely explanation for the office benchmark failure: not that the
+   policy ignores "turn left at the end", but that ±14° per plan is too little authority
+   to commit to a decisive turn. Worth testing directly, since it is a thesis-relevant
+   result about the checkpoint rather than about AlohaMini.
 
 ### Phase 10 — Policy server (py3.11, GPU1)
 - [ ] `nav/policy_server/server.py` — FastAPI; load `TICVLA` once at startup

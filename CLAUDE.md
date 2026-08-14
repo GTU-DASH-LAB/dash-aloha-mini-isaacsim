@@ -472,6 +472,22 @@ affect the *rest* of this repo:
   episodes driving away from the goal was not normal behaviour. A plausible explanation
   fitted to a suspicious measurement is worse than no explanation, because it closes the
   question.
+- **`previous_waypoints_text` is not optional — it is TIC-VLA's temporal channel.**
+  Calling `predict()` without it (the default `""`) makes every plan a fresh straight
+  line, because the model has no way to know it has already been driving. Measured on
+  one warehouse episode, that alone was the difference between closing **−0.40 m** (32 m
+  of path travelled, ending at the perimeter wall) and **+8.73 m** (15.8 m of path,
+  ending at the Aisle 05 entrance). DynaNav raises `ValueError` if the string is empty,
+  and training always emitted one of two forms — with no history yet it still said
+  "No waypoints available.", so the empty string is not the zero case. Built by
+  `nav/sim/waypoint_history.py`, whose format is copied character for character from
+  `ticvla/data/vlm_data.py:_format_previous_waypoints_text`; a reworded version reads
+  fine to a human and sits off the model's distribution.
+- **Open: the guard wedges the robot at aisle entrances.** With the above fixed, the
+  warehouse episode still times out because `collision_guard.py`'s ±35°/7-ray fan at a
+  0.6 m stop distance buries its outer rays in the rack endcap the robot is hugging —
+  2734 of 4201 steps were guard stops, with the centre path clear. Guard tuning, not
+  perception.
 - **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
   Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
   wheel traction is poor but not zero. If anyone root-causes the traction issue below,

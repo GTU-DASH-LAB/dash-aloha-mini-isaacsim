@@ -488,6 +488,60 @@ guessed:
       before authoring. Defining `camera_nav` at its new path does not remove the old
       one; a plain re-run left both prims in the stage, with Kit rendering the stale
       lift-mounted one every frame. Moving a mount point is now a one-line spec change.
+- [x] Verified by rendering and looking, per this repo's own rule. The start frame now
+      has all six aisle placards legible and the three Aisle 05 traffic cones in shot:
+      `docs/nav_start_frame_hawk.jpg`, `docs/nav_start_aisle05_zoom.jpg`.
+
+**Bug 3 — found while verifying the first two: the policy was never told what it had
+already done.**
+
+With the camera and the start pose both correct, the run still failed, and the way it
+failed was diagnostic: 32.04 m of path travelled to close **−0.40 m** of distance. Every
+plan came back a fresh ~1.3 m straight line, so the robot sailed past the aisle it was
+sent to and parked in the perimeter wall — while its own reasoning text said "facing a
+wall". It could see correctly and still had no idea it had been driving straight for a
+minute.
+
+`predict()` was being called with `previous_waypoints_text=""` — the default — on all
+141 calls of a run. That parameter is TIC-VLA's temporal channel, and it is not
+optional decoration:
+
+- DynaNav builds it every inference and raises
+  `ValueError("ERROR: Empty previous waypoints text!")` if it comes out blank. The
+  reference implementation treats the value we were sending as an impossible state.
+- Training **always** emitted one of two strings, never nothing. With no history yet it
+  still said "No waypoints available." — so the empty string is not the zero case, that
+  line is.
+
+- [x] `sim/waypoint_history.py`. Format copied character for character from
+      `ticvla/data/vlm_data.py:_format_previous_waypoints_text`, because that is the
+      function that produced the training text — a reworded sentence still reads fine to
+      a human while sitting off distribution.
+- [x] Sampling ported from `nova_carter_test_ticvla.py:644-665`: one sample per second of
+      sim time, each the displacement over the previous second expressed in the body
+      frame **as it was at the start of that second** (`R_prev.T @ delta_world`), not the
+      current frame and not world. First sample is a (0,0,0) placeholder, filtered at
+      format time.
+- [x] Measured, same episode, same seed, only this changed:
+
+      | | before | after |
+      |---|---|---|
+      | distance closed | **−0.40 m** | **+8.73 m** |
+      | final distance | 16.91 m | 7.78 m |
+      | path travelled | 32.04 m | 15.80 m |
+
+      Half the path length for a result that goes from backwards to two-thirds of the
+      way there. It stopped wandering, and its closing reasoning is "at the entrance of
+      Aisle 05 … begun entering Aisle 05" rather than "facing a wall".
+
+**Still TIMEOUT, and the remaining cause is now a different one.** The robot reaches the
+Aisle 05 entrance and wedges on the rack endcap: 2734 of 4201 steps (65%) were guard
+stops, against 723 before. `collision_guard.py` fans ±35° over 7 rays and stops at
+0.6 m, so when the robot hugs an endcap corner the outer rays sit inside the racking and
+translation is cancelled for most of the run while the centre path is clear. That is a
+guard-tuning problem, not perception and not intent — logged rather than tuned by
+guesswork, because picking fan numbers to make one episode pass is how a benchmark stops
+measuring anything.
 
 ---
 

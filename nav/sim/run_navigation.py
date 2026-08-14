@@ -42,6 +42,7 @@ for p in (REPO / "nav" / "sim", REPO / "nav" / "policy_server", REPO / "nav" / "
 from client import PolicyClient, PolicyServerError  # noqa: E402
 from controllers import Command, make_controller  # noqa: E402
 from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
+from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
 
@@ -326,6 +327,8 @@ class NavigationRunner:
         success = False
         timed_out = False
         last_displacement = (0.0, 0.0)
+        history = WaypointHistory(PHYSICS_DT)
+        history.observe(0, start_pos, self.base.yaw)
 
         while True:
             # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long
@@ -371,6 +374,12 @@ class NavigationRunner:
                             last_displacement[0], last_displacement[1],
                         ],
                         current_step=step,
+                        # What the robot has already done. Omitting this (the default
+                        # "") is why every plan used to come back as a fresh straight
+                        # line: with no record of having driven for the last minute,
+                        # "go forward" is a perfectly good answer every single time.
+                        # DynaNav treats an empty value here as a hard error.
+                        previous_waypoints_text=history.prompt_text(sim_time),
                         robot_type=ep.robot_type,
                     )
                 except PolicyServerError as exc:
@@ -404,6 +413,7 @@ class NavigationRunner:
             last_displacement = (new_pos[0] - prev_pos[0], new_pos[1] - prev_pos[1])
             prev_pos = new_pos
             step += 1
+            history.observe(step, new_pos, self.base.yaw)
 
             # Refresh the third-person view ~4x per simulated second. Tying it to the
             # replan cadence instead would give one frame every ~2.5 s of wall clock

@@ -94,18 +94,25 @@ for EP in "${EPISODES[@]}"; do
   fi
 
   echo "-- running (this blocks until the episode ends or times out)"
-  if nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
-       > "$LOGDIR/run_${EP}_${CONTROLLER}.log" 2>&1; then
-    # run.sh exits 0 whether the episode succeeded or not -- success is a property
-    # of the episode, not of the process. Read it out of the saved result instead.
+  nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
+      > "$LOGDIR/run_${EP}_${CONTROLLER}.log" 2>&1
+  RC=$?
+
+  # Headless run_navigation.py returns 0 on a completed episode and 1 on a failed
+  # one -- a failed EPISODE, not a failed process. Anything else is a real crash.
+  # Conflating the two would have logged every unsuccessful episode as an
+  # infrastructure error and hidden the actual benchmark result behind a stack
+  # trace, which is precisely the failure this harness exists to avoid.
+  if [ $RC -le 1 ]; then
     VERDICT=$(python3 nav/sim/summarize_runs.py --latest "$EP" --controller "$CONTROLLER" --oneline)
     echo "   $VERDICT"
     case "$VERDICT" in
       SUCCESS*) PASS=$((PASS+1)) ;;
+      NO-RUN*)  echo "   (no result file -- treating as an error)"; ERR=$((ERR+1)) ;;
       *)        FAIL=$((FAIL+1)) ;;
     esac
   else
-    echo "!! RUN FAILED -- see $LOGDIR/run_${EP}_${CONTROLLER}.log"
+    echo "!! RUN CRASHED (rc=$RC) -- see $LOGDIR/run_${EP}_${CONTROLLER}.log"
     tail -15 "$LOGDIR/run_${EP}_${CONTROLLER}.log"
     ERR=$((ERR+1))
     [ $KEEP_GOING -eq 0 ] && exit 1

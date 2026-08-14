@@ -317,11 +317,31 @@ class GuidedPursuitController(PursuitController):
     legitimately and often. The fallback shares the same filter state, so a
     dropout is a change of reference, not a reset.
 
-    Honest about what this is NOT: it does not make the robot track a better path,
-    and it cannot help on episodes that are already straight. It only matters when
-    the action head's 3 s window truncates a turn that the policy has in fact
-    planned. On the Aisle-05 start frame that is the difference between steering
-    -6.5 deg and steering -18.9 deg, against -24.9 deg needed.
+    **MEASURED, AND IT DID NOT WORK. Do not reach for this before reading this
+    paragraph.** The hypothesis was that the 3 s action head truncates a turn the
+    policy has actually planned, based on the Aisle-05 start frame where the action
+    head steered -6.5 deg and the 6 s guidance steered -18.9 deg against -24.9 deg
+    needed. That was one frame. Over a full 141-call run on the same episode:
+
+        channel               mean   median     min      max   asked >5 deg right
+        action head (3 s)     +0.9        -       -        -             7 / 141
+        guidance    (6 s)     +2.3     +0.2   -90.0   +165.1            18 / 132
+
+    Same centre, three to five times the spread. The -18.9 deg sample was noise that
+    happened to point the right way, not a longer-horizon intention. Steering on it
+    made the episode worse -- closest approach 7.51 m against pursuit's 5.77 and
+    6.39, over a 60.2 m path against 44.1 -- because the controller was tracking
+    jitter. Guidance was present in 94% of calls, so this is not a sentinel artifact.
+
+    Kept, unregistered as a default and documented as a negative result, because the
+    experiment is cheap to redo and expensive to re-derive: anyone who notices the
+    text head reaches to 9 s will have exactly this idea, and should be able to find
+    out in one paragraph that it has already been tried and measured.
+
+    Note that this class also inherits `obey_plan_speed=True`. That part DID hold up
+    and is available on its own as `braking` -- do not conclude from this negative
+    result that plan speed is worthless too. They are independent changes that
+    happened to be found in the same afternoon.
     """
 
     name = "guided"
@@ -385,8 +405,29 @@ class GuidedPursuitController(PursuitController):
         return Command(vx=v_cmd, vy=0.0, omega=w_cmd)
 
 
+class BrakingPursuitController(PursuitController):
+    """Pure pursuit that obeys the speed the policy asks for. The default.
+
+    Exactly `PursuitController` plus `obey_plan_speed=True`, which is one line and
+    the only change in this module with clean supporting evidence and no measured
+    downside -- it can only ever REDUCE speed, and only when the policy's own plan
+    asks it to. See `plan_speed` for the aisle6 trace that motivates it.
+
+    Deliberately separate from `guided`. Plan-speed obedience and guidance steering
+    were found in the same session and are easy to conflate, but guidance steering
+    was measured and rejected (see `GuidedPursuitController`) while this was not.
+    Bundling them would have buried a working change inside a failed one.
+    """
+
+    name = "braking"
+
+    def __init__(self, *args, obey_plan_speed: bool = True, **kwargs):
+        super().__init__(*args, obey_plan_speed=obey_plan_speed, **kwargs)
+
+
 CONTROLLERS = {
     PursuitController.name: PursuitController,
+    BrakingPursuitController.name: BrakingPursuitController,
     HolonomicController.name: HolonomicController,
     GuidedPursuitController.name: GuidedPursuitController,
 }

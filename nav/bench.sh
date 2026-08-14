@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the DynaNav benchmark ladder end to end, easiest episode first.
 #
-#   nav/bench.sh                          # every episode in episodes.yaml, guided
+#   nav/bench.sh                          # every episode in episodes.yaml, braking
 #   nav/bench.sh --controller pursuit     # the DynaNav-parity baseline
 #   nav/bench.sh --only office_elevator,hospital_red   # just these
 #   nav/bench.sh --from hospital_vending  # resume partway down the ladder
@@ -28,7 +28,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
-CONTROLLER="guided"
+CONTROLLER="braking"
 ONLY=""
 FROM=""
 KEEP_GOING=1

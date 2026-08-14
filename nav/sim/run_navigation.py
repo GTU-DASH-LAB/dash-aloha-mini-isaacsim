@@ -21,7 +21,7 @@ because the world moved underneath it), and sim time is not wall time so nothing
 lost but patience. Noted as a real difference from the published setup, not hidden.
 
 Usage:
-    nav/run.sh --episode warehouse --controller guided
+    nav/run.sh --episode warehouse --controller braking
 """
 
 from __future__ import annotations
@@ -47,17 +47,18 @@ from controllers import (  # noqa: E402
     make_controller,
     plan_speed,
 )
-from guidance import guidance_heading, parse_guidance  # noqa: E402
-
-# Which of the three guidance horizons (3/6/9 s) the `guided` controller steers at,
-# and the one logged in `plans` for every controller. Kept here rather than left to
-# each call site so the logged column always describes the driven one.
-GUIDANCE_HORIZON_S = 6.0
 from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
 from frame_history import FrameHistory  # noqa: E402
+from guidance import guidance_heading, parse_guidance  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
+
+# Which of the three guidance horizons (3/6/9 s) gets logged in `plans`. Logged for
+# every controller even though only `guided` steers on it, so the two channels can be
+# compared within one run. Kept here rather than at the call site so the logged column
+# always describes the same horizon the controller would have used.
+GUIDANCE_HORIZON_S = 6.0
 
 
 class NavigationRunner:
@@ -72,7 +73,7 @@ class NavigationRunner:
     def __init__(
         self,
         episode: Episode,
-        controller_name: str = "guided",
+        controller_name: str = "braking",
         policy_host: str = "127.0.0.1",
         policy_port: int = 8765,
         scene_path: Path | None = None,
@@ -575,7 +576,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode", default="warehouse", choices=sorted(episodes))
     ap.add_argument(
-        "--controller", default="guided", choices=["holonomic", "pursuit", "guided"]
+        "--controller", default="braking",
+        choices=["braking", "pursuit", "holonomic", "guided"]
     )
     ap.add_argument("--instruction", default=None,
                     help="Override the benchmark instruction (the UI's job, mostly).")

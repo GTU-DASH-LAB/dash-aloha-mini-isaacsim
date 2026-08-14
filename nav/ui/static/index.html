@@ -187,8 +187,9 @@
       <h2>DynaNav benchmark prompts</h2>
       <div id="examples"></div>
       <select id="controller">
-        <option value="guided">guided &mdash; steers on the 9s text head (recommended)</option>
-        <option value="pursuit">pursuit &mdash; DynaNav parity, 3s action head</option>
+        <option value="braking">braking &mdash; pursuit + obeys plan speed (recommended)</option>
+        <option value="pursuit">pursuit &mdash; DynaNav parity baseline</option>
+        <option value="guided">guided &mdash; 9s text head (measured worse)</option>
         <option value="holonomic">holonomic &mdash; omni base, turns ~3x less</option>
       </select>
     </div>

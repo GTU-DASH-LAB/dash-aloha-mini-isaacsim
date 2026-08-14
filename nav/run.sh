@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a navigation episode. Starts the policy server if it is not already up.
 #
-#   nav/run.sh                                   # warehouse, guided, UI on :8080
+#   nav/run.sh                                   # warehouse, braking, UI on :8080
 #   nav/run.sh --episode hospital_vending --gui  # with a window
 #   nav/run.sh --controller pursuit --no-ui      # DynaNav-parity controller, CLI only
 #
@@ -18,7 +18,7 @@ PYTHON_SH="${ISAACSIM_PYTHON:-/home/gtu-dsa/robotics/isaacsim-6.0.1/python.sh}"
 POLICY_PORT="${NAV_POLICY_PORT:-8765}"
 UI_PORT="${NAV_UI_PORT:-8080}"
 
-EPISODE="warehouse"; CONTROLLER="guided"; GUI=""; USE_UI=1; INSTRUCTION=""
+EPISODE="warehouse"; CONTROLLER="braking"; GUI=""; USE_UI=1; INSTRUCTION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episode)     EPISODE="$2"; shift 2 ;;

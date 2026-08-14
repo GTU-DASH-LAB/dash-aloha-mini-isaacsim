@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlohaMini — language navigation</title>
+<!-- No external assets anywhere: this page is served from inside the Isaac Sim
+     process on a workstation that may have no usable internet route (onboard
+     ethernet is dead on this machine). A CDN font or CSS link would leave the UI
+     looking broken for reasons that have nothing to do with the robot. -->
+<style>
+  :root {
+    --bg: #12141a; --panel: #1a1d26; --line: #2a2f3d;
+    --ink: #e6e9f0; --dim: #949bad; --accent: #5cc8ff;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  .sub { color: var(--dim); font-size: 12px; }
+  main {
+    display: grid; grid-template-columns: minmax(0,1fr) 380px;
+    gap: 18px; padding: 18px; max-width: 1400px; margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px;
+  }
+  .panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 10px; font-weight: 600;
+  }
+  #view {
+    width: 100%; display: block; border-radius: 6px;
+    background: #000; aspect-ratio: 4 / 3; object-fit: contain;
+  }
+  .viewnote { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  textarea {
+    width: 100%; min-height: 82px; resize: vertical; padding: 10px;
+    background: #0e1016; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; font: inherit; font-size: 13px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  button {
+    flex: 1; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--line);
+    background: #232838; color: var(--ink); font: inherit; font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #08131c; border-color: var(--accent); }
+  select {
+    width: 100%; padding: 8px; background: #0e1016; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px;
+  }
+  .ex {
+    border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px;
+    margin-bottom: 7px; cursor: pointer; background: #0e1016;
+  }
+  .ex:hover { border-color: var(--accent); }
+  .ex-head {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 8px; margin-bottom: 4px;
+  }
+  .ex-name { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .05em; }
+  .ex-text { color: var(--dim); font-size: 11.5px; line-height: 1.45; }
+  .tag {
+    font-size: 9.5px; padding: 1px 6px; border-radius: 10px;
+    border: 1px solid var(--line); color: var(--dim); white-space: nowrap;
+  }
+  .tag.native { border-color: var(--ok); color: var(--ok); }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; }
+  dt { color: var(--dim); font-size: 12px; }
+  dd { margin: 0; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+  .state { font-weight: 700; }
+  .state.running { color: var(--accent); }
+  .state.done    { color: var(--ok); }
+  .state.error   { color: var(--bad); }
+  .state.idle, .state.loading, .state.starting, .state.ready { color: var(--warn); }
+  .bar { height: 5px; background: #0e1016; border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  #msg { color: var(--dim); font-size: 11.5px; margin-top: 9px; min-height: 1.4em; }
+  #reasoning {
+    margin-top: 10px; padding: 9px; background: #0e1016; border-radius: 6px;
+    border: 1px solid var(--line); color: var(--dim); font-size: 11px;
+    max-height: 150px; overflow-y: auto; white-space: pre-wrap; display: none;
+  }
+  .note {
+    margin: 14px 18px; padding: 11px 13px; border-left: 3px solid var(--line);
+    color: var(--dim); font-size: 11.5px; max-width: 1400px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AlohaMini &mdash; language-driven navigation</h1>
+  <span class="sub">TIC-VLA on DynaNav &middot; scene <b id="scene">…</b> &middot; <span id="ctrl">…</span></span>
+</header>
+
+<main>
+  <div>
+    <div class="panel">
+      <h2>Navigation camera</h2>
+      <img id="view" alt="robot navigation camera">
+      <div class="viewnote">
+        This is the frame the policy actually sees &mdash; the forward-facing nav
+        camera, updated on each replan. It is <em>not</em> the LeRobot
+        <code>forward</code> camera, which faces the manipulation front (&minus;Y)
+        rather than the driving direction (+X).
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <h2>Instruction</h2>
+      <textarea id="prompt" placeholder="Tell the robot where to go, in plain language…"></textarea>
+      <div class="row">
+        <button id="go" class="primary">Run</button>
+        <button id="stop">Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Status</h2>
+      <dl>
+        <dt>state</dt>        <dd><span id="state" class="state">…</span></dd>
+        <dt>distance to goal</dt><dd><span id="dist">—</span> m</dd>
+        <dt>started at</dt>   <dd><span id="dist0">—</span> m</dd>
+        <dt>elapsed</dt>      <dd><span id="elapsed">0</span> s</dd>
+        <dt>policy calls</dt> <dd><span id="calls">0</span></dd>
+        <dt>steps</dt>        <dd><span id="steps">0</span></dd>
+        <dt>guard stops</dt>  <dd><span id="guard">0</span></dd>
+      </dl>
+      <div class="bar"><i id="bar"></i></div>
+      <div id="msg"></div>
+      <div id="reasoning"></div>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <h2>DynaNav benchmark prompts</h2>
+      <div id="examples"></div>
+      <select id="controller">
+        <option value="holonomic">holonomic &mdash; uses the omni base</option>
+        <option value="pursuit">pursuit &mdash; DynaNav parity (diff-drive)</option>
+      </select>
+    </div>
+  </div>
+</main>
+
+<p class="note">
+  The policy is never given the goal coordinate. It sees one camera frame and the
+  sentence above; the goal exists only to score the run, exactly as in DynaNav's
+  benchmark. Prompts marked <span class="tag native">native</span> belong to the
+  environment currently loaded &mdash; the others are from different scenes and are
+  offered on purpose, since running a mismatched prompt is a fair way to check the
+  robot is reading the instruction rather than just driving forward.
+</p>
+
+<script>
+const $ = id => document.getElementById(id);
+let running = false;
+
+async function loadExamples() {
+  const r = await fetch('/api/episodes');
+  const data = await r.json();
+  $('scene').textContent = data.loaded;
+  const box = $('examples');
+  box.innerHTML = '';
+  for (const ep of data.episodes) {
+    const div = document.createElement('div');
+    div.className = 'ex';
+    const head = document.createElement('div');
+    head.className = 'ex-head';
+    const name = document.createElement('span');
+    name.className = 'ex-name';
+    name.textContent = ep.name;
+    const tag = document.createElement('span');
+    tag.className = 'tag' + (ep.native ? ' native' : '');
+    tag.textContent = ep.native ? 'native · this scene' : 'other scene';
+    head.append(name, tag);
+    const text = document.createElement('div');
+    text.className = 'ex-text';
+    text.textContent = '“' + ep.instruction + '”';
+    div.append(head, text);
+    div.onclick = () => { $('prompt').value = ep.instruction; $('prompt').focus(); };
+    box.appendChild(div);
+    if (ep.native) $('prompt').value = ep.instruction;
+  }
+}
+
+function refreshFrame() {
+  // Cache-bust: without it the browser keeps showing the first frame forever.
+  $('view').src = '/frame.jpg?t=' + Date.now();
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    running = s.state === 'running';
+    $('state').textContent = s.state;
+    $('state').className = 'state ' + s.state;
+    $('ctrl').textContent = s.controller;
+    $('dist').textContent  = s.distance_m ?? '—';
+    $('dist0').textContent = s.initial_distance_m ?? '—';
+    $('elapsed').textContent = s.elapsed_s ?? 0;
+    $('calls').textContent = s.policy_calls ?? 0;
+    $('steps').textContent = s.steps ?? 0;
+    $('guard').textContent = s.guard_interventions ?? 0;
+    $('msg').textContent = s.message || '';
+
+    // Progress = fraction of the initial gap closed, not distance remaining.
+    if (s.initial_distance_m && s.distance_m != null) {
+      const closed = (s.initial_distance_m - s.distance_m) / s.initial_distance_m;
+      $('bar').style.width = Math.max(0, Math.min(1, closed)) * 100 + '%';
+    }
+    const rz = $('reasoning');
+    if (s.reasoning) { rz.style.display = 'block'; rz.textContent = s.reasoning; }
+    else rz.style.display = 'none';
+
+    $('go').disabled = running;
+    $('stop').disabled = !running;
+    if (running) refreshFrame();
+  } catch (e) {
+    $('msg').textContent = 'lost contact with the simulator';
+  }
+}
+
+$('go').onclick = async () => {
+  const r = await fetch('/api/run', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ instruction: $('prompt').value,
+                           controller: $('controller').value })
+  });
+  if (!r.ok) $('msg').textContent = (await r.json()).error;
+  else { $('bar').style.width = '0'; refreshFrame(); }
+};
+
+$('stop').onclick = () => fetch('/api/stop', { method: 'POST' });
+
+loadExamples();
+refreshFrame();
+poll();
+setInterval(poll, 700);
+</script>
+</body>
+</html>

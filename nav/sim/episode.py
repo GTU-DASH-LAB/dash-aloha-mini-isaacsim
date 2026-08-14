@@ -107,7 +107,8 @@ class EpisodeResult:
     success: bool
     final_distance_m: float
     initial_distance_m: float
-    elapsed_s: float
+    elapsed_s: float   # SIM time -- what the episode timeout budgets
+    wall_s: float      # includes the ~1.0-1.5 s each synchronous policy call blocks
     steps: int
     policy_calls: int
     path_length_m: float
@@ -126,7 +127,8 @@ class EpisodeResult:
             f"[{verdict}] {self.episode} ({self.controller})\n"
             f"  distance to goal : {self.initial_distance_m:.2f} m -> "
             f"{self.final_distance_m:.2f} m  (closed {closed:+.2f} m)\n"
-            f"  path travelled   : {self.path_length_m:.2f} m in {self.elapsed_s:.1f} s "
-            f"({self.steps} steps, {self.policy_calls} policy calls)\n"
+            f"  path travelled   : {self.path_length_m:.2f} m in {self.elapsed_s:.1f} s sim "
+            f"({self.wall_s:.1f} s wall, {self.steps} steps, "
+            f"{self.policy_calls} policy calls)\n"
             f"  guard stops      : {self.guard_interventions}"
         )

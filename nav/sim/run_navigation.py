@@ -1,0 +1,417 @@
+"""The navigation loop: camera -> TIC-VLA -> controller -> kinematic base.
+
+Runs inside Isaac Sim 6.0.1's Python 3.12. The policy lives in a separate process
+(Python 3.11, GPU1) and is reached over HTTP -- see ../plan.md for why that split is
+forced rather than chosen.
+
+One thing to be clear about, because it is the entire point of the exercise: **the
+policy is never told where the goal is.** `episode.goal` exists only to score the run,
+exactly as it does in DynaNav's benchmark. TIC-VLA gets a camera frame and a sentence.
+If the robot arrives, it arrived by reading "stop in front of Aisle 5, where traffic
+cones and a yellow caution sign block the entrance" and finding that in the image. A
+version that fed the goal coordinate to a planner would look identical on video and
+would prove nothing.
+
+Inference is SYNCHRONOUS here: the simulation pauses while the policy thinks (~1.0-1.5
+s wall time per call). DynaNav instead runs inference in a background thread and keeps
+driving on the previous plan, which is what a real robot must do. Synchronous is the
+right call for this stack -- it removes a whole class of race between plan and state
+(DynaNav's own code carries an `_is_backing_up` re-check *after* inference precisely
+because the world moved underneath it), and sim time is not wall time so nothing is
+lost but patience. Noted as a real difference from the published setup, not hidden.
+
+Usage:
+    nav/run.sh --episode warehouse --controller holonomic
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import queue
+import sys
+import threading
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+for p in (REPO / "nav" / "sim", REPO / "nav" / "policy_server", REPO / "nav" / "ui",
+          REPO / "scripts"):
+    sys.path.insert(0, str(p))
+
+from client import PolicyClient, PolicyServerError  # noqa: E402
+from controllers import Command, make_controller  # noqa: E402
+from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
+
+PHYSICS_DT = 1.0 / 60.0
+
+
+class NavigationRunner:
+    """Owns the Isaac Sim stage and executes one episode at a time.
+
+    Kit must be driven from the main thread, so the UI server runs in a *worker*
+    thread and hands jobs here rather than the other way round. `status` and
+    `latest_jpeg` are the shared read-only-ish surface the UI polls; both are guarded
+    by `_lock`.
+    """
+
+    def __init__(
+        self,
+        episode: Episode,
+        controller_name: str = "holonomic",
+        policy_host: str = "127.0.0.1",
+        policy_port: int = 8765,
+        scene_path: Path | None = None,
+        scratch_dir: Path | str = "/tmp/alohamini-nav-frames",
+        headless: bool = True,
+    ):
+        self.episode = episode
+        self.controller_name = controller_name
+        self.scene_path = scene_path or (REPO / "assets" / "usd" / f"nav_{episode.name}.usda")
+        self.scratch_dir = Path(scratch_dir)
+        self.headless = headless
+        self.policy = PolicyClient(policy_host, policy_port)
+
+        self._lock = threading.Lock()
+        self.status: dict = {
+            "state": "starting",
+            "episode": episode.name,
+            "instruction": episode.instruction,
+            "controller": controller_name,
+            "distance_m": None,
+            "initial_distance_m": None,
+            "elapsed_s": 0.0,   # sim time
+            "wall_s": 0.0,      # includes blocking inference
+            "steps": 0,
+            "policy_calls": 0,
+            "guard_interventions": 0,
+            "reasoning": "",
+            "message": "",
+        }
+        self.latest_jpeg: bytes | None = None
+
+        self.kit = None
+        self.art = None
+        self.camera = None
+        self.guard = None
+        self.base = None
+        self._abort = threading.Event()
+        # Kit must be driven from the main thread, so the UI thread cannot run an
+        # episode itself -- it queues one and the main loop picks it up.
+        self._jobs: queue.Queue[dict] = queue.Queue()
+        self.last_result: EpisodeResult | None = None
+
+    # ------------------------------------------------------------------ status
+    def _set(self, **kwargs) -> None:
+        with self._lock:
+            self.status.update(kwargs)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return dict(self.status)
+
+    def request_stop(self) -> None:
+        self._abort.set()
+
+    # -------------------------------------------------------------- job queue
+    def submit_job(self, instruction: str, controller: str | None = None) -> bool:
+        """Called from the UI thread. False if a run is already in flight."""
+        if self.snapshot()["state"] == "running":
+            return False
+        self._jobs.put({"instruction": instruction, "controller": controller})
+        return True
+
+    def take_job(self, timeout: float = 0.05) -> dict | None:
+        try:
+            return self._jobs.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    # ------------------------------------------------------------------- setup
+    def setup(self) -> None:
+        if not self.scene_path.is_file():
+            raise FileNotFoundError(
+                f"nav scene not built: {self.scene_path}\n"
+                f"  build it with: nav/sim/build_nav_scene.sh {self.episode.name}"
+            )
+
+        from isaacsim import SimulationApp
+
+        self.kit = SimulationApp({"headless": self.headless})
+
+        import omni.timeline
+        import omni.usd
+        from isaacsim.core.prims import Articulation
+
+        from base_drive import KinematicBase
+        from camera_source import NavCameraSource
+        from collision_guard import CollisionGuard
+
+        self._set(state="loading", message=f"opening {self.scene_path.name}")
+
+        usd_context = omni.usd.get_context()
+        # ABSOLUTE path. A relative --scene arg once made the relative robot reference
+        # silently fail to resolve: environment loaded, robot missing, empty bbox, no
+        # error anywhere (../../CLAUDE.md).
+        usd_context.open_stage(str(self.scene_path.resolve()))
+        stage = usd_context.get_stage()
+        # These environments stream from the CDN. Judging the stage on frame 1 sees a
+        # half-loaded world; the office scene needed 188 s to fully resolve.
+        for _ in range(240):
+            self.kit.update()
+        stage.Load()
+        for _ in range(30):
+            self.kit.update()
+
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        for _ in range(10):
+            self.kit.update()
+
+        self.art = Articulation("/World/Aloha/Geometry/base_link")
+        self.art.initialize()
+        dof_names = list(self.art.dof_names)
+
+        self.base = KinematicBase(self.art, dof_names)
+        self.base.sync_from_sim()
+
+        self.camera = NavCameraSource(scratch_dir=self.scratch_dir)
+        self.camera.warmup(self.kit)
+        self.guard = CollisionGuard()
+
+        self._set(state="ready", message="waiting for policy server")
+        info = self.policy.wait_until_ready()
+        self._set(
+            state="idle",
+            message=f"policy ready ({info['num_action_chunks']} chunks on {info['device']})",
+        )
+
+    # --------------------------------------------------------------- execution
+    def run_episode(
+        self, instruction: str | None = None, controller_name: str | None = None
+    ) -> EpisodeResult:
+        instruction = instruction or self.episode.instruction
+        if controller_name:
+            self.controller_name = controller_name
+        ep = self.episode
+        self._abort.clear()
+
+        controller = make_controller(
+            self.controller_name, ep.max_speed_mps, ep.max_yaw_rate_radps
+        )
+        controller.reset()
+        self.policy.reset()  # clear the KV cache between episodes
+        self.base.sync_from_sim()
+        self.guard.interventions = 0
+
+        start_pos = self.base.position()
+        initial_distance = math.dist(start_pos[:2], ep.goal[:2])
+        self._set(
+            state="running",
+            instruction=instruction,
+            controller=self.controller_name,
+            initial_distance_m=round(initial_distance, 3),
+            distance_m=round(initial_distance, 3),
+            policy_calls=0,
+            steps=0,
+            guard_interventions=0,
+            reasoning="",
+            message="",
+        )
+
+        command = Command(0.0, 0.0, 0.0)
+        trace: list[tuple[float, float]] = [start_pos[:2]]
+        path_length = 0.0
+        policy_calls = 0
+        prev_pos = start_pos
+        step = 0
+        t0 = time.time()
+        success = False
+        timed_out = False
+        last_displacement = (0.0, 0.0)
+
+        while True:
+            # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long
+            # the robot has to do the task, and inference here is synchronous -- each
+            # call blocks ~1.0-1.5 s of wall clock while the robot stands still. Timing
+            # by wall clock would spend most of a 70 s budget on the policy thinking
+            # and cut the episode to roughly a third of its intended length, which
+            # would look like a navigation failure and be a stopwatch bug.
+            sim_time = step * PHYSICS_DT
+            wall_time = time.time() - t0
+            position = self.base.position()
+            distance = math.dist(position[:2], ep.goal[:2])
+
+            if distance <= ep.success_threshold_m:
+                success = True
+                break
+            if sim_time > ep.timeout_s:
+                timed_out = True
+                break
+            if self._abort.is_set():
+                self._set(message="stopped by user")
+                break
+
+            # --- replan ---------------------------------------------------
+            if step % ep.replan_every_steps == 0:
+                frame_path = self.camera.grab_to_file()
+                if frame_path is None:
+                    # An empty render means the sensor pipeline is not up. Driving on
+                    # a stale plan here would look fine and mean nothing.
+                    self._set(message="camera returned an empty frame; holding")
+                    for _ in range(10):
+                        self.kit.update()
+                    continue
+
+                self.latest_jpeg = frame_path.read_bytes()
+                try:
+                    out = self.policy.predict(
+                        image_paths=[str(frame_path)],
+                        instruction=instruction,
+                        # TICVLA unpacks the 6-form as [vx, vy, _, yaw_speed, dx, dy].
+                        robot_state=[
+                            command.vx, command.vy, 0.0, command.omega,
+                            last_displacement[0], last_displacement[1],
+                        ],
+                        current_step=step,
+                        robot_type=ep.robot_type,
+                    )
+                except PolicyServerError as exc:
+                    self._set(state="error", message=str(exc))
+                    raise
+
+                import numpy as np
+
+                waypoints = np.asarray(out["waypoints"], dtype=float)
+                command = controller(waypoints)
+                policy_calls += 1
+                self._set(
+                    policy_calls=policy_calls,
+                    reasoning=(out.get("reasoning") or "")[:600],
+                )
+
+            # --- guard + step ---------------------------------------------
+            guard = self.guard.check(position, self.base.yaw, command.vx, command.vy)
+            self.base.apply(
+                command.vx * guard.scale,
+                command.vy * guard.scale,
+                # Let the robot keep turning when the guard stops translation --
+                # otherwise it wedges against a wall with no way to face away from it.
+                command.omega,
+                PHYSICS_DT,
+            )
+            self.kit.update()
+
+            new_pos = self.base.position()
+            path_length += math.dist(new_pos[:2], prev_pos[:2])
+            last_displacement = (new_pos[0] - prev_pos[0], new_pos[1] - prev_pos[1])
+            prev_pos = new_pos
+            step += 1
+
+            if step % 30 == 0:
+                trace.append(new_pos[:2])
+                self._set(
+                    steps=step,
+                    distance_m=round(distance, 3),
+                    elapsed_s=round(sim_time, 1),
+                    wall_s=round(wall_time, 1),
+                    guard_interventions=self.guard.interventions,
+                    message=(
+                        f"blocked by {guard.hit_prim.split('/')[-1]} at {guard.distance_m:.2f} m"
+                        if guard.blocked else ""
+                    ),
+                )
+
+        self.base.stop()
+        final_pos = self.base.position()
+        final_distance = math.dist(final_pos[:2], ep.goal[:2])
+        trace.append(final_pos[:2])
+
+        result = EpisodeResult(
+            episode=ep.name,
+            instruction=instruction,
+            success=success,
+            final_distance_m=final_distance,
+            initial_distance_m=initial_distance,
+            elapsed_s=step * PHYSICS_DT,
+            wall_s=time.time() - t0,
+            steps=step,
+            policy_calls=policy_calls,
+            path_length_m=path_length,
+            guard_interventions=self.guard.interventions,
+            timed_out=timed_out,
+            controller=self.controller_name,
+            trace=trace,
+        )
+        self._set(
+            state="done",
+            distance_m=round(final_distance, 3),
+            steps=step,
+            elapsed_s=round(result.elapsed_s, 1),
+            message=result.summary().splitlines()[0],
+        )
+        return result
+
+    def idle(self, seconds: float = 0.05) -> None:
+        """Keep Kit alive between jobs so the viewport and camera stay live."""
+        for _ in range(max(1, int(seconds / PHYSICS_DT))):
+            self.kit.update()
+
+    def close(self) -> None:
+        if self.kit is not None:
+            self.kit.close()
+
+
+def main() -> int:
+    episodes = load_episodes()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--episode", default="warehouse", choices=sorted(episodes))
+    ap.add_argument("--controller", default="holonomic", choices=["holonomic", "pursuit"])
+    ap.add_argument("--instruction", default=None,
+                    help="Override the benchmark instruction (the UI's job, mostly).")
+    ap.add_argument("--policy-host", default="127.0.0.1")
+    ap.add_argument("--policy-port", type=int, default=8765)
+    ap.add_argument("--gui", action="store_true", help="Run with a window instead of headless.")
+    ap.add_argument("--ui-port", type=int, default=None,
+                    help="Also serve the prompt UI on this port.")
+    args = ap.parse_args()
+
+    ep = load_episode(args.episode)
+    runner = NavigationRunner(
+        episode=ep,
+        controller_name=args.controller,
+        policy_host=args.policy_host,
+        policy_port=args.policy_port,
+        headless=not args.gui,
+    )
+    runner.setup()
+
+    if args.ui_port:
+        from ui_bridge import serve_ui  # local import: only needed in UI mode
+
+        serve_ui(runner, port=args.ui_port)
+        print(f"\n  UI: http://127.0.0.1:{args.ui_port}\n")
+        # The UI thread submits jobs; this thread just keeps Kit turning.
+        try:
+            while True:
+                job = runner.take_job(timeout=0.05)
+                if job is None:
+                    runner.idle()
+                    continue
+                result = runner.run_episode(job["instruction"], job.get("controller"))
+                runner.last_result = result
+                print("\n" + result.summary(), flush=True)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            runner.close()
+        return 0
+
+    result = runner.run_episode(args.instruction)
+    print("\n" + result.summary())
+    runner.close()
+    return 0 if result.success else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

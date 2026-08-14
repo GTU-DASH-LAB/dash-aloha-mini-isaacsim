@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
-from alohamini1_specs import CAMERA_PRIM_PATHS  # noqa: E402
+from alohamini1_specs import CAMERA_PRIM_PATHS, NAV_CAMERA_PRIM_PATH  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/scene.usda")
@@ -89,6 +89,33 @@ CAMERA_SPECS = {
         "path": CAMERA_PRIM_PATHS["wrist_right"],
         "translate": (0.0, 0.035, 0.01),
         "rotateXYZ": (157.0, 0.0, 180.0),
+    },
+    # --- Navigation camera: the only one that faces the DRIVING direction ---
+    # Every camera above faces the manipulation front (-Y). The base drives +X. That
+    # mismatch is fine for manipulation and fatal for navigation, so nav/ gets its own
+    # camera rather than being handed a sideways view. Kept out of CAMERA_PRIM_PATHS
+    # so the LeRobot observation contract is unchanged (see alohamini1_specs.py).
+    #
+    # This one is NOT in the (x, 0, 180) family the cheat sheet above covers, so the
+    # derivation, using the same R = Rz*Ry*Rx convention:
+    #   after Rx(x):   view = (0, sin x, -cos x)      up = (0, cos x, sin x)
+    #   after Rz(-90): view = (sin x, 0, -cos x)      up = (cos x, 0, sin x)
+    # so x=80 gives view = (0.985, 0, -0.174): straight down +X, tilted 10 deg down,
+    # with up = (0.174, 0, 0.985) -- image-up still world-up, i.e. not upside down.
+    # 10 deg down rather than level so the floor immediately ahead is in frame (that
+    # is where an obstacle the robot is about to hit actually appears) while keeping
+    # the horizon visible for the distant landmarks the benchmark prompts name --
+    # "the red emergency exit door", "the wall with the words 'Northside Branch
+    # Library'". Tilt much further down and those leave the frame entirely.
+    "nav": {
+        "path": NAV_CAMERA_PRIM_PATH,
+        # x=+0.25 clears the base's own front face (half-extent ~0.21 in X, the same
+        # number behind the 0.375 m turning swing radius in CLAUDE.md), so the chassis
+        # does not occlude the lower frame. z=1.15 matches the forward camera's height
+        # on the column, which also puts it in the same ballpark as Nova Carter's
+        # camera height -- the robot TIC-VLA was trained on.
+        "translate": (0.25, 0.0, 1.15),
+        "rotateXYZ": (80.0, 0.0, -90.0),
     },
 }
 

@@ -87,6 +87,19 @@ CAMERA_PRIM_PATHS = {
     "wrist_right": f"{_ARM_CHAIN}/right_link1/right_link2/right_link3/right_link4/right_link5/camera_wrist_right",
 }
 
+# --- Navigation camera (NOT part of the LeRobot camera set) ---
+# Deliberately kept OUT of CAMERA_PRIM_PATHS: that dict defines the official LeRobot
+# observation contract ("observation.images.<name>"), and adding a key there would
+# silently change the shape of every recorded manipulation dataset.
+#
+# It exists because the three cameras above all face the MANIPULATION front, which is
+# -Y (both grippers work toward -Y -- measured, see add_cameras.py), while the base's
+# driving forward (vx) is +X. For manipulation that is correct. For navigation it is
+# useless: the camera would show whatever is 90 degrees off the side of the direction
+# of travel, and a vision-language navigation policy asked to "go straight ahead" would
+# be reasoning about a view the robot is not driving into.
+NAV_CAMERA_PRIM_PATH = f"{_ARM_CHAIN}/camera_nav"
+
 # --- Mobile base (LeKiwi 3-wheel omni base, alohamini1 dims) ---
 WHEEL_RADIUS_M = 0.05
 BASE_RADIUS_M = 0.125  # center to each wheel

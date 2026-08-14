@@ -104,6 +104,10 @@ class NavigationRunner:
             "guard_interventions": 0,
             "reasoning": "",
             "message": "",
+            # False once a run uses an instruction other than the episode's own, at
+            # which point the distance readouts no longer describe the task and the
+            # UI stops presenting them as a score. See run_episode().
+            "scored": True,
         }
         self.latest_jpeg: bytes | None = None
         # Third-person view. None until the UI asks for it -- an Isaac Sim Camera
@@ -318,8 +322,18 @@ class NavigationRunner:
 
         start_pos = self.base.position()
         initial_distance = math.dist(start_pos[:2], ep.goal[:2])
+        # `ep.goal` is the goal of the episode's OWN instruction. If the user typed
+        # something else, every distance below still measures toward that original
+        # goal, and reporting it unlabelled would be a plain lie -- "distance to goal
+        # 14.2 m" while the robot correctly drives somewhere else entirely. There is
+        # no goal coordinate for a free-text instruction and there cannot be one: the
+        # whole point is that the policy is never given coordinates. So the numbers
+        # stay (they are still the honest distance to a fixed point, useful for
+        # watching motion) and the UI is told not to score them.
+        scored = instruction.strip() == ep.instruction.strip()
         self._set(
             state="running",
+            scored=scored,
             instruction=instruction,
             controller=self.controller_name,
             initial_distance_m=round(initial_distance, 3),

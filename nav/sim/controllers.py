@@ -38,19 +38,27 @@ win over differential drive.
 **That trap is real and `yaw_align` does not defuse it. Measured, not argued.**
 Same episode, same policy, controller the only variable:
 
-    controller   yaw over the run          closest approach to goal
-    holonomic    87.9 deg -> 94 deg        6.06 m / 6.98 m   (never turns)
-    pursuit      90 deg -> 78.4 deg        5.77 m            (turns, sustained)
+    controller   rightward yaw by t=21 s   closest approach to goal
+    holonomic     4.9 / 2.1 deg            6.06 / 6.98 m
+    pursuit      11.8 / 12.5 deg           5.77 / 6.39 m
+
+Four full runs, all on the benchmark Aisle-05 instruction. Yaw is measured over the
+approach window (t = 0-21 s) only -- what the robot accumulates after it has passed
+the aisle mouth is wandering, not steering. Pursuit turns ~2.7x as far (mean 12.2 vs
+3.5 deg) and does it consistently; one holonomic run turned the WRONG way, reaching
+105.9 deg. Note the closest-approach gain is modest (mean 6.08 vs 6.52 m), which is
+the honest shape of this result: the deficit is 25 deg and the controller is worth
+about 9 of them.
 
 The mechanism: TIC-VLA expresses "the target is off to your right" as a small
 lateral offset, because on the differential-drive robot it was trained on, lateral
 offset can ONLY be satisfied by rotating. HolonomicController satisfies the same
 offset by translating, so the offset is discharged as sideways drift, the heading
-error is driven back to ~0 before the next replan, and the camera never rotates.
-The next frame therefore looks the same, the policy asks for the same small offset
-again, and the loop that was supposed to converge instead sits still. On identical
-plans pursuit produces ~1.7x the yaw rate (1.7 vs 1.0 deg/s at a 1.2 deg plan;
-27.4 vs 16.0 deg/s at 20 deg) -- and, more importantly, it produces yaw at all.
+error is driven back to ~0 before the next replan, and the camera barely rotates.
+The next frame therefore looks nearly the same, the policy asks for the same small offset
+again, and the loop that was supposed to converge converges far more slowly. On
+identical plans pursuit produces ~1.7x the yaw rate (1.7 vs 1.0 deg/s at a 1.2 deg
+plan; 27.4 vs 16.0 deg/s at 20 deg).
 
 Prefer `pursuit` unless you are specifically measuring the omni base. The lateral
 DOF is still worth having; `collision_guard.py` uses it to slide along obstacles,

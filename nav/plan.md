@@ -644,8 +644,8 @@ on the differential-drive Nova Carter it was trained on, that is the only thing 
 offset *can* mean: you satisfy it by rotating. `HolonomicController` has an omni base, so
 it satisfies the identical offset by **translating**. The offset is discharged as sideways
 drift, the heading error is driven back to ~0 before the next replan, and the camera never
-rotates — so the next frame looks the same, the policy asks for the same small offset
-again, and a loop meant to converge sits still.
+rotates much — so the next frame looks nearly the same, the policy asks for the same
+small offset again, and a loop meant to converge crawls.
 
 `controllers.py` *predicted this in its own docstring* ("full holonomy is dangerous for a
 vision-language policy") and then assumed `yaw_align=0.8` defused it. Nobody measured that
@@ -653,12 +653,19 @@ assumption for five runs.
 
 - [x] Measured, same episode, same policy, controller the only variable:
 
-      controller   yaw over the run       closest approach
-      holonomic    87.9° -> 94°           6.06 m / 6.98 m   (never turns)
-      pursuit      90°   -> 78.4°         5.77 m            (turns, sustained)
+      controller   rightward yaw by t=21 s   closest approach
+      holonomic     4.9° / 2.1°              6.06 / 6.98 m
+      pursuit      11.8° / 12.5°             5.77 / 6.39 m
+
+      Four full runs, all on the benchmark Aisle-05 instruction. Yaw is measured over
+      the approach window (t=0-21 s) only -- what accumulates after the robot passes
+      the aisle mouth is wandering, not steering. Pursuit turns ~2.7x as far (mean
+      12.2° vs 3.5°) and consistently; one holonomic run turned the WRONG way, to
+      105.9°. The closest-approach gain is modest (mean 6.08 vs 6.52 m), which is the
+      honest shape of the result: the deficit is 25° and the controller is worth ~9.
 
 - [x] Static comparison on identical plans: pursuit gives ~1.7× the yaw rate (1.7 vs
-      1.0 °/s at a 1.2° plan; 27.4 vs 16.0 °/s at 20°) — and, unlike holonomic, gives yaw.
+      1.0 °/s at a 1.2° plan; 27.4 vs 16.0 °/s at 20°).
 - [x] `pursuit` is now the default in `run.sh`, `run_navigation.py` and the UI dropdown.
       The omni base's lateral DOF is still used by `collision_guard.py` for sliding along
       obstacles, where there is no policy in the loop to confuse.

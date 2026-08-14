@@ -516,11 +516,16 @@ affect the *rest* of this repo:
   differential-drive Nova Carter it was trained on, lateral offset can only be satisfied
   by **rotating**. `HolonomicController` satisfies the same offset by **translating**: it
   is discharged as sideways drift, the heading error is driven back to ~0 before the next
-  replan, and **the camera never rotates**. The next frame therefore looks identical, the
-  policy asks for the same small offset again, and the loop that was supposed to converge
-  sits still. Measured, controller the only variable: holonomic held yaw 87.9–94° for the
-  whole run (closest approach 6.06 / 6.98 m); pursuit turned 90° → 78.4° (closest 5.77 m).
-  On identical plans pursuit yields ~1.7× the yaw rate. `controllers.py` had *predicted*
+  replan, and **the camera barely rotates**. The next frame therefore looks nearly
+  identical, the policy asks for the same small offset again, and a loop meant to converge
+  crawls. Four full runs on the benchmark instruction, controller the only variable;
+  yaw measured over the approach window (t=0–21 s) because what accumulates after the
+  robot passes the aisle mouth is wandering, not steering: holonomic turned right by
+  **4.9° / 2.1°** (one of those runs turning the *wrong* way, to 105.9°), pursuit by
+  **11.8° / 12.5°** — ~2.7× as far and consistently. On identical plans pursuit yields
+  ~1.7× the yaw rate. Be clear about the size of the win, though: closest approach only
+  improved from a mean of 6.52 m to 6.08 m. The deficit is 25°; the controller is worth
+  about 9 of them. `controllers.py` had *predicted*
   this in its docstring — "full holonomy is dangerous for a vision-language policy" — and
   the `yaw_align=0.8` mitigation was assumed sufficient without being measured. It was not.
 - **Instrument intent, not just outcome.** `EpisodeResult.plans` logs, per policy call,

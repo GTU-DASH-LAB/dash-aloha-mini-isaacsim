@@ -91,6 +91,15 @@ class NavigationRunner:
             "message": "",
         }
         self.latest_jpeg: bytes | None = None
+        # Third-person view. None until the UI asks for it -- an Isaac Sim Camera
+        # allocates a render product that Kit then renders EVERY frame whether or not
+        # anyone reads it, so a headless benchmark should not pay for a view nobody is
+        # watching. `chase_wanted` is set from the UI thread; the main thread acts on it.
+        self.chase_jpeg: bytes | None = None
+        self.chase_wanted = False
+        self.chase_available: bool | None = None  # None = not tried yet
+        self._chase: object | None = None
+        self._preview_t = 0.0  # throttles the between-runs camera refresh
 
         self.kit = None
         self.art = None
@@ -98,6 +107,7 @@ class NavigationRunner:
         self.guard = None
         self.base = None
         self._abort = threading.Event()
+        self._reset = threading.Event()
         # Kit must be driven from the main thread, so the UI thread cannot run an
         # episode itself -- it queues one and the main loop picks it up.
         self._jobs: queue.Queue[dict] = queue.Queue()
@@ -110,10 +120,79 @@ class NavigationRunner:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return dict(self.status)
+            snap = dict(self.status)
+        # Chase state is reported so a browser reload can restore the toggle. Without
+        # it a reload leaves the checkbox off while the camera is still allocated and
+        # rendering every frame -- paying the cost with nothing on screen.
+        snap["chase_enabled"] = self.chase_wanted
+        snap["chase_available"] = self.chase_available
+        return snap
 
     def request_stop(self) -> None:
         self._abort.set()
+
+    def request_reset(self) -> None:
+        """Put the robot back on the start line.
+
+        Aborts a running episode too: resetting mid-run and letting the loop carry on
+        against a teleported robot would produce a nonsense trace. The actual work
+        happens on the main thread in `perform_reset()` -- this only raises the flag,
+        because touching the articulation from the UI thread races PhysX.
+        """
+        self._abort.set()
+        self._reset.set()
+
+    # ------------------------------------------------------------------- chase
+    def set_chase_enabled(self, enabled: bool) -> bool:
+        """Turn the third-person view on/off. Returns whether it is now available."""
+        self.chase_wanted = enabled
+        if not enabled:
+            return True
+        # Creation itself must happen on the main thread; report what we know now.
+        return self.chase_available is not False
+
+    def _update_chase(self) -> None:
+        """Main thread only. Creates the camera on first use, then grabs a frame."""
+        if not self.chase_wanted:
+            return
+        if self._chase is None:
+            if self.chase_available is False:
+                return
+            from camera_source import try_create_chase
+
+            self._chase = try_create_chase()
+            self.chase_available = self._chase is not None
+            if self._chase is None:
+                self._set(message=(
+                    "this scene has no chase camera -- rebuild it with "
+                    f"nav/sim/build_nav_scene.sh {self.episode.name}"
+                ))
+                return
+        frame = self._chase.grab_jpeg()
+        if frame:
+            self.chase_jpeg = frame
+
+    def _update_idle_views(self) -> None:
+        """Main thread only. Keep both camera panels live between runs.
+
+        While an episode runs, the nav panel deliberately shows the last frame the
+        POLICY was given -- that is what makes the reasoning text next to it legible.
+        Between runs no such frame exists, and a black panel beside a moving chase view
+        reads as a broken UI rather than an idle one, so it shows a live preview.
+
+        Throttled to ~3 Hz: the browser polls at 700 ms, and a 640x480 JPEG encode on
+        every idle tick would be pure waste. `grab_jpeg()` rather than `grab_to_file()`
+        on purpose -- the on-disk frame counter belongs to the policy's frames.
+        """
+        now = time.time()
+        if now - self._preview_t < 0.3:
+            return
+        self._preview_t = now
+        if self.camera is not None:
+            frame = self.camera.grab_jpeg()
+            if frame:
+                self.latest_jpeg = frame
+        self._update_chase()
 
     # -------------------------------------------------------------- job queue
     def submit_job(self, instruction: str, controller: str | None = None) -> bool:
@@ -122,6 +201,9 @@ class NavigationRunner:
             return False
         self._jobs.put({"instruction": instruction, "controller": controller})
         return True
+
+    def reset_pending(self) -> bool:
+        return self._reset.is_set()
 
     def take_job(self, timeout: float = 0.05) -> dict | None:
         try:
@@ -323,6 +405,13 @@ class NavigationRunner:
             prev_pos = new_pos
             step += 1
 
+            # Refresh the third-person view ~4x per simulated second. Tying it to the
+            # replan cadence instead would give one frame every ~2.5 s of wall clock
+            # (1 s of driving plus a blocking policy call), which is a slideshow, not
+            # something you can watch the robot navigate in.
+            if step % 15 == 0:
+                self._update_chase()
+
             if step % 30 == 0:
                 trace.append(new_pos[:2])
                 self._set(
@@ -367,10 +456,44 @@ class NavigationRunner:
         )
         return result
 
+    def perform_reset(self) -> None:
+        """Main thread only. Put the robot back on the episode's start line."""
+        ep = self.episode
+        self._reset.clear()
+        self._abort.clear()
+        # Drop anything queued. Hitting Reset means "start over", so a job submitted
+        # before the reset must not fire immediately afterwards.
+        while self.take_job(timeout=0.0) is not None:
+            pass
+
+        self.base.reset_to(tuple(ep.start), ep.start_yaw_rad)
+        self.guard.interventions = 0
+        # Clear the policy's KV cache as well. Without this the model carries the
+        # previous attempt's context into a run that is supposed to start fresh, and
+        # the "reset" run is not comparable to a first one.
+        try:
+            self.policy.reset()
+        except PolicyServerError as exc:
+            self._set(message=f"reset the robot, but the policy server did not: {exc}")
+
+        # Let the teleport settle before anyone renders or measures.
+        for _ in range(30):
+            self.kit.update()
+        self._preview_t = 0.0  # force a refresh; both panels must show the start pose
+        self._update_idle_views()
+
+        self._set(
+            state="idle", distance_m=None, initial_distance_m=None, elapsed_s=0.0,
+            wall_s=0.0, steps=0, policy_calls=0, guard_interventions=0, reasoning="",
+            message=f"reset to start: {tuple(round(v, 2) for v in ep.start)} "
+                    f"@ {ep.start_yaw_deg:g} deg",
+        )
+
     def idle(self, seconds: float = 0.05) -> None:
         """Keep Kit alive between jobs so the viewport and camera stay live."""
         for _ in range(max(1, int(seconds / PHYSICS_DT))):
             self.kit.update()
+        self._update_idle_views()
 
     def close(self) -> None:
         if self.kit is not None:
@@ -409,6 +532,11 @@ def main() -> int:
         # The UI thread submits jobs; this thread just keeps Kit turning.
         try:
             while True:
+                # Reset is checked before jobs: if the user hit Reset while a run was
+                # queued, they meant "start over", not "run the stale job first".
+                if runner.reset_pending():
+                    runner.perform_reset()
+                    continue
                 job = runner.take_job(timeout=0.05)
                 if job is None:
                     runner.idle()

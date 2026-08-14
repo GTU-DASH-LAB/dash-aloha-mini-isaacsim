@@ -23,6 +23,17 @@ nav/run.sh
 Then open <http://127.0.0.1:8080>. The four DynaNav prompts are listed in the UI;
 click one to load it, or type your own.
 
+The UI also has:
+
+- **third-person view** — a checkbox above the camera panel. Ticking it opens a second
+  live view from a chase camera 2.5 m behind the robot, side by side with the nav
+  camera, so you can watch the robot drive and see what it is reasoning over at the same
+  time. It is off by default and created on first use: once an Isaac Sim `Camera`
+  exists, Kit renders it every frame whether or not anyone is looking.
+- **Reset** — teleports the robot back to the episode's start pose, aborting a run in
+  progress. It also clears the policy server's KV cache, so the next run starts from a
+  genuinely blank context rather than carrying the failed attempt's reasoning forward.
+
 `run.sh` starts the policy server itself if it is not already up, and reuses it if it
 is. Building the scene is a one-off per episode (it takes a few minutes — the
 environments stream from NVIDIA's CDN).

@@ -1,31 +1,67 @@
-"""Render the nav camera and hand the policy server a file path.
+"""Render a robot camera and hand out the frame — as a file path, or as JPEG bytes.
 
-Frames cross the process boundary as paths on disk rather than as bytes in JSON.
-Both processes are on this one machine and TICVLA.predict() already takes
-`image_paths: list[str]`, so encoding a 640x480 render into JSON would be pure
-overhead on the hot path -- a policy call already costs 1.0-1.5 s and runs every
-0.5 s of sim time.
+Two cameras matter here and they serve different masters:
 
-The one thing this couples is the scratch directory: the sim process writes it and
-the policy process reads it, so they must agree. The policy server returns HTTP 400
-naming the missing paths if they ever disagree, rather than failing somewhere deeper.
+  nav    the frame the POLICY sees. Written to disk, because frames cross the process
+         boundary as paths rather than bytes -- both processes are on this machine and
+         TICVLA.predict() already takes `image_paths`, so encoding a render into JSON
+         would be pure overhead on a hot path.
+  chase  a third-person view for a HUMAN. Never sent to the policy. Only ever needs to
+         reach the browser, so it stays in memory as JPEG bytes and never touches disk.
+
+The chase camera is created LAZILY, on first request from the UI. That is not
+premature optimisation: an Isaac Sim `Camera` allocates a render product, and Kit then
+renders it every single frame whether or not anyone reads it. Someone running a
+headless benchmark should not pay for a view nobody is watching.
 """
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from alohamini1_specs import CAMERA_RESOLUTION, NAV_CAMERA_PRIM_PATH  # noqa: E402
+from alohamini1_specs import (  # noqa: E402
+    CAMERA_RESOLUTION,
+    CHASE_CAMERA_PRIM_PATH,
+    NAV_CAMERA_PRIM_PATH,
+)
 
 DEFAULT_SCRATCH = Path("/tmp/alohamini-nav-frames")
 
 
-class NavCameraSource:
-    """The robot's forward-facing navigation camera.
+class _Source:
+    """Thin wrapper over an Isaac Sim Camera. Not used directly."""
+
+    def __init__(self, prim_path: str, resolution: tuple[int, int] = CAMERA_RESOLUTION):
+        from isaacsim.sensors.camera import Camera
+
+        self.prim_path = prim_path
+        self._camera = Camera(prim_path=prim_path, resolution=resolution)
+        self._camera.initialize()
+
+    def grab(self) -> np.ndarray | None:
+        rgba = self._camera.get_rgba()
+        if rgba is None or rgba.size == 0:
+            return None
+        return rgba[:, :, :3].astype(np.uint8)
+
+    def grab_jpeg(self, quality: int = 85) -> bytes | None:
+        frame = self.grab()
+        if frame is None:
+            return None
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.fromarray(frame).save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+
+
+class NavCameraSource(_Source):
+    """The robot's forward-facing navigation camera — what the policy is shown.
 
     Note this is NAV_CAMERA_PRIM_PATH, not CAMERA_PRIM_PATHS["forward"]. The three
     LeRobot cameras all face the manipulation front (-Y) while the base drives +X; a
@@ -40,31 +76,20 @@ class NavCameraSource:
         resolution: tuple[int, int] = CAMERA_RESOLUTION,
         keep_frames: bool = True,
     ):
-        from isaacsim.sensors.camera import Camera
-
+        super().__init__(prim_path, resolution)
         self.scratch_dir = Path(scratch_dir)
         self.scratch_dir.mkdir(parents=True, exist_ok=True)
         self.keep_frames = keep_frames
         self._frame_index = 0
 
-        self._camera = Camera(prim_path=prim_path, resolution=resolution)
-        self._camera.initialize()
-
     def warmup(self, kit, steps: int = 30) -> None:
-        """The first renders come back empty -- the sensor pipeline needs to spin up.
+        """The first renders come back empty — the sensor pipeline needs to spin up.
 
-        Same warmup capture_cameras.py does. Calling predict() on an empty frame does
-        not error, it just returns a plan computed from a black image, which is far
-        harder to notice than a crash.
+        Calling predict() on an empty frame does not error, it just returns a plan
+        computed from a black image, which is far harder to notice than a crash.
         """
         for _ in range(steps):
             kit.update()
-
-    def grab(self) -> np.ndarray | None:
-        rgba = self._camera.get_rgba()
-        if rgba is None or rgba.size == 0:
-            return None
-        return rgba[:, :, :3].astype(np.uint8)
 
     def grab_to_file(self, tag: str = "") -> Path | None:
         """Render one frame and write it. Returns the path, or None if empty."""
@@ -76,8 +101,8 @@ class NavCameraSource:
 
         name = f"nav_{self._frame_index:06d}{('_' + tag) if tag else ''}.jpg"
         path = self.scratch_dir / name
-        # JPEG, quality 95: the policy resizes to 448x448 internally anyway, so PNG's
-        # losslessness buys nothing and costs ~8x the write time on the hot path.
+        # quality 95: the policy resizes to 448x448 internally, so PNG's losslessness
+        # buys nothing and costs ~8x the write time on the hot path.
         Image.fromarray(frame).save(path, quality=95)
 
         if not self.keep_frames and self._frame_index > 0:
@@ -90,3 +115,33 @@ class NavCameraSource:
     @property
     def frames_written(self) -> int:
         return self._frame_index
+
+
+class ChaseCameraSource(_Source):
+    """Third-person view, for watching. Never shown to the policy.
+
+    Parented to base_link in USD, so it follows the robot's position and yaw for free
+    -- no per-step repositioning, and it keeps facing the way the robot faces.
+    """
+
+    def __init__(
+        self,
+        prim_path: str = CHASE_CAMERA_PRIM_PATH,
+        resolution: tuple[int, int] = CAMERA_RESOLUTION,
+    ):
+        super().__init__(prim_path, resolution)
+
+
+def try_create_chase(prim_path: str = CHASE_CAMERA_PRIM_PATH) -> ChaseCameraSource | None:
+    """Create the chase camera if the scene actually has one.
+
+    Nav scenes built before the chase camera existed do not carry the prim, and the
+    right answer there is a clear message telling the user to rebuild -- not a stack
+    trace out of the render pipeline halfway through an episode.
+    """
+    import omni.usd
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None or not stage.GetPrimAtPath(prim_path).IsValid():
+        return None
+    return ChaseCameraSource(prim_path)

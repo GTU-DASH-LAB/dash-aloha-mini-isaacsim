@@ -410,6 +410,13 @@ affect the *rest* of this repo:
   shape of every recorded manipulation dataset. Its rotation is outside the
   `(x, 0, 180)` family the cheat sheet in `add_cameras.py` covers — `(80, 0, -90)`
   gives view `(0.985, 0, -0.174)`, with the derivation written out there.
+- **And a fifth, `camera_chase`** — the third-person view the UI can open. Parented to
+  `base_link` (not `vertical_link`, which would ride the lift) so it inherits position
+  and yaw and stays behind the robot through turns. It is created **lazily, on the first
+  UI request**: once an Isaac Sim `Camera` object exists, Kit renders its render product
+  every frame whether or not anything reads it, so a headless benchmark should not pay
+  for it. Also kept out of `CAMERA_PRIM_PATHS`, for the same observation-contract reason
+  as `camera_nav`.
 - **Nav scenes are separate stage files** (`assets/usd/nav_<episode>.usda`), built by
   `nav/sim/build_nav_scene.sh`. They never touch `scene.usda`. Note they still need all
   three pipeline steps applied — a freshly authored layer has no joint drives, no wheel
@@ -424,6 +431,12 @@ affect the *rest* of this repo:
   through shelving. `nav/sim/collision_guard.py` raycasts instead. Verified live rather
   than assumed — `nav/tools/check_collision_guard.py` sweeps the ray fan through a
   circle and hits 9/16 bearings on real warehouse geometry at 6.8–12.5 m.
+- **FastAPI + `from __future__ import annotations` = request models must be module
+  level.** A pydantic model defined *inside* the route factory cannot be resolved by
+  `get_type_hints()` against the function's module globals. FastAPI does not raise — it
+  demotes the body parameter to a query string, and every POST answers
+  `{"loc": ["query", "req"], "msg": "Field required"}`. Cost one 3-minute Isaac Sim
+  restart to find, in `nav/ui/ui_bridge.py`.
 - **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
   Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
   wheel traction is poor but not zero. If anyone root-causes the traction issue below,

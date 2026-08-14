@@ -100,6 +100,13 @@ CAMERA_PRIM_PATHS = {
 # be reasoning about a view the robot is not driving into.
 NAV_CAMERA_PRIM_PATH = f"{_ARM_CHAIN}/camera_nav"
 
+# --- Third-person chase camera (also NOT part of the LeRobot camera set) ---
+# Parented to base_link rather than the lift column, so it does not ride up and down
+# when the lift moves -- and so it inherits the base's yaw, giving a chase view that
+# turns with the robot instead of a fixed world camera the robot drives out of.
+_BASE_LINK = "/World/Aloha/Geometry/base_link"
+CHASE_CAMERA_PRIM_PATH = f"{_BASE_LINK}/camera_chase"
+
 # --- Mobile base (LeKiwi 3-wheel omni base, alohamini1 dims) ---
 WHEEL_RADIUS_M = 0.05
 BASE_RADIUS_M = 0.125  # center to each wheel

@@ -46,6 +46,19 @@ class RunRequest(BaseModel):
     controller: str | None = None
 
 
+class ChaseRequest(BaseModel):
+    enabled: bool
+
+
+# Both request models MUST stay at module level. This file uses
+# `from __future__ import annotations`, so every annotation is a string that FastAPI
+# resolves with get_type_hints() against the function's *module* globals -- a model
+# defined inside build_app() is invisible there. It does not raise: FastAPI silently
+# falls back to treating the parameter as a query string, and the endpoint answers
+# every POST with {"loc": ["query", "req"], "msg": "Field required"}. Cost one restart
+# of a 3-minute Isaac Sim boot to find.
+
+
 def build_app(runner) -> FastAPI:
     app = FastAPI(title="AlohaMini navigation")
     episodes = load_episodes()
@@ -98,15 +111,43 @@ def build_app(runner) -> FastAPI:
         runner.request_stop()
         return JSONResponse({"ok": True})
 
-    @app.get("/frame.jpg")
-    def frame() -> Response:
-        data = runner.latest_jpeg or _PLACEHOLDER
+    @app.post("/api/reset")
+    def api_reset() -> JSONResponse:
+        """Put the robot back on the start line.
+
+        Returns immediately -- the teleport itself has to happen on the main thread
+        (touching the articulation from here races PhysX), so this only raises a flag
+        the sim loop picks up within a frame or two.
+        """
+        runner.request_reset()
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/chase")
+    def api_chase(req: ChaseRequest) -> JSONResponse:
+        """Toggle the third-person view.
+
+        Off by default and created lazily on the first enable: an Isaac Sim Camera
+        allocates a render product that Kit renders every frame regardless of whether
+        anyone reads it, so a headless run should not pay for a view nobody watches.
+        """
+        available = runner.set_chase_enabled(req.enabled)
+        return JSONResponse({"ok": True, "enabled": req.enabled, "available": available})
+
+    def _jpeg(data: bytes | None) -> Response:
         # no-store, or the browser serves the first frame forever.
         return Response(
-            content=data,
+            content=data or _PLACEHOLDER,
             media_type="image/jpeg",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
         )
+
+    @app.get("/frame.jpg")
+    def frame() -> Response:
+        return _jpeg(runner.latest_jpeg)
+
+    @app.get("/chase.jpg")
+    def chase_frame() -> Response:
+        return _jpeg(runner.chase_jpeg)
 
     return app
 

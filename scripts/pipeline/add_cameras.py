@@ -25,7 +25,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
-from alohamini1_specs import CAMERA_PRIM_PATHS, NAV_CAMERA_PRIM_PATH  # noqa: E402
+from alohamini1_specs import (  # noqa: E402
+    CAMERA_PRIM_PATHS,
+    CHASE_CAMERA_PRIM_PATH,
+    NAV_CAMERA_PRIM_PATH,
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/scene.usda")
@@ -116,6 +120,22 @@ CAMERA_SPECS = {
         # camera height -- the robot TIC-VLA was trained on.
         "translate": (0.25, 0.0, 1.15),
         "rotateXYZ": (80.0, 0.0, -90.0),
+    },
+    # --- Third-person chase camera: for WATCHING, never fed to the policy ---
+    # Parented to base_link, so it inherits the base's position and yaw and stays
+    # behind the robot as it turns, rather than being a fixed world camera the robot
+    # drives away from. base_link rather than vertical_link on purpose: mounted on the
+    # column it would ride up and down with the lift.
+    #
+    # Geometry: sitting 2.5 m behind and 1.8 m above the base, the robot's centre of
+    # mass (~0.5 m up) sits atan(1.3 / 2.5) = 27.5 deg below the horizon. Using the
+    # same (x, 0, -90) family as the nav camera, view = (sin x, 0, -cos x) is tilted
+    # (90 - x) below horizontal, so x = 62.5 puts the robot squarely in frame with
+    # room ahead of it to see where it is going.
+    "chase": {
+        "path": CHASE_CAMERA_PRIM_PATH,
+        "translate": (-2.5, 0.0, 1.8),
+        "rotateXYZ": (62.5, 0.0, -90.0),
     },
 }
 

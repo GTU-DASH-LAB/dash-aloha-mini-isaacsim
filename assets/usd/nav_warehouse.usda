@@ -372,6 +372,17 @@ def "World"
                         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
                     }
                 }
+
+                def Camera "camera_chase"
+                {
+                    float2 clippingRange = (0.01, 100)
+                    float focalLength = 13
+                    float horizontalAperture = 20.955
+                    float verticalAperture = 15.716
+                    float3 xformOp:rotateXYZ = (62.5, 0, -90)
+                    double3 xformOp:translate = (-2.5, 0, 1.8)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                }
             }
         }
     }

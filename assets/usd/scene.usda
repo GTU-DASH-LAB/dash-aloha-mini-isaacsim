@@ -360,6 +360,28 @@ def "World"
                             }
                         }
                     }
+
+                    def Camera "camera_nav"
+                    {
+                        float2 clippingRange = (0.01, 100)
+                        float focalLength = 13
+                        float horizontalAperture = 20.955
+                        float verticalAperture = 15.716
+                        float3 xformOp:rotateXYZ = (80, 0, -90)
+                        double3 xformOp:translate = (0.25, 0, 1.15)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                    }
+                }
+
+                def Camera "camera_chase"
+                {
+                    float2 clippingRange = (0.01, 100)
+                    float focalLength = 13
+                    float horizontalAperture = 20.955
+                    float verticalAperture = 15.716
+                    float3 xformOp:rotateXYZ = (62.5, 0, -90)
+                    double3 xformOp:translate = (-2.5, 0, 1.8)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
                 }
             }
         }
@@ -484,6 +506,7 @@ def "Render" (
                 uint omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
                 int omni:rtx:pt:samplesPerIteration = 64
                 uint omni:rtx:pt:samplesPerPixel = 64
+                int omni:rtx:realtime:mgpu:tileCount = 2
                 bool omni:rtx:reflections:denoiser:enabled = 0
                 token omni:rtx:rendermode = "RealTimePathTracing"
                 color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)

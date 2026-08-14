@@ -370,6 +370,50 @@ heading rather than tracking it literally.
   **9/16 bearings hit** real walls and pillars at 6.8–12.5 m. The guard is live; the
   robot genuinely kept its distance.
 
+### Phase 14 — Watching the robot, and starting over (requested after run 2)
+- [x] Third-person chase camera (`camera_chase`), parented to `base_link` in USD so it
+      inherits the base's position **and yaw** — a fixed world camera would be a camera
+      the robot drives away from. `base_link` rather than `vertical_link` on purpose:
+      mounted on the column it would ride up and down with the lift.
+- [x] Two live views side by side in the UI — nav (what the policy sees) and chase
+      (what a human wants to see). A checkbox opens the second one.
+- [x] **Created lazily, off by default.** Once an Isaac Sim `Camera` exists, Kit renders
+      it every frame whether or not anyone reads it, so a headless benchmark run should
+      not pay for a view nobody is watching. `try_create_chase()` returns `None` on a
+      scene built before the camera existed, and the UI says to rebuild rather than
+      throwing out of the render pipeline mid-episode.
+- [x] Chase view refreshes every 15 physics steps (~4 Hz of sim time). Tying it to the
+      replan cadence instead would give one frame per ~2.5 s of wall clock — a
+      slideshow, not something you can watch the robot navigate in.
+- [x] Reset button: `request_reset()` (UI thread, sets a flag) → `perform_reset()` (main
+      thread, does the work). Touching the articulation from the UI thread races PhysX.
+- [x] Reset aborts a run in progress, drains the job queue, zeroes the wheel velocity
+      targets, syncs the integrated yaw to the teleported yaw, and clears the policy
+      server's KV cache. Each of those is a bug if skipped: a stale queued job fires
+      immediately after, the wheels keep spinning on the start line, the first drive step
+      goes in the pre-reset heading, and the "fresh" run carries the failed attempt's
+      context.
+- [x] Between runs both panels go live (throttled to ~3 Hz). During a run the nav panel
+      deliberately freezes on the frame the policy was actually given, so it lines up
+      with the reasoning text beside it — but leaving it black while idle, next to a
+      moving chase view, read as a broken UI rather than an idle one.
+- [x] The chase toggle is restored from the runner on page load (`chase_enabled` in the
+      status snapshot). The sim outlives the browser tab; without this, a reload left the
+      checkbox off while the camera was still allocated and rendering every frame.
+- [x] Verified: `docs/nav_ui_dual_view.png` (both views live, Reset present),
+      `docs/nav_chase_midrun.jpg` (chase view mid-run, robot out on the warehouse floor
+      with the pallet racking ahead). Reset checked end-to-end — aborted a run at 25.04 m,
+      returned to idle, and the next run started from 26.32 m again, the same figure runs
+      1 and 2 began at, with the chase view pixel-matching the pre-run frame.
+
+**Gotcha that cost a restart:** the `ChaseRequest` pydantic model was first defined
+*inside* `build_app()`. This file uses `from __future__ import annotations`, so FastAPI
+resolves the annotation string with `get_type_hints()` against the function's **module**
+globals — where a locally-defined class does not exist. It does not raise; FastAPI
+silently demotes the parameter to a query string and every POST answers
+`{"loc": ["query", "req"], "msg": "Field required"}`. Request models stay at module
+level.
+
 ---
 
 ## Open questions

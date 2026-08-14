@@ -38,11 +38,28 @@
     font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
     color: var(--dim); margin: 0 0 10px; font-weight: 600;
   }
-  #view {
+  .panelhead {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+  }
+  .panelhead h2 { margin: 0; }
+  /* One column normally, two when the third-person view is on. The nav frame stays
+     first and never changes place -- it is the one that says what the policy saw. */
+  .cams { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  .cams.dual { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 700px) { .cams.dual { grid-template-columns: 1fr; } }
+  figure { margin: 0; min-width: 0; }
+  figure img {
     width: 100%; display: block; border-radius: 6px;
     background: #000; aspect-ratio: 4 / 3; object-fit: contain;
   }
-  .viewnote { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  figcaption, .viewnote { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  .toggle {
+    display: flex; align-items: center; gap: 7px; cursor: pointer;
+    font-size: 11.5px; color: var(--dim); user-select: none; white-space: nowrap;
+  }
+  .toggle input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+  .toggle:hover { color: var(--ink); }
   textarea {
     width: 100%; min-height: 82px; resize: vertical; padding: 10px;
     background: #0e1016; color: var(--ink); border: 1px solid var(--line);
@@ -110,13 +127,31 @@
 <main>
   <div>
     <div class="panel">
-      <h2>Navigation camera</h2>
-      <img id="view" alt="robot navigation camera">
-      <div class="viewnote">
-        This is the frame the policy actually sees &mdash; the forward-facing nav
-        camera, updated on each replan. It is <em>not</em> the LeRobot
-        <code>forward</code> camera, which faces the manipulation front (&minus;Y)
-        rather than the driving direction (+X).
+      <div class="panelhead">
+        <h2>Cameras</h2>
+        <label class="toggle" title="Adds a chase camera behind the robot. Off by default because Kit renders it every frame once it exists.">
+          <input type="checkbox" id="chaseOn"> third-person view
+        </label>
+      </div>
+      <div class="cams" id="cams">
+        <figure>
+          <img id="view" alt="robot navigation camera">
+          <figcaption>
+            <b>Navigation camera</b> &mdash; during a run this is the exact frame the
+            policy was given, held until the next replan so it lines up with the
+            reasoning; between runs it is live. It is <em>not</em> the LeRobot
+            <code>forward</code> camera, which faces the manipulation front
+            (&minus;Y) rather than the driving direction (+X).
+          </figcaption>
+        </figure>
+        <figure id="chaseFig" hidden>
+          <img id="chase" alt="third-person view of the robot">
+          <figcaption>
+            <b>Third-person</b> &mdash; 2.5 m behind and 1.8 m above the base, parented
+            to <code>base_link</code> so it turns with the robot. For watching only;
+            the policy is never shown this view.
+          </figcaption>
+        </figure>
       </div>
     </div>
 
@@ -126,6 +161,7 @@
       <div class="row">
         <button id="go" class="primary">Run</button>
         <button id="stop">Stop</button>
+        <button id="reset" title="Teleport the robot back to the episode start pose and clear the policy's memory of this attempt.">Reset</button>
       </div>
     </div>
   </div>
@@ -170,6 +206,10 @@
 <script>
 const $ = id => document.getElementById(id);
 let running = false;
+// The sim outlives the page. On first poll we adopt whatever the runner already has
+// rather than assuming a fresh browser means a fresh simulator -- reloading with the
+// chase camera on must not leave it rendering invisibly.
+let adoptedChaseState = false;
 
 async function loadExamples() {
   const r = await fetch('/api/episodes');
@@ -204,10 +244,21 @@ function refreshFrame() {
   $('view').src = '/frame.jpg?t=' + Date.now();
 }
 
+function refreshChase() {
+  if ($('chaseOn').checked) $('chase').src = '/chase.jpg?t=' + Date.now();
+}
+
+function showChase(on) {
+  $('chaseOn').checked = on;
+  $('chaseFig').hidden = !on;
+  $('cams').classList.toggle('dual', on);
+}
+
 async function poll() {
   try {
     const s = await (await fetch('/api/status')).json();
     running = s.state === 'running';
+    if (!adoptedChaseState) { showChase(!!s.chase_enabled); adoptedChaseState = true; }
     $('state').textContent = s.state;
     $('state').className = 'state ' + s.state;
     $('ctrl').textContent = s.controller;
@@ -230,7 +281,10 @@ async function poll() {
 
     $('go').disabled = running;
     $('stop').disabled = !running;
-    if (running) refreshFrame();
+    // Both views keep updating while idle -- the sim loop renders them between jobs,
+    // and being able to look at where the robot ended up is half the point of them.
+    refreshFrame();
+    refreshChase();
   } catch (e) {
     $('msg').textContent = 'lost contact with the simulator';
   }
@@ -247,6 +301,27 @@ $('go').onclick = async () => {
 };
 
 $('stop').onclick = () => fetch('/api/stop', { method: 'POST' });
+
+$('reset').onclick = async () => {
+  await fetch('/api/reset', { method: 'POST' });
+  $('bar').style.width = '0';
+  $('reasoning').style.display = 'none';
+};
+
+$('chaseOn').onchange = async (e) => {
+  const on = e.target.checked;
+  showChase(on);
+  const r = await fetch('/api/chase', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ enabled: on })
+  });
+  const data = await r.json();
+  // The camera is created on the sim thread, so "available" here is only what the
+  // runner knew a moment ago -- a scene built before the chase camera existed reports
+  // it through /api/status's message field once the first grab is attempted.
+  if (on && data.available === false) showChase(false);
+  else if (on) setTimeout(refreshChase, 300);
+};
 
 loadExamples();
 refreshFrame();

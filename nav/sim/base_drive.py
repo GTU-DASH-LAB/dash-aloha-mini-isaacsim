@@ -91,3 +91,27 @@ class KinematicBase:
 
     def stop(self) -> None:
         self.apply(0.0, 0.0, 0.0, 0.0)
+
+    def reset_to(self, position: tuple[float, float, float], yaw: float) -> None:
+        """Teleport back to a known pose — what the UI's Reset button does.
+
+        Sets the integrated yaw to match rather than re-reading it afterwards: the
+        teleport and the internal yaw must agree, or the first drive step after a reset
+        moves in the direction the robot was facing *before* it.
+
+        Zeroes the wheel velocity targets too. Skipping that leaves the wheels spinning
+        at whatever they were last commanded, which looks like the robot is still
+        driving while it sits on the start line.
+        """
+        self._velocity_targets[:] = 0.0
+        self.art.set_joint_velocity_targets(self._velocity_targets)
+
+        half = yaw / 2.0
+        self.art.set_world_poses(
+            positions=np.array([list(position)], dtype=np.float32),
+            orientations=np.array(
+                [[math.cos(half), 0.0, 0.0, math.sin(half)]], dtype=np.float32
+            ),
+        )
+        self._yaw = yaw
+        self._initialized = True

@@ -64,10 +64,17 @@ Prefer `pursuit` unless you are specifically measuring the omni base. The latera
 DOF is still worth having; `collision_guard.py` uses it to slide along obstacles,
 where there is no policy in the loop to confuse.
 
-**What the controller does NOT fix**, so nobody re-runs this experiment: on the
+**What pure pursuit does NOT fix**, so nobody re-runs this experiment: on the
 warehouse episode the policy asked for a right turn greater than 5 deg in 2 of 129
 calls, mean +1.1 deg, while the bearing it needed ran from -24.9 to -80 deg. Fixing
 the controller recovers the turn the policy asks for. It cannot invent one.
+
+That sentence is true and it is also where the third controller comes from. "The
+turn the policy asks for" was measured on the ACTION HEAD, and the action head is
+only 3 s long. The policy has a second output that reaches 9 s and asks for
+19 deg -- see `guidance.py`, which decodes it. `GuidedPursuitController` steers on
+that instead. It is not a better tracker; it is the same tracker reading a channel
+that had been thrown away as display text.
 """
 
 from __future__ import annotations
@@ -76,6 +83,8 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+
+from guidance import guidance_heading
 
 # DynaNav's tuned values, read off behavior/nova_carter_test_ticvla.py:1372-1375.
 # Do not "round these off" -- they are the published operating point.
@@ -140,7 +149,10 @@ class PursuitController:
     def reset(self) -> None:
         self._yaw_err_filt = None
 
-    def __call__(self, waypoints: np.ndarray) -> Command:
+    def __call__(self, waypoints: np.ndarray, guidance: np.ndarray | None = None) -> Command:
+        # `guidance` is accepted and ignored. This is the DynaNav parity baseline and
+        # DynaNav does not read the text head, so using it here would quietly stop
+        # this controller being the thing it exists to be.
         if len(waypoints) < 2:
             return Command(0.0, 0.0, 0.0)
 
@@ -210,7 +222,7 @@ class HolonomicController:
     def reset(self) -> None:
         self._heading_filt = None
 
-    def __call__(self, waypoints: np.ndarray) -> Command:
+    def __call__(self, waypoints: np.ndarray, guidance: np.ndarray | None = None) -> Command:
         if len(waypoints) < 2:
             return Command(0.0, 0.0, 0.0)
 
@@ -238,9 +250,89 @@ class HolonomicController:
         return Command(vx=float(vx), vy=float(vy), omega=omega)
 
 
+class GuidedPursuitController(PursuitController):
+    """Pure pursuit steered by the 9 s text head instead of the 3 s action head.
+
+    Same tracker, same gains, one substitution: the heading reference comes from
+    the guidance waypoint at `guidance_horizon_s` (see `guidance.py`) rather than
+    from a 1 m lookahead into a plan that is only ~1.6 m long.
+
+    Speed is still set by the action head, and that split is the design:
+
+      near field (action head)  -- how fast to go. `v_kappa` exists to slow the
+                                   robot when the path immediately in front of it
+                                   bends. That is a question about the next metre,
+                                   and the action head is the dense, reliable
+                                   authority on the next metre.
+      far field (text head)     -- which way to point. That is a question about
+                                   the next six seconds, and the action head
+                                   cannot answer it because it stops at three.
+
+    Falls back to exact `PursuitController` behaviour whenever guidance is absent
+    -- no `<answer>`, or the -100 "no guidance" sentinel, which the model emits
+    legitimately and often. The fallback shares the same filter state, so a
+    dropout is a change of reference, not a reset.
+
+    Honest about what this is NOT: it does not make the robot track a better path,
+    and it cannot help on episodes that are already straight. It only matters when
+    the action head's 3 s window truncates a turn that the policy has in fact
+    planned. On the Aisle-05 start frame that is the difference between steering
+    -6.5 deg and steering -18.9 deg, against -24.9 deg needed.
+    """
+
+    name = "guided"
+
+    def __init__(self, *args, guidance_horizon_s: float = 6.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.guidance_horizon_s = guidance_horizon_s
+        # Set every call so the runner can log how often guidance was actually
+        # available. A "guided" run where this is mostly False is a pursuit run,
+        # and reporting it as guided would be a measurement error.
+        self.last_used_guidance = False
+
+    def reset(self) -> None:
+        super().reset()
+        self.last_used_guidance = False
+
+    def __call__(self, waypoints: np.ndarray, guidance: np.ndarray | None = None) -> Command:
+        heading = guidance_heading(guidance, self.guidance_horizon_s)
+        if heading is None:
+            self.last_used_guidance = False
+            return super().__call__(waypoints)
+
+        if len(waypoints) < 2:
+            return Command(0.0, 0.0, 0.0)
+        x_l, y_l, dist = _lookahead_point(waypoints, self.lookahead_m)
+        if dist < _EPS:
+            # The action head says "stop". Guidance does not override a stop: the
+            # only instruction that produces a degenerate plan is one that asked
+            # the robot to hold still, and driving anyway would disobey it.
+            return Command(0.0, 0.0, 0.0)
+
+        self.last_used_guidance = True
+
+        if self._yaw_err_filt is None:
+            self._yaw_err_filt = heading
+        wrapped = math.atan2(
+            math.sin(heading - self._yaw_err_filt), math.cos(heading - self._yaw_err_filt)
+        )
+        self._yaw_err_filt += self.alpha_filter * wrapped
+
+        kappa = 2.0 * y_l / (dist * dist)  # near-field curvature, action head
+        v_kappa = self.w_max / (abs(kappa) + _EPS)
+        v_cmd = float(np.clip(min(self.v_max, v_kappa), 0.0, self.v_max))
+
+        w_ff = 0.5 * v_cmd * kappa
+        w_fb = self.k_angular * self._yaw_err_filt
+        w_cmd = float(np.clip(w_ff + w_fb, -self.w_max, self.w_max))
+
+        return Command(vx=v_cmd, vy=0.0, omega=w_cmd)
+
+
 CONTROLLERS = {
     PursuitController.name: PursuitController,
     HolonomicController.name: HolonomicController,
+    GuidedPursuitController.name: GuidedPursuitController,
 }
 
 

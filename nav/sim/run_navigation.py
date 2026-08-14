@@ -21,7 +21,7 @@ because the world moved underneath it), and sim time is not wall time so nothing
 lost but patience. Noted as a real difference from the published setup, not hidden.
 
 Usage:
-    nav/run.sh --episode warehouse --controller pursuit
+    nav/run.sh --episode warehouse --controller guided
 """
 
 from __future__ import annotations
@@ -46,6 +46,12 @@ from controllers import (  # noqa: E402
     _lookahead_point,
     make_controller,
 )
+from guidance import guidance_heading, parse_guidance  # noqa: E402
+
+# Which of the three guidance horizons (3/6/9 s) the `guided` controller steers at,
+# and the one logged in `plans` for every controller. Kept here rather than left to
+# each call site so the logged column always describes the driven one.
+GUIDANCE_HORIZON_S = 6.0
 from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
 from frame_history import FrameHistory  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
@@ -65,7 +71,7 @@ class NavigationRunner:
     def __init__(
         self,
         episode: Episode,
-        controller_name: str = "pursuit",
+        controller_name: str = "guided",
         policy_host: str = "127.0.0.1",
         policy_port: int = 8765,
         scene_path: Path | None = None,
@@ -406,7 +412,12 @@ class NavigationRunner:
                 import numpy as np
 
                 waypoints = np.asarray(out["waypoints"], dtype=float)
-                command = controller(waypoints)
+                # The text head reaches 9 s; the action head stops at 3. Only the
+                # `guided` controller acts on this, but it is parsed and logged for
+                # every controller so the two channels can be compared on the same
+                # run instead of across runs.
+                guidance = parse_guidance(out.get("reasoning"))
+                command = controller(waypoints, guidance)
                 policy_calls += 1
 
                 # Record what was ASKED for, next to where the robot was, so the two
@@ -420,11 +431,13 @@ class NavigationRunner:
                     math.atan2(ep.goal[1] - position[1], ep.goal[0] - position[0])
                     - self.base.yaw
                 )
+                guide_deg = guidance_heading(guidance, GUIDANCE_HORIZON_S)
                 plans.append((
                     round(sim_time, 2),
                     round(math.degrees(math.atan2(y_l, x_l)), 2),
                     round(reach, 3),
                     round((goal_rel + 180.0) % 360.0 - 180.0, 2),
+                    round(math.degrees(guide_deg), 2) if guide_deg is not None else None,
                 ))
                 self._set(
                     policy_calls=policy_calls,
@@ -559,7 +572,9 @@ def main() -> int:
     episodes = load_episodes()
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode", default="warehouse", choices=sorted(episodes))
-    ap.add_argument("--controller", default="pursuit", choices=["holonomic", "pursuit"])
+    ap.add_argument(
+        "--controller", default="guided", choices=["holonomic", "pursuit", "guided"]
+    )
     ap.add_argument("--instruction", default=None,
                     help="Override the benchmark instruction (the UI's job, mostly).")
     ap.add_argument("--policy-host", default="127.0.0.1")

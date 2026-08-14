@@ -119,7 +119,8 @@ class EpisodeResult:
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)
-    # (sim_time, plan_heading_deg, reach_m, bearing_to_goal_deg) per policy call.
+    # (sim_time, plan_heading_deg, reach_m, bearing_to_goal_deg, guidance_deg) per
+    # policy call. `guidance_deg` is None when the model emitted the -100 sentinel.
     #
     # The trace records what the ROBOT did; this records what the POLICY ASKED for,
     # and the two failures look identical from the trace alone. A robot that drives
@@ -127,7 +128,15 @@ class EpisodeResult:
     # ignoring a turning one (a controller problem) -- opposite fixes again. Plan
     # heading is the body-frame direction of the lookahead point, positive left, so it
     # is directly comparable to the bearing the robot would have needed.
-    plans: list[tuple[float, float, float, float]] = field(default_factory=list)
+    #
+    # `guidance_deg` is the SAME quantity read off the policy's other head, the 6 s
+    # text guidance. It is logged on every run regardless of controller, because the
+    # interesting comparison is plan_heading vs guidance_deg vs bearing_to_goal on one
+    # row: when the first two disagree, the 3 s action head is truncating a turn the
+    # policy has actually planned, and that is a horizon problem, not a perception one.
+    plans: list[tuple[float, float, float, float, float | None]] = field(
+        default_factory=list
+    )
 
     def summary(self) -> str:
         verdict = "SUCCESS" if self.success else ("TIMEOUT" if self.timed_out else "FAILED")

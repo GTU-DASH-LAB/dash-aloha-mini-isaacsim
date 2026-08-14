@@ -119,6 +119,15 @@ class EpisodeResult:
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)
+    # (sim_time, plan_heading_deg, reach_m, bearing_to_goal_deg) per policy call.
+    #
+    # The trace records what the ROBOT did; this records what the POLICY ASKED for,
+    # and the two failures look identical from the trace alone. A robot that drives
+    # straight past its goal may be obeying a straight plan (a perception problem) or
+    # ignoring a turning one (a controller problem) -- opposite fixes again. Plan
+    # heading is the body-frame direction of the lookahead point, positive left, so it
+    # is directly comparable to the bearing the robot would have needed.
+    plans: list[tuple[float, float, float, float]] = field(default_factory=list)
 
     def summary(self) -> str:
         verdict = "SUCCESS" if self.success else ("TIMEOUT" if self.timed_out else "FAILED")

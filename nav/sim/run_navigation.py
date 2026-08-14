@@ -40,7 +40,12 @@ for p in (REPO / "nav" / "sim", REPO / "nav" / "policy_server", REPO / "nav" / "
     sys.path.insert(0, str(p))
 
 from client import PolicyClient, PolicyServerError  # noqa: E402
-from controllers import Command, make_controller  # noqa: E402
+from controllers import (  # noqa: E402
+    DYNANAV_LOOKAHEAD_M,
+    Command,
+    _lookahead_point,
+    make_controller,
+)
 from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
 from frame_history import FrameHistory  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
@@ -320,6 +325,7 @@ class NavigationRunner:
 
         command = Command(0.0, 0.0, 0.0)
         trace: list[tuple[float, float, float]] = [(*start_pos[:2], self.base.yaw)]
+        plans: list[tuple[float, float, float, float]] = []
         path_length = 0.0
         policy_calls = 0
         prev_pos = start_pos
@@ -402,6 +408,24 @@ class NavigationRunner:
                 waypoints = np.asarray(out["waypoints"], dtype=float)
                 command = controller(waypoints)
                 policy_calls += 1
+
+                # Record what was ASKED for, next to where the robot was, so the two
+                # can be compared afterwards. Both controllers steer at the same
+                # lookahead point, so this is the controller-independent statement of
+                # the policy's intent -- and `goal_rel` is what it would have had to
+                # say to be right. The policy is never told goal_rel; it is scoring
+                # only, exactly like `episode.goal` itself.
+                x_l, y_l, reach = _lookahead_point(waypoints, DYNANAV_LOOKAHEAD_M)
+                goal_rel = math.degrees(
+                    math.atan2(ep.goal[1] - position[1], ep.goal[0] - position[0])
+                    - self.base.yaw
+                )
+                plans.append((
+                    round(sim_time, 2),
+                    round(math.degrees(math.atan2(y_l, x_l)), 2),
+                    round(reach, 3),
+                    round((goal_rel + 180.0) % 360.0 - 180.0, 2),
+                ))
                 self._set(
                     policy_calls=policy_calls,
                     reasoning=(out.get("reasoning") or "")[:600],
@@ -468,6 +492,7 @@ class NavigationRunner:
             timed_out=timed_out,
             controller=self.controller_name,
             trace=trace,
+            plans=plans,
         )
         # Save unconditionally, including aborted runs. The run you most want the trace
         # for is the one that went wrong, and that is exactly the one someone stops early.

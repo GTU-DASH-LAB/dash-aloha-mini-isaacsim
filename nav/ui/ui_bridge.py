@@ -26,7 +26,7 @@ from pydantic import BaseModel
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "nav" / "sim"))
 
-from episode import load_episodes  # noqa: E402
+from episode import env_name, load_episodes  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -44,10 +44,18 @@ _PLACEHOLDER = bytes.fromhex(
 class RunRequest(BaseModel):
     instruction: str
     controller: str | None = None
+    # Which benchmark episode to run: sets the start pose and the goal the run is
+    # scored against. Only episodes in the loaded environment are accepted; None keeps
+    # whichever is current, which is what a hand-typed prompt wants.
+    episode: str | None = None
 
 
 class ChaseRequest(BaseModel):
     enabled: bool
+
+
+class ResetRequest(BaseModel):
+    episode: str | None = None
 
 
 # Both request models MUST stay at module level. This file uses
@@ -69,21 +77,30 @@ def build_app(runner) -> FastAPI:
 
     @app.get("/api/episodes")
     def api_episodes() -> JSONResponse:
-        """The DynaNav benchmark prompts, so the UI can offer them as examples.
+        """The whole DynaNav ladder, marked by whether this session can run it.
 
-        `native` marks the one belonging to the environment actually loaded. The
-        others are shown deliberately -- typing the hospital prompt into the
-        warehouse is a legitimate and informative thing to try (it is roughly the
-        experiment plan.md's Phase 9 gate runs), but the user should know that is
-        what they are doing.
+        `runnable` means the episode lives in the loaded ENVIRONMENT, so selecting it
+        is a teleport to its start plus a new goal -- no rebuild, no restart. That is
+        the payoff from building one stage per environment instead of per episode:
+        six hospital episodes are six clicks in one session.
+
+        The rest are still listed, with the command that would load them. Typing
+        another environment's prompt into this one is also legitimate and
+        informative, but it is not that episode -- it is this environment with a
+        borrowed sentence, and the distance readout would be scored against the
+        wrong goal. `runnable: false` is what the UI uses to keep those apart.
         """
+        env = runner.environment
         return JSONResponse({
             "loaded": runner.episode.name,
+            "environment": env,
             "episodes": [
                 {
                     "name": name,
                     "instruction": ep.instruction,
-                    "native": name == runner.episode.name,
+                    "environment": env_name(ep.scene),
+                    "runnable": env_name(ep.scene) == env,
+                    "current": name == runner.episode.name,
                     "goal_distance_m": round(ep.straight_line_distance_m, 2),
                     "timeout_s": ep.timeout_s,
                 }
@@ -100,11 +117,19 @@ def build_app(runner) -> FastAPI:
         instruction = req.instruction.strip()
         if not instruction:
             return JSONResponse({"ok": False, "error": "empty instruction"}, status_code=400)
-        if not runner.submit_job(instruction, req.controller):
+        # Rejected here rather than on the sim thread, so the browser gets a real
+        # error instead of a run that starts and then quietly does the wrong thing.
+        if req.episode:
+            reason = runner.check_episode(req.episode)
+            if reason:
+                return JSONResponse({"ok": False, "error": reason}, status_code=400)
+        if not runner.submit_job(instruction, req.controller, req.episode):
             return JSONResponse(
                 {"ok": False, "error": "a run is already in progress"}, status_code=409
             )
-        return JSONResponse({"ok": True, "instruction": instruction})
+        return JSONResponse(
+            {"ok": True, "instruction": instruction, "episode": req.episode}
+        )
 
     @app.post("/api/stop")
     def api_stop() -> JSONResponse:
@@ -112,15 +137,24 @@ def build_app(runner) -> FastAPI:
         return JSONResponse({"ok": True})
 
     @app.post("/api/reset")
-    def api_reset() -> JSONResponse:
-        """Put the robot back on the start line.
+    def api_reset(req: ResetRequest | None = None) -> JSONResponse:
+        """Put the robot on a start line -- this episode's, or another one's.
 
         Returns immediately -- the teleport itself has to happen on the main thread
         (touching the articulation from here races PhysX), so this only raises a flag
         the sim loop picks up within a frame or two.
+
+        Taking an episode here is what makes browsing an environment work: pick one,
+        hit Reset, and both camera panels show that episode's opening view without
+        committing to a run.
         """
-        runner.request_reset()
-        return JSONResponse({"ok": True})
+        episode = req.episode if req else None
+        if episode:
+            reason = runner.check_episode(episode)
+            if reason:
+                return JSONResponse({"ok": False, "error": reason}, status_code=400)
+        runner.request_reset(episode)
+        return JSONResponse({"ok": True, "episode": episode})
 
     @app.post("/api/chase")
     def api_chase(req: ChaseRequest) -> JSONResponse:

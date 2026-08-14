@@ -48,6 +48,61 @@ class Episode:
         return math.dist(self.start[:2], self.goal[:2])
 
 
+def env_name(scene: str) -> str:
+    """The ENVIRONMENT an episode lives in, e.g. "hospital", "office", "warehouse".
+
+    Nav stages are built per environment, not per episode, and this is the key. The
+    start pose used to be baked into each stage, so eleven benchmark episodes meant
+    eleven Isaac Sim build chains -- four processes each, minutes apiece -- to produce
+    stages that differed only in where one prim sat. Six of them were the same
+    `hospital.usd`.
+
+    They can share, because the runner teleports to `episode.start` before every run
+    anyway (`KinematicBase.reset_to`, which the UI's Reset button has always used).
+    The baked pose was never load-bearing; it was just the pose the stage happened to
+    open at.
+
+    Derived from the scene URL rather than the episode name so that two episodes
+    naming the same USD always share a stage, whatever they are called.
+    """
+    stem = _expand(scene).rstrip("/").rsplit("/", 1)[-1]
+    for suffix in (".usd", ".usda", ".usdc", ".usdz"):
+        stem = stem.removesuffix(suffix)
+    return stem.replace("full_", "").lower()
+
+
+def episodes_by_env(
+    config_path: Path | str = CONFIG_PATH,
+) -> dict[str, list[Episode]]:
+    """Every episode grouped by the environment it runs in, config order preserved.
+
+    This is the unit the rest of the system works in now. A built stage serves an
+    ENVIRONMENT, so "which episodes can I run right now" is exactly "which episodes
+    share the loaded stage" -- the UI asks that question, `bench.sh` asks it to decide
+    what to build, and both used to answer it by string-matching episode names.
+    """
+    grouped: dict[str, list[Episode]] = {}
+    for ep in load_episodes(config_path).values():
+        grouped.setdefault(env_name(ep.scene), []).append(ep)
+    return grouped
+
+
+def representative_episode(env: str, config_path: Path | str = CONFIG_PATH) -> Episode:
+    """Any episode from `env` -- the first one, for build-time defaults.
+
+    The stage still gets authored with a robot at *some* pose, and it should be a
+    real one: the office environment is 1063 m across and the origin is not inside
+    the navigable area, where a spawn overlapping building geometry made PhysX throw
+    the articulation 7.7 m and tip it 181 degrees. Every DynaNav start is known-good
+    free space. Which one it is no longer matters, because the runner teleports to
+    the episode's own start before each run, but "somewhere valid" still does.
+    """
+    grouped = episodes_by_env(config_path)
+    if env not in grouped:
+        raise KeyError(f"unknown environment {env!r}; have: {sorted(grouped)}")
+    return grouped[env][0]
+
+
 def _expand(scene: str) -> str:
     """Resolve ${TICVLA_DYNANAV_ROOT} in scene paths.
 

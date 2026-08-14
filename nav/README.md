@@ -13,15 +13,31 @@ path planner would look identical on video and would demonstrate nothing.
 ## Quick start
 
 ```bash
-nav/sim/build_nav_scene.sh warehouse
+nav/sim/build_nav_scene.sh hospital
 ```
 
 ```bash
-nav/run.sh
+nav/run.sh --episode hospital_down_hallway
 ```
 
-Then open <http://127.0.0.1:8080>. The four DynaNav prompts are listed in the UI;
-click one to load it, or type your own.
+Then open <http://127.0.0.1:8080>. Every DynaNav prompt is listed there, grouped by
+environment. **Anything under the loaded environment can be selected and run right
+there** — picking it teleports the robot to that episode's start and scores against
+that episode's goal, so one `nav/run.sh` covers all seven hospital episodes. Episodes
+from other environments are listed but greyed, with the relaunch command shown on
+click: Isaac Sim cannot swap stages in-process at this version, and a half-swapped
+stage fails as a *navigation* error rather than as a crash — a benchmark's worst
+failure mode, because it produces a plausible number.
+
+One stage per environment, three in total:
+
+```bash
+nav/sim/build_nav_scene.sh hospital    # 7 episodes
+nav/sim/build_nav_scene.sh office      # 4 episodes
+nav/sim/build_nav_scene.sh warehouse   # 2 episodes
+```
+
+Or let `nav/bench.sh` build what it needs as it walks the ladder.
 
 The UI also has:
 
@@ -73,12 +89,17 @@ pinned through Kit's own `active_gpu`/`physics_gpu` config instead.
 
 | path | what it does |
 |---|---|
-| `config/episodes.yaml` | five DynaNav episodes from `benchmark_full.yaml`, prompts verbatim |
+| `config/episodes.yaml` | generated: 11 DynaNav-completed episodes + 2 manual, easiest first |
+| `config/episodes_manual.yaml` | hand-written episodes, appended verbatim by the importer |
+| `sim/import_benchmark.py` | rebuilds the ladder from DynaNav's results; ranks by `spl` |
 | `policy_server/server.py` | FastAPI wrapper over `TICVLA.predict()` (py3.11, GPU1) |
 | `policy_server/client.py` | stdlib-only client, so Isaac Sim's py3.12 can import it |
 | `sim/build_nav_scene.sh` | compose environment + robot, then apply the pipeline |
+| `sim/resolve_env.py` | which stage does this episode need? (no Kit boot) |
+| `bench.sh` | the whole ladder: build per environment, run per episode |
+| `sim/summarize_runs.py` | closest approach, `spl`, guard rate across saved runs |
 | `sim/run_navigation.py` | the loop, and the UI's job queue |
-| `sim/controllers.py` | `pursuit` (DynaNav parity) and `holonomic` (omni base) |
+| `sim/controllers.py` | `braking` (default), `pursuit`, `guided`, `holonomic` |
 | `sim/collision_guard.py` | raycast fan — the base does not collide on its own |
 | `ui/` | prompt box, live camera, benchmark examples |
 | `tools/check_policy_sanity.py` | does the output depend on the prompt? |

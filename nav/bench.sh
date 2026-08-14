@@ -6,20 +6,17 @@
 #   nav/bench.sh --only office_elevator,hospital_red   # just these
 #   nav/bench.sh --from hospital_vending  # resume partway down the ladder
 #
-# WHY THIS IS A SHELL LOOP AND NOT A PYTHON ONE. Each episode needs its own pair of
-# processes, and neither can be reused:
+# WHY THIS IS A SHELL LOOP AND NOT A PYTHON ONE. Isaac Sim cannot swap stages cleanly
+# inside one process at this version, and a half-swapped stage fails as a navigation
+# error rather than as a crash -- the worst possible failure mode for a benchmark,
+# because it produces a plausible number. So: one run process per episode,
+# sequentially. That is the price of a number you can trust.
 #
-#   1. The start pose is baked into the USD stage at author time, so a new episode
-#      means a new `nav_<episode>.usda` -- built by a chain of four Isaac Sim
-#      invocations, because SimulationApp.close() takes the interpreter down with it
-#      and nothing after it runs.
-#   2. The runner then opens that stage. Isaac Sim cannot swap stages cleanly inside
-#      one process at this version, and a half-swapped stage fails as a navigation
-#      error rather than as a crash -- the worst possible failure mode for a
-#      benchmark, because it produces a plausible number.
-#
-# So: one build process chain plus one run process per episode, sequentially. A full
-# 11-episode ladder is a couple of hours. That is the price of a number you can trust.
+# BUILDS ARE PER ENVIRONMENT, RUNS ARE PER EPISODE. A stage used to be authored per
+# episode, which made 13 episodes cost 13 four-process Isaac Sim build chains for
+# stages that differed only in where one prim sat -- six of them the same hospital.
+# The runner teleports to `episode.start` before every run, so the baked pose was
+# never load-bearing. 13 builds -> 3.
 #
 # Scenes are cached. A rebuild only happens when the .usda is missing or older than
 # the episode config, so a re-run of the ladder skips straight to driving.
@@ -79,18 +76,19 @@ for EP in "${EPISODES[@]}"; do
   echo "================================================================"
   echo "  $EP  ($CONTROLLER)"
   echo "================================================================"
-  SCENE="$REPO/assets/usd/nav_${EP}.usda"
+  ENV_NAME="$(python3 nav/sim/resolve_env.py "$EP")" || { ERR=$((ERR+1)); continue; }
+  SCENE="$REPO/assets/usd/nav_${ENV_NAME}.usda"
 
   if [ ! -f "$SCENE" ] || [ "$CONFIG" -nt "$SCENE" ]; then
-    echo "-- building $SCENE"
-    if ! nav/sim/build_nav_scene.sh "$EP" > "$LOGDIR/build_${EP}.log" 2>&1; then
-      echo "!! BUILD FAILED -- see $LOGDIR/build_${EP}.log"
-      tail -15 "$LOGDIR/build_${EP}.log"
+    echo "-- building $SCENE (serves every $ENV_NAME episode)"
+    if ! nav/sim/build_nav_scene.sh "$ENV_NAME" > "$LOGDIR/build_${ENV_NAME}.log" 2>&1; then
+      echo "!! BUILD FAILED -- see $LOGDIR/build_${ENV_NAME}.log"
+      tail -15 "$LOGDIR/build_${ENV_NAME}.log"
       ERR=$((ERR+1)); [ $KEEP_GOING -eq 1 ] && continue || exit 1
     fi
     echo "-- built"
   else
-    echo "-- scene cached"
+    echo "-- scene cached ($ENV_NAME)"
   fi
 
   echo "-- running (this blocks until the episode ends or times out)"

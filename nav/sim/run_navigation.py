@@ -47,7 +47,14 @@ from controllers import (  # noqa: E402
     make_controller,
     plan_speed,
 )
-from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
+from episode import (  # noqa: E402
+    Episode,
+    EpisodeResult,
+    env_name,
+    episodes_by_env,
+    load_episode,
+    load_episodes,
+)
 from frame_history import FrameHistory  # noqa: E402
 from guidance import guidance_heading, parse_guidance  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
@@ -83,7 +90,12 @@ class NavigationRunner:
     ):
         self.episode = episode
         self.controller_name = controller_name
-        self.scene_path = scene_path or (REPO / "assets" / "usd" / f"nav_{episode.name}.usda")
+        # Keyed on the ENVIRONMENT, not the episode -- six hospital episodes share one
+        # stage and differ only by a start pose the runner sets itself. See
+        # episode.env_name().
+        self.scene_path = scene_path or (
+            REPO / "assets" / "usd" / f"nav_{env_name(episode.scene)}.usda"
+        )
         self.scratch_dir = Path(scratch_dir)
         self.headless = headless
         self.sim_gpu = sim_gpu
@@ -127,6 +139,8 @@ class NavigationRunner:
         self.base = None
         self._abort = threading.Event()
         self._reset = threading.Event()
+        # Set from the UI thread, applied by perform_reset() on the main thread.
+        self._pending_episode: str | None = None
         # Kit must be driven from the main thread, so the UI thread cannot run an
         # episode itself -- it queues one and the main loop picks it up.
         self._jobs: queue.Queue[dict] = queue.Queue()
@@ -150,14 +164,17 @@ class NavigationRunner:
     def request_stop(self) -> None:
         self._abort.set()
 
-    def request_reset(self) -> None:
-        """Put the robot back on the start line.
+    def request_reset(self, episode: str | None = None) -> None:
+        """Put the robot back on the start line, optionally of a different episode.
 
         Aborts a running episode too: resetting mid-run and letting the loop carry on
         against a teleported robot would produce a nonsense trace. The actual work
         happens on the main thread in `perform_reset()` -- this only raises the flag,
-        because touching the articulation from the UI thread races PhysX.
+        because touching the articulation from the UI thread races PhysX. Same reason
+        the episode switch is stashed rather than applied here.
         """
+        if episode:
+            self._pending_episode = episode
         self._abort.set()
         self._reset.set()
 
@@ -184,7 +201,7 @@ class NavigationRunner:
             if self._chase is None:
                 self._set(message=(
                     "this scene has no chase camera -- rebuild it with "
-                    f"nav/sim/build_nav_scene.sh {self.episode.name}"
+                    f"nav/sim/build_nav_scene.sh {self.environment}"
                 ))
                 return
         frame = self._chase.grab_jpeg()
@@ -213,12 +230,58 @@ class NavigationRunner:
                 self.latest_jpeg = frame
         self._update_chase()
 
+    # ------------------------------------------------------------- episode set
+    @property
+    def environment(self) -> str:
+        """The environment whose stage is loaded, e.g. "hospital"."""
+        return env_name(self.episode.scene)
+
+    def runnable_episodes(self) -> dict[str, Episode]:
+        """Every episode this process can run right now.
+
+        That is every episode sharing the loaded stage -- the whole point of building
+        one stage per environment. Switching between them is a teleport plus a new
+        goal; switching environment is not possible in-process, because Isaac Sim
+        cannot swap stages cleanly at this version and a half-swapped stage fails as a
+        navigation error rather than as a crash, i.e. it produces a plausible number.
+        """
+        return {
+            ep.name: ep
+            for ep in episodes_by_env().get(self.environment, [])
+        }
+
+    def check_episode(self, name: str) -> str | None:
+        """None if `name` can be run here, otherwise why not, in a sentence."""
+        available = self.runnable_episodes()
+        if name in available:
+            return None
+        try:
+            other = load_episode(name)
+        except KeyError:
+            return f"unknown episode {name!r}"
+        return (
+            f"'{name}' runs in the {env_name(other.scene)} environment; this process "
+            f"has {self.environment} loaded. Relaunch with: "
+            f"nav/run.sh --episode {name}"
+        )
+
     # -------------------------------------------------------------- job queue
-    def submit_job(self, instruction: str, controller: str | None = None) -> bool:
-        """Called from the UI thread. False if a run is already in flight."""
+    def submit_job(
+        self,
+        instruction: str,
+        controller: str | None = None,
+        episode: str | None = None,
+    ) -> bool:
+        """Called from the UI thread. False if a run is already in flight.
+
+        `episode` is validated by the caller through check_episode() -- it is applied
+        on the main thread in run_episode(), because switching it moves the robot.
+        """
         if self.snapshot()["state"] == "running":
             return False
-        self._jobs.put({"instruction": instruction, "controller": controller})
+        self._jobs.put(
+            {"instruction": instruction, "controller": controller, "episode": episode}
+        )
         return True
 
     def reset_pending(self) -> bool:
@@ -235,7 +298,7 @@ class NavigationRunner:
         if not self.scene_path.is_file():
             raise FileNotFoundError(
                 f"nav scene not built: {self.scene_path}\n"
-                f"  build it with: nav/sim/build_nav_scene.sh {self.episode.name}"
+                f"  build it with: nav/sim/build_nav_scene.sh {env_name(self.episode.scene)}"
             )
 
         from isaacsim import SimulationApp
@@ -304,8 +367,20 @@ class NavigationRunner:
 
     # --------------------------------------------------------------- execution
     def run_episode(
-        self, instruction: str | None = None, controller_name: str | None = None
+        self,
+        instruction: str | None = None,
+        controller_name: str | None = None,
+        episode: str | None = None,
     ) -> EpisodeResult:
+        # Switching episode first, so `instruction=None` picks up the NEW episode's
+        # prompt rather than the outgoing one's.
+        if episode and episode != self.episode.name:
+            reason = self.check_episode(episode)
+            if reason:
+                raise ValueError(reason)
+            self.episode = self.runnable_episodes()[episode]
+            self._set(episode=self.episode.name)
+
         instruction = instruction or self.episode.instruction
         if controller_name:
             self.controller_name = controller_name
@@ -317,6 +392,17 @@ class NavigationRunner:
         )
         controller.reset()
         self.policy.reset()  # clear the KV cache between episodes
+
+        # Put the robot on the start line. This is now REQUIRED, not a convenience:
+        # nav stages are built per environment, so the stage opens at whatever pose it
+        # was authored with rather than at this episode's. It also fixes something
+        # that was quietly wrong before -- running twice in a row without pressing
+        # Reset used to start the second run from wherever the first one stopped, and
+        # score it against an `initial_distance` measured from there.
+        self.base.reset_to(tuple(ep.start), ep.start_yaw_rad)
+        for _ in range(30):  # let the teleport settle before anything measures it
+            self.kit.update()
+
         self.base.sync_from_sim()
         self.guard.interventions = 0
 
@@ -542,7 +628,17 @@ class NavigationRunner:
         return result
 
     def perform_reset(self) -> None:
-        """Main thread only. Put the robot back on the episode's start line."""
+        """Main thread only. Put the robot back on the episode's start line.
+
+        Applies a pending episode switch first, so Reset doubles as "show me that
+        episode's starting view" -- the natural way to browse an environment's
+        episodes without committing to a run.
+        """
+        if self._pending_episode:
+            name, self._pending_episode = self._pending_episode, None
+            if not self.check_episode(name):
+                self.episode = self.runnable_episodes()[name]
+                self._set(episode=self.episode.name, instruction=self.episode.instruction)
         ep = self.episode
         self._reset.clear()
         self._abort.clear()
@@ -629,7 +725,16 @@ def main() -> int:
                 if job is None:
                     runner.idle()
                     continue
-                result = runner.run_episode(job["instruction"], job.get("controller"))
+                try:
+                    result = runner.run_episode(
+                        job["instruction"], job.get("controller"), job.get("episode")
+                    )
+                except ValueError as exc:
+                    # An episode from another environment slipped past the API check.
+                    # Report it and keep serving -- the UI is still usable.
+                    runner._set(state="idle", message=str(exc))
+                    print(f"\nrejected job: {exc}", flush=True)
+                    continue
                 runner.last_result = result
                 print("\n" + result.summary(), flush=True)
         except KeyboardInterrupt:

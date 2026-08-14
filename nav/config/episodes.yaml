@@ -13,7 +13,14 @@
 defaults:
   success_threshold_m: 1.5   # DynaNav's own criterion (benchmark_full.yaml)
   robot_type: "wheeled robot"  # goes into TIC-VLA's system prompt verbatim
-  max_speed_mps: 0.6
+  # DynaNav's own Nova Carter cap, and that matters more than it looks: the
+  # policy sees its own past motion through previous_waypoints_text, and it
+  # plans at the speed it was trained at (measured mean 0.731 m/s asked on
+  # office_nearest_elevator). A 0.6 cap clipped nearly every plan, which also
+  # threw away the braking the `braking` controller exists to obey -- min(cap,
+  # plan) engaged in 11 of 141 calls. Cap above the policy's usual ask and the
+  # plan speed is what actually governs.
+  max_speed_mps: 1.5
   max_yaw_rate_radps: 1.2
   replan_every_steps: 30     # physics steps between policy calls (60 Hz -> 0.5 s)
 

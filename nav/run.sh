@@ -32,10 +32,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-SCENE="$REPO/assets/usd/nav_${EPISODE}.usda"
+# Stages are per environment. Every episode in the same environment shares one, and
+# once the session is up the UI can switch between all of them without a rebuild.
+ENV_NAME="$(python3 "$REPO/nav/sim/resolve_env.py" "$EPISODE")" || exit 1
+SCENE="$REPO/assets/usd/nav_${ENV_NAME}.usda"
 if [ ! -f "$SCENE" ]; then
-  echo "Nav scene missing for episode '$EPISODE'." >&2
-  echo "Build it first:  nav/sim/build_nav_scene.sh $EPISODE" >&2
+  echo "Nav scene missing for the '$ENV_NAME' environment (episode '$EPISODE')." >&2
+  echo "Build it first:  nav/sim/build_nav_scene.sh $ENV_NAME" >&2
   exit 1
 fi
 
@@ -68,6 +71,7 @@ ARGS=(--episode "$EPISODE" --controller "$CONTROLLER" --policy-port "$POLICY_POR
 
 cd "$REPO"
 echo "Episode    : $EPISODE"
+echo "Environment: $ENV_NAME  (the UI can switch to any episode in it)"
 echo "Controller : $CONTROLLER"
 [ "$USE_UI" = "1" ] && echo "UI         : http://127.0.0.1:${UI_PORT}"
 echo

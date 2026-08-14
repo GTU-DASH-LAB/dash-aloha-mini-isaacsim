@@ -95,6 +95,19 @@
     border: 1px solid var(--line); color: var(--dim); white-space: nowrap;
   }
   .tag.native { border-color: var(--ok); color: var(--ok); }
+  /* An episode from another environment cannot be run without relaunching, so it is
+     dimmed rather than hidden -- the ladder is the point, and seeing the whole of it
+     is how you know what is left. Its prompt is still one click away. */
+  .ex.locked { opacity: .5; }
+  .ex.locked:hover { border-color: var(--warn); }
+  .ex.picked { border-color: var(--accent); background: #12172099; }
+  .ex-group {
+    font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--dim); margin: 14px 0 6px; padding-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .ex-group:first-child { margin-top: 0; }
+  .ex-group b { color: var(--ok); letter-spacing: .12em; }
   dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; }
   dt { color: var(--dim); font-size: 12px; }
   dd { margin: 0; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -208,12 +221,14 @@
 </main>
 
 <p class="note">
-  The policy is never given the goal coordinate. It sees one camera frame and the
+  The policy is never given the goal coordinate. It sees four camera frames and the
   sentence above; the goal exists only to score the run, exactly as in DynaNav's
-  benchmark. Prompts marked <span class="tag native">native</span> belong to the
-  environment currently loaded &mdash; the others are from different scenes and are
-  offered on purpose, since running a mismatched prompt is a fair way to check the
-  robot is reading the instruction rather than just driving forward.
+  benchmark. Episodes under the loaded environment can be selected and run right here
+  &mdash; picking one teleports the robot to its start and scores against its goal.
+  Episodes from other environments are listed but greyed: Isaac Sim cannot swap stages
+  in-process, so those need a relaunch (the command is shown when you click one). You
+  can still borrow their wording, which is a fair way to check the robot is reading the
+  instruction rather than just driving forward.
 </p>
 
 <script>
@@ -224,32 +239,91 @@ let running = false;
 // chase camera on must not leave it rendering invisibly.
 let adoptedChaseState = false;
 
+// Which benchmark episode the next run is. It sets the start pose and the goal the
+// run is scored against, so it is a real selection, not a prompt-filling shortcut.
+// null = keep whatever the runner already has, which is what a typed prompt wants.
+let selectedEpisode = null;
+// The last episode the RUNNER reported. Distinct from the selection: between a click
+// and the next Run they differ on purpose.
+let runnerEpisode = null;
+let episodeCards = new Map();
+
+function markSelection() {
+  for (const [name, el] of episodeCards) el.classList.toggle('picked', name === selectedEpisode);
+}
+
 async function loadExamples() {
   const r = await fetch('/api/episodes');
   const data = await r.json();
   $('scene').textContent = data.loaded;
+  selectedEpisode = data.loaded;
   const box = $('examples');
   box.innerHTML = '';
+  episodeCards = new Map();
+
+  // Grouped by environment, the loaded one first. Grouping IS the information here:
+  // every episode under the loaded heading runs in this session with one click, and
+  // everything below it needs a relaunch. A flat list hid that distinction behind a
+  // per-row tag nobody reads twice.
+  const byEnv = new Map();
   for (const ep of data.episodes) {
-    const div = document.createElement('div');
-    div.className = 'ex';
-    const head = document.createElement('div');
-    head.className = 'ex-head';
-    const name = document.createElement('span');
-    name.className = 'ex-name';
-    name.textContent = ep.name;
-    const tag = document.createElement('span');
-    tag.className = 'tag' + (ep.native ? ' native' : '');
-    tag.textContent = ep.native ? 'native · this scene' : 'other scene';
-    head.append(name, tag);
-    const text = document.createElement('div');
-    text.className = 'ex-text';
-    text.textContent = '“' + ep.instruction + '”';
-    div.append(head, text);
-    div.onclick = () => { $('prompt').value = ep.instruction; $('prompt').focus(); };
-    box.appendChild(div);
-    if (ep.native) $('prompt').value = ep.instruction;
+    if (!byEnv.has(ep.environment)) byEnv.set(ep.environment, []);
+    byEnv.get(ep.environment).push(ep);
   }
+  const envs = [...byEnv.keys()].sort((a, b) =>
+    (a === data.environment ? -1 : b === data.environment ? 1 : a.localeCompare(b)));
+
+  for (const env of envs) {
+    const eps = byEnv.get(env);
+    const head = document.createElement('div');
+    head.className = 'ex-group';
+    head.innerHTML = env === data.environment
+      ? `<b>${env}</b> · loaded · ${eps.length} episode(s), runnable now`
+      : `${env} · ${eps.length} episode(s) · needs a relaunch`;
+    box.appendChild(head);
+
+    for (const ep of eps) {
+      const div = document.createElement('div');
+      div.className = 'ex' + (ep.runnable ? '' : ' locked');
+      const h = document.createElement('div');
+      h.className = 'ex-head';
+      const name = document.createElement('span');
+      name.className = 'ex-name';
+      name.textContent = ep.name;
+      const tag = document.createElement('span');
+      tag.className = 'tag' + (ep.runnable ? ' native' : '');
+      tag.textContent = ep.runnable ? ep.goal_distance_m + ' m away' : 'other scene';
+      h.append(name, tag);
+      const text = document.createElement('div');
+      text.className = 'ex-text';
+      text.textContent = '“' + ep.instruction + '”';
+      div.append(h, text);
+
+      div.onclick = () => {
+        $('prompt').value = ep.instruction;
+        if (ep.runnable) {
+          // Selecting the episode, not just its words: the robot will be teleported
+          // to its start and scored against its goal.
+          selectedEpisode = ep.name;
+          $('msg').textContent = '';
+        } else {
+          // The prompt is still copied -- running another environment's sentence here
+          // is a fair test of whether the robot reads instructions at all. But it is
+          // not that episode, so the selection does not move.
+          $('msg').textContent =
+            `${ep.name} is in the ${ep.environment} environment. `
+            + `To run it for real: nav/run.sh --episode ${ep.name}`;
+        }
+        markSelection();
+        $('prompt').focus();
+      };
+
+      box.appendChild(div);
+      episodeCards.set(ep.name, div);
+      if (ep.current) $('prompt').value = ep.instruction;
+    }
+  }
+  markSelection();
 }
 
 function refreshFrame() {
@@ -274,6 +348,16 @@ async function poll() {
     if (!adoptedChaseState) { showChase(!!s.chase_enabled); adoptedChaseState = true; }
     $('state').textContent = s.state;
     $('state').className = 'state ' + s.state;
+    // Follow the runner when IT moves -- not whenever it merely disagrees with the
+    // page. A user who has just clicked an episode is ahead of the runner by design
+    // (the switch happens on Run or Reset), and adopting on disagreement would undo
+    // that click on the very next poll, 700 ms later.
+    if (s.episode && s.episode !== runnerEpisode) {
+      runnerEpisode = s.episode;
+      $('scene').textContent = s.episode;
+      selectedEpisode = s.episode;
+      markSelection();
+    }
     $('ctrl').textContent = s.controller;
     $('dist').textContent  = s.distance_m ?? '—';
     $('dist0').textContent = s.initial_distance_m ?? '—';
@@ -322,7 +406,8 @@ $('go').onclick = async () => {
   const r = await fetch('/api/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ instruction: $('prompt').value,
-                           controller: $('controller').value })
+                           controller: $('controller').value,
+                           episode: selectedEpisode })
   });
   if (!r.ok) $('msg').textContent = (await r.json()).error;
   else { $('bar').style.width = '0'; refreshFrame(); }
@@ -331,7 +416,13 @@ $('go').onclick = async () => {
 $('stop').onclick = () => fetch('/api/stop', { method: 'POST' });
 
 $('reset').onclick = async () => {
-  await fetch('/api/reset', { method: 'POST' });
+  // Sends the selection too, so Reset after picking an episode moves the robot to
+  // THAT start line -- the quickest way to see what an episode opens on.
+  const r = await fetch('/api/reset', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ episode: selectedEpisode })
+  });
+  if (!r.ok) $('msg').textContent = (await r.json()).error;
   $('bar').style.width = '0';
   $('reasoning').style.display = 'none';
 };

@@ -19,8 +19,19 @@ Aloha.usda. Referencing the robot alone would produce a robot whose joints do
 nothing. The .sh wrapper therefore chains the existing pipeline steps against the new
 scene -- they all already take --scene, so nothing had to be forked.
 
+A stage serves an ENVIRONMENT, not an episode. It used to be one stage per episode,
+which meant eleven benchmark episodes cost eleven of these four-process build chains --
+to produce stages that differed only in where one prim sat, six of them referencing the
+same hospital.usd. The start pose was never load-bearing: the runner teleports to
+`episode.start` before every run anyway. So `nav_hospital.usda` now serves all six
+hospital episodes, and the whole ladder builds three stages instead of thirteen.
+
+That also makes the UI useful. A running session can switch between every episode in
+its environment -- same stage, new start pose and new goal -- instead of being pinned
+to the single episode its stage was authored for.
+
 Usage:
-    nav/sim/build_nav_scene.sh warehouse
+    nav/sim/build_nav_scene.sh hospital
 """
 
 from __future__ import annotations
@@ -34,21 +45,37 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "nav" / "sim"))
 sys.path.insert(0, str(REPO / "scripts"))
 
-from episode import load_episode  # noqa: E402
+from episode import env_name, episodes_by_env, representative_episode  # noqa: E402
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--episode", default="warehouse")
+parser.add_argument(
+    "--env",
+    default="warehouse",
+    help="environment to build, e.g. hospital / office / warehouse",
+)
 parser.add_argument("--robot-usd", default=str(REPO / "assets" / "usd" / "Aloha" / "Aloha.usda"))
-parser.add_argument("--out", default=None, help="Defaults to assets/usd/nav_<episode>.usda")
+parser.add_argument("--out", default=None, help="Defaults to assets/usd/nav_<env>.usda")
 args = parser.parse_args()
 
-ep = load_episode(args.episode)
-out_path = Path(args.out) if args.out else REPO / "assets" / "usd" / f"nav_{ep.name}.usda"
+# Accept an episode name too, so an old invocation builds the right stage instead of
+# failing with "unknown environment". Both spellings land on the same file.
+env = args.env
+if env not in episodes_by_env():
+    from episode import load_episodes
 
-print(f"Building nav scene for episode '{ep.name}'")
-print(f"  environment : {ep.scene}")
-print(f"  start       : {ep.start} yaw={ep.start_yaw_deg} deg")
-print(f"  goal        : {ep.goal}  ({ep.straight_line_distance_m:.2f} m away)")
+    by_name = load_episodes()
+    if env in by_name:
+        env = env_name(by_name[env].scene)
+        print(f"note: '{args.env}' is an episode; building its environment '{env}'\n")
+
+ep = representative_episode(env)
+out_path = Path(args.out) if args.out else REPO / "assets" / "usd" / f"nav_{env}.usda"
+siblings = episodes_by_env()[env]
+
+print(f"Building nav scene for environment '{env}'")
+print(f"  usd         : {ep.scene}")
+print(f"  episodes    : {len(siblings)} ({', '.join(e.name for e in siblings)})")
+print(f"  authored at : {ep.start} yaw={ep.start_yaw_deg} deg (from '{ep.name}')")
 print(f"  out         : {out_path}\n")
 
 from isaacsim import SimulationApp  # noqa: E402
@@ -75,13 +102,14 @@ UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 env_prim = stage.DefinePrim("/World/Environment", "Xform")
 env_prim.GetReferences().AddReference(ep.scene)
 
-# The robot goes in at the EPISODE'S start pose, not the origin. This is not a
-# convenience -- for the office episode it is the difference between working and
-# exploding. That stage is 1063 m across and the origin is not inside the navigable
-# area; CLAUDE.md records a spawn that overlapped building geometry and PhysX's
-# separation impulse threw the whole articulation ~7.7 m and tipped it 181 degrees.
-# Every episode's start coordinate comes from DynaNav, which drives from there
-# successfully, so it is known-good free space.
+# The robot goes in at a REAL start pose, not the origin. This is not a convenience --
+# for the office environment it is the difference between working and exploding. That
+# stage is 1063 m across and the origin is not inside the navigable area; CLAUDE.md
+# records a spawn that overlapped building geometry and PhysX's separation impulse
+# threw the whole articulation ~7.7 m and tipped it 181 degrees. Every episode's start
+# coordinate comes from DynaNav, which drives from there successfully, so it is
+# known-good free space -- which of them is used here does not matter, because the
+# runner teleports to the episode's own start before each run.
 robot_prim = stage.DefinePrim("/World/Aloha", "Xform")
 robot_prim.GetReferences().AddReference(str(args.robot_usd))
 UsdGeom.XformCommonAPI(robot_prim).SetTranslate(tuple(ep.start))
@@ -134,5 +162,6 @@ if prim_count < 100 or not robot_ok:
 
 print("\nLayer authored and verified. The joint drives / wheel colliders / nav camera")
 print("are NOT applied yet -- run build_nav_scene.sh, which chains the pipeline steps.")
+print(f"Serves {len(siblings)} episode(s): {', '.join(e.name for e in siblings)}")
 
 kit.close()

@@ -11,13 +11,22 @@
 # wheel colliders and no cameras: those live as overrides in the scene file, not in
 # Aloha.usda. Skip them and you get a robot whose joints do nothing.
 #
-# Usage:  nav/sim/build_nav_scene.sh [episode]      (default: warehouse)
+# One stage per ENVIRONMENT, not per episode. The runner teleports to the episode's
+# start pose before every run, so six hospital episodes share one nav_hospital.usda
+# instead of costing six of these chains. An episode name is accepted too and resolves
+# to its environment, so an old command line still builds the right file.
+#
+# Usage:  nav/sim/build_nav_scene.sh [environment]   (default: warehouse)
 set -euo pipefail
 
-EPISODE="${1:-warehouse}"
+ENV_NAME="${1:-warehouse}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PYTHON_SH="${ISAACSIM_PYTHON:-/home/gtu-dsa/robotics/isaacsim-6.0.1/python.sh}"
-SCENE="$REPO/assets/usd/nav_${EPISODE}.usda"
+
+# Resolve the name here as well as inside the Python: the three pipeline steps below
+# each run in their own process and need the .usda path.
+ENV_NAME="$(python3 "$REPO/nav/sim/resolve_env.py" "$ENV_NAME")" || exit 1
+SCENE="$REPO/assets/usd/nav_${ENV_NAME}.usda"
 
 if [ ! -x "$PYTHON_SH" ]; then
   echo "ERROR: Isaac Sim 6.0.1 python.sh not found at $PYTHON_SH" >&2
@@ -27,8 +36,8 @@ fi
 
 cd "$REPO"
 
-echo "############ 1/4  author nav_${EPISODE}.usda ############"
-"$PYTHON_SH" nav/sim/build_nav_scene.py --episode "$EPISODE"
+echo "############ 1/4  author nav_${ENV_NAME}.usda ############"
+"$PYTHON_SH" nav/sim/build_nav_scene.py --env "$ENV_NAME"
 
 for step in configure_physics fix_wheel_collision add_cameras; do
   case "$step" in
@@ -43,4 +52,5 @@ done
 
 echo
 echo "Nav scene ready: $SCENE"
-echo "Run it with:     nav/run.sh --episode $EPISODE"
+echo "Serves every $ENV_NAME episode; the runner teleports to whichever you ask for."
+echo "Run it with:     nav/run.sh --episode <name>"

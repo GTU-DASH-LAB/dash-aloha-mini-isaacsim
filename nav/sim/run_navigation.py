@@ -45,6 +45,7 @@ from controllers import (  # noqa: E402
     Command,
     _lookahead_point,
     make_controller,
+    plan_speed,
 )
 from guidance import guidance_heading, parse_guidance  # noqa: E402
 
@@ -438,6 +439,7 @@ class NavigationRunner:
                     round(reach, 3),
                     round((goal_rel + 180.0) % 360.0 - 180.0, 2),
                     round(math.degrees(guide_deg), 2) if guide_deg is not None else None,
+                    round(plan_speed(waypoints), 3),
                 ))
                 self._set(
                     policy_calls=policy_calls,

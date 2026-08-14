@@ -93,6 +93,44 @@ DYNANAV_K_ANGULAR = 0.8
 DYNANAV_ALPHA_FILTER = 0.35
 _EPS = 1e-3
 
+# The action head emits exactly `action_horizon_steps: int = 30` waypoints
+# (ticvla/training/config.py:37) at 10 Hz. So every plan is 3.0 s of motion, always,
+# and the arc length of one is therefore a SPEED the policy is requesting.
+ACTION_HORIZON_S = 3.0
+
+
+def plan_speed(waypoints: np.ndarray) -> float:
+    """How fast the policy is asking to go, m/s. Arc length over a fixed 3.0 s.
+
+    This channel was being thrown away, and warehouse_aisle6 is what that costs.
+    That episode closed 92% of a 34.3 m gap, reached 2.80 m -- 1.3 m short of the
+    1.5 m success threshold -- and then sailed straight past to 22.0 m. Reading the
+    plans back shows the policy braking hard exactly where it should:
+
+        t (s)   dist to goal   plan reach
+        101.5       4.14 m       1.03 m
+        103.0       3.37 m       0.71 m
+        105.5       2.80 m       0.65 m     <- closest approach
+        107.0       3.10 m       0.52 m
+        109.0       4.32 m       0.35 m
+
+    A 0.65 m plan over 3.0 s is a request for 0.22 m/s. We drove 0.6 -- nearly 3x
+    the commanded speed -- because pure pursuit sets `v_cmd = min(v_max, v_kappa)`
+    and neither term knows how long the plan is. The robot could not stop where the
+    policy was trying to stop it.
+
+    DynaNav has the same blind spot and it costs them nothing, which is worth
+    understanding before copying them: their episode TERMINATES the moment the robot
+    is within 1.5 m, so overshooting after that point is unscored. Ours terminates
+    on the same rule -- but only if it gets inside 1.5 m, and at 2.80 m it never
+    did. Parity with DynaNav's controller is not the same as parity with DynaNav's
+    scoring harness.
+    """
+    if len(waypoints) < 2:
+        return 0.0
+    inc = np.diff(waypoints, axis=0)
+    return float(np.sum(np.hypot(inc[:, 0], inc[:, 1])) / ACTION_HORIZON_S)
+
 
 @dataclass
 class Command:
@@ -138,12 +176,17 @@ class PursuitController:
         lookahead_m: float = DYNANAV_LOOKAHEAD_M,
         k_angular: float = DYNANAV_K_ANGULAR,
         alpha_filter: float = DYNANAV_ALPHA_FILTER,
+        obey_plan_speed: bool = False,
     ):
         self.v_max = max_speed_mps
         self.w_max = max_yaw_rate_radps
         self.lookahead_m = lookahead_m
         self.k_angular = k_angular
         self.alpha_filter = alpha_filter
+        # Off here, on in GuidedPursuitController. This class is the DynaNav parity
+        # baseline and DynaNav does not read plan length, so turning it on by default
+        # would quietly stop this being a baseline. See `plan_speed`.
+        self.obey_plan_speed = obey_plan_speed
         self._yaw_err_filt: float | None = None
 
     def reset(self) -> None:
@@ -176,7 +219,8 @@ class PursuitController:
 
         kappa = 2.0 * y_l / (dist * dist)  # pure-pursuit curvature
         v_kappa = self.w_max / (abs(kappa) + _EPS)  # slow down for sharp turns
-        v_cmd = float(np.clip(min(self.v_max, v_kappa), 0.0, self.v_max))
+        v_cap = min(self.v_max, plan_speed(waypoints)) if self.obey_plan_speed else self.v_max
+        v_cmd = float(np.clip(min(v_cap, v_kappa), 0.0, self.v_max))
 
         w_ff = 0.5 * v_cmd * kappa
         w_fb = self.k_angular * self._yaw_err_filt
@@ -282,8 +326,14 @@ class GuidedPursuitController(PursuitController):
 
     name = "guided"
 
-    def __init__(self, *args, guidance_horizon_s: float = 6.0, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        *args,
+        guidance_horizon_s: float = 6.0,
+        obey_plan_speed: bool = True,
+        **kwargs,
+    ):
+        super().__init__(*args, obey_plan_speed=obey_plan_speed, **kwargs)
         self.guidance_horizon_s = guidance_horizon_s
         # Set every call so the runner can log how often guidance was actually
         # available. A "guided" run where this is mostly False is a pursuit run,
@@ -320,7 +370,13 @@ class GuidedPursuitController(PursuitController):
 
         kappa = 2.0 * y_l / (dist * dist)  # near-field curvature, action head
         v_kappa = self.w_max / (abs(kappa) + _EPS)
-        v_cmd = float(np.clip(min(self.v_max, v_kappa), 0.0, self.v_max))
+        v_cap = self.v_max
+        if self.obey_plan_speed:
+            # Honour the deceleration the policy is asking for. See `plan_speed`:
+            # the request is the plan's arc length over its fixed 3.0 s horizon, and
+            # ignoring it is what let aisle6 sail past its goal at 2.80 m.
+            v_cap = min(v_cap, plan_speed(waypoints))
+        v_cmd = float(np.clip(min(v_cap, v_kappa), 0.0, self.v_max))
 
         w_ff = 0.5 * v_cmd * kappa
         w_fb = self.k_angular * self._yaw_err_filt

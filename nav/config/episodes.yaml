@@ -63,7 +63,13 @@ episodes:
     goal: [-3.26, 7.61, 0.01]
     instruction: "Proceed to the traffic cones at the entrance of Aisle 05 (the second aisle from the right)."
     timeout_s: 70
-    notes: "starts 24.9 deg off the goal bearing, 16.5 m out"
+    notes: "starts 24.9 deg off the goal bearing, 16.5 m out; NOT VERIFIED by DynaNav"
+    # DynaNav's reference run on this machine (benchmark_results/20260813_090804)
+    # scored 49 of the 85 episodes -- all hospital and office. It never ran a single
+    # warehouse episode, so there is NO published result saying this task is solvable
+    # by TIC-VLA. The only warehouse number that exists anywhere here is the SMOKE
+    # episode, which DynaNav itself failed at 31.02 m. Do not treat a failure on this
+    # episode as evidence of a bug in this repo until a verified episode passes.
 
   # DynaNav episode_76. The best-aimed warehouse episode in the whole benchmark, and a
   # much longer run -- useful for checking the robot still tracks an instruction after
@@ -75,17 +81,67 @@ episodes:
     goal: [1.82, 24.5, 0.01]
     instruction: "Go straight to enter Aisle 06 (the last aisle from the left), passing the yellow forklift to reach the end of the aisle."
     timeout_s: 250
-    notes: "starts 5.0 deg off the goal bearing, 34.3 m out"
+    notes: "starts 5.0 deg off the goal bearing, 34.3 m out; NOT VERIFIED by DynaNav"
 
-  # DynaNav episode_6.
-  hospital:
+  # DynaNav episode_6 -- and DynaNav FAILED it: navigation_error 17.86 m, spl 0.00.
+  # Kept because a known-failing episode is a useful negative control, but do not use
+  # it to judge this repo. Note how little separates it from episode_7 below, which
+  # DynaNav passes with spl 1.00: start x 19.7 vs 18.7, timeout 55 s vs 65 s.
+  hospital_ep6_known_fail:
     scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
     start: [19.7, 29.3, 0.01]
     start_yaw_deg: -90
     goal: [16.1, -3.04, 0.01]
     instruction: "Walk straight down the hallway and stop at the red bed located to the right of the doors."
     timeout_s: 55
-    notes: "starts 6.4 deg off the goal bearing, 32.5 m out"
+    notes: "starts 6.4 deg off bearing, 32.5 m out; DynaNav FAILS this one (17.86 m)"
+
+  # ------------------------------------------------------------------------------
+  # Below: episodes DynaNav's own reference run on this machine actually SUCCEEDED
+  # on, taken from benchmark_results/20260813_090804 (29/49 = 59.2% overall;
+  # hospital 19/25 = 76%, office 10/24 = 41.7%). All three below scored spl 1.00,
+  # i.e. TIC-VLA drove them at essentially the optimal path length.
+  #
+  # These are the episodes to judge this integration by. If one of them fails here,
+  # the difference is ours and is worth chasing. Every success in the reference run
+  # records navigation_error ~1.49 m because the episode TERMINATES at the 1.5 m
+  # threshold -- rank candidates by spl and path length, not by final error.
+  # ------------------------------------------------------------------------------
+
+  # DynaNav episode_3. Shortest and simplest verified success in the benchmark:
+  # 13 m, no turn required, spl 1.00. This is the one to run first.
+  hospital_vending:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [-3.0, -1.2, 0.01]
+    start_yaw_deg: 0
+    goal: [9.52, 2.33, 0.01]
+    instruction: "Go straight ahead and stop at the front of the vending machine at front left."
+    timeout_s: 60
+    notes: "DynaNav: SUCCESS spl 1.00, path 12.1 m; starts 15.7 deg off bearing, 13.0 m out"
+
+  # DynaNav episode_7. Same instruction as episode_6 above, one metre of start offset
+  # and 10 s more budget -- and it passes with spl 1.00 where episode_6 fails outright.
+  hospital_redbed:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [18.7, 29.3, 0.01]
+    start_yaw_deg: -90
+    goal: [16.1, -3.04, 0.01]
+    instruction: "Walk straight down the hallway and stop at the red bed located to the right of the doors."
+    timeout_s: 65
+    notes: "DynaNav: SUCCESS spl 1.00, path 31.4 m; starts 4.6 deg off bearing, 32.4 m out"
+
+  # DynaNav episode_39. The important one: its instruction contains an explicit TURN
+  # ("then turn left at the end") and DynaNav still scores spl 1.00 over 13.2 m. If
+  # the warehouse Aisle-05 failure really is "this policy will not commit to a turn",
+  # this episode is where that claim gets tested against a verified success.
+  office_emergency_exit:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
+    start: [-10.6, -12.1, 0.01]
+    start_yaw_deg: -90
+    goal: [-7.68, -25.53, 0.01]
+    instruction: "Go straight ahead through the hallway, then turn left at the end to approach the red emergency exit door."
+    timeout_s: 110
+    notes: "DynaNav: SUCCESS spl 1.00, path 13.2 m; starts 12.3 deg off bearing, 13.7 m out"
 
   # DynaNav episode_26.
   office:

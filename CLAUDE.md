@@ -594,10 +594,41 @@ affect the *rest* of this repo:
   **Parity with DynaNav's controller is not parity with DynaNav's scoring harness.**
   `braking` (= `pursuit` + `obey_plan_speed`) is now the default; `pursuit` keeps it off
   so it stays a clean parity baseline.
-- **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
-  Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
-  wheel traction is poor but not zero. If anyone root-causes the traction issue below,
-  check this at the same time; they are probably the same phenomenon from two sides.
+- **RESOLVED: measured speed exceeded the commanded limit because position was re-read
+  from the sim every step.** `sync_from_sim()`'s docstring already said the integrated
+  pose is the authority afterwards, because re-reading "would fight the teleport" — that
+  was enforced for yaw and quietly not for x/y. The wheels carry no load but traction is
+  not zero, so each step dragged the robot on top of the `vx*dt` the teleport applied,
+  and reading that back as the next step's start made it compound: **0.663 m/s measured
+  against a 0.600 m/s cap, 1.11×**. Over the 32.4 m `hospital_down_hallway` episode that
+  is ~3.5 m of extra travel, against episodes that were plateauing 2.8–3.6 m short.
+  `base_drive.py` now integrates x/y like yaw, resyncing only past 0.25 m — above
+  per-step drag (~1 cm), below anything that matters — so a fall or an external reset
+  still wins. A tighter tolerance lets the drag straight back in.
+- **The speed cap is part of the policy's input distribution, not a safety knob.** It was
+  0.6 m/s against DynaNav's Nova Carter 1.5. The policy reads its own past motion through
+  `previous_waypoints_text` and plans at the speed it was trained at (mean **0.731 m/s
+  asked** on office_nearest_elevator), so the cap clipped nearly every plan — and with it
+  the *braking*, which is the entire point of the `braking` controller: `min(cap, plan)`
+  engaged in **11 of 141 calls**. Now 1.5. Prompting cannot substitute; speed is not a
+  channel the policy controls.
+- **Nav stages are keyed on the ENVIRONMENT, not the episode.** The start pose used to be
+  baked in at author time, so 13 episodes meant 13 four-process build chains for stages
+  differing by one prim's position, six of them the same `hospital.usd`. The runner
+  teleports to `episode.start` before every run, so the baked pose was never load-bearing
+  — `episode.env_name()` is the key and the ladder builds 3 stages. The payoff is in the
+  UI: every episode in the loaded environment is selectable and runnable in one session.
+  Episodes elsewhere are shown but locked, because Isaac Sim cannot swap stages
+  in-process at this version and a half-swapped stage fails as a *navigation* error, not
+  a crash — a benchmark's worst failure mode, since it yields a plausible number.
+- **6/13 on the benchmark ladder (Phase 18), from 0/13.** Two episodes beat DynaNav's own
+  spl. The remaining failures are not one thing: some arrive and brake correctly ~2 m off
+  the scored goal (`hospital_down_hallway` — plan reach collapses to 0.05 m at 2.11 m
+  out), others never see the landmark at all and cruise past at full plan speed
+  (`hospital_vending_machine2`, whose variant 1 succeeds at spl 0.98). And **`final` ≫
+  `closest` in five of seven failures** — the robot arrives and then leaves. DynaNav never
+  had to solve that: their harness terminates at 1.5 m, so their controller is never asked
+  to stop. Parity with their controller is not parity with their scoring harness.
 
 ## Next step
 

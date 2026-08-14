@@ -837,6 +837,67 @@ difficulty (turn size weighted hardest), producing a ladder from −2.3° to −
 
 ---
 
+## Phase 18 — the ladder, run end to end. 0/13 → 6/13
+
+First real benchmark numbers. `braking`, all 13 episodes, one pass.
+
+| episode | ok | init | closest | final | closed | spl | path | guard | DynaNav |
+|---|---|---|---|---|---|---|---|---|---|
+| office_nearest_elevator | no | 15.1 | 7.57 | 11.1 | 50% | 0.00 | 28.1 | 944 | spl 1.00 |
+| hospital_down_hallway | no | 32.4 | **2.11** | 34.0 | 93% | 0.00 | 67.7 | 0 | spl 1.00 |
+| hospital_down_hallway2 | **YES** | 32.5 | 1.50 | 1.5 | 95% | **1.00** | 32.0 | 0 | spl 1.00 |
+| office_passing_hallway | no | 36.4 | 3.00 | 9.9 | 92% | 0.00 | 59.7 | 828 | spl 1.00 |
+| hospital_vending_machine | **YES** | 13.0 | 1.50 | 1.5 | 88% | **0.98** | 13.2 | 7 | spl 1.00 |
+| hospital_vending_machine2 | no | 13.0 | **1.64** | 20.1 | 87% | 0.00 | 35.1 | 7 | spl 1.00 |
+| office_hallway_turn | **YES** | 13.7 | 1.50 | 1.5 | 89% | **0.92** | 15.0 | 1065 | spl 1.00 |
+| office_hallway_turn2 | **YES** | 13.1 | 1.50 | 1.5 | 89% | **0.96** | 13.6 | 0 | spl 1.00 |
+| hospital_past_wheelchairs | no | 15.0 | 3.52 | 28.6 | 77% | 0.00 | 43.3 | 28 | spl 1.00 |
+| hospital_forward_staircase | **YES** | 21.5 | 1.50 | 1.5 | 93% | **0.90** | 23.8 | 39 | spl 0.88 |
+| hospital_exit_room | **YES** | 25.1 | 1.50 | 1.5 | 94% | **0.93** | 27.1 | 37 | spl 0.88 |
+| warehouse | no | 16.5 | 5.44 | 22.4 | 67% | 0.00 | 39.0 | 0 | never scored |
+| warehouse_aisle6 | no | 34.3 | 14.06 | 14.1 | 59% | 0.00 | 117.4 | 574 | never scored |
+
+**6/13 succeed; 6/11 on the DynaNav-comparable subset, mean spl 0.52.** Every prior run
+in this file scored 0.00. What changed was two things and neither was the policy: the
+1.11× drive-integration error (Phase 17e) and the 0.6 m/s cap that was clipping the
+policy's own plans, braking included.
+
+**Our difficulty ranking is wrong, and the run says so.** The two episodes ranked hardest
+by turn size — `hospital_forward_staircase` (+66.1°) and `hospital_exit_room` (−82.5°) —
+both succeeded, and both beat DynaNav's own spl (0.90 vs 0.88, 0.93 vs 0.88). The one
+ranked *easiest*, `office_nearest_elevator` (−2.3°), is the worst result on the board.
+Turn size is not what predicts our failures. Do not re-rank on a hunch; the honest move
+is to keep the ordering and note it does not correlate.
+
+**The failures split into two kinds, and only one is a controller problem.** Read
+`plans` around the closest-approach sample:
+
+- *It arrives, brakes, and we are 2 m off.* `hospital_down_hallway`: plan speed falls
+  0.70 → 0.43 → 0.26 m/s and plan reach collapses to **0.05 m** — the policy is saying
+  *stop, this is it* — at 2.11 m from the scored goal. The policy's idea of the
+  destination and the benchmark's differ by more than the 1.5 m threshold.
+- *It never sees the landmark.* `hospital_vending_machine2`: plan speed holds 0.5–0.7 and
+  reach holds ~1.1 straight through the closest approach, plan heading −2° while the
+  bearing sweeps −58° → −125°. It drives past without slowing. Variant 1 of the same
+  task succeeds at spl 0.98, so this is a perception failure on one scene, not on the
+  instruction.
+
+**`final` ≫ `closest` in five of seven failures** (34.0 vs 2.11; 20.1 vs 1.64; 28.6 vs
+3.52; 22.4 vs 5.44). The robot reaches its destination and then leaves. DynaNav never
+had to solve this because their harness terminates the episode the instant the robot is
+within 1.5 m — so their controller is never asked to stop, and ours is. An arrival
+detector on the policy's own signal (reach collapsing below ~0.1 m for several
+consecutive calls) would stop the wandering. Be clear that it would *not* convert a
+single failure: it makes the failures honest, it does not cross the threshold.
+
+- [x] Ladder run end to end, one controller, 3 stage builds for 13 episodes.
+- [ ] Arrival detection on plan reach — stops the post-goal wandering.
+- [ ] `office_nearest_elevator` regressed (3.57 m → 7.57 m) with guard interventions up
+      169 → 944. Faster robot, tighter office, guard fires more. Check whether the guard
+      is now the binding constraint there rather than the policy.
+
+---
+
 ## Open questions
 
 - **Does the DynaNav office scene load in Isaac Sim 6.0.1 at all?** Phase 8 answers

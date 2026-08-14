@@ -1,11 +1,37 @@
 # DynaNav benchmark episodes, adapted for AlohaMini.
 #
 # The scene/start/goal/instruction/timeout values are copied VERBATIM from
-# TIC-VLA/DynaNav/configs/benchmark_example.yaml -- do not "improve" the prompts.
-# The whole point of using a published benchmark is that the task is not one we
-# invented to suit our robot, so the instructions must stay exactly as the authors
-# wrote them. `robot_type` and `speed` are ours, because AlohaMini is not a Nova
-# Carter (see ../plan.md).
+# TIC-VLA/DynaNav/configs/benchmark_full.yaml -- do not "improve" the prompts. The
+# whole point of using a published benchmark is that the task is not one we invented
+# to suit our robot, so the instructions must stay exactly as the authors wrote them.
+# `robot_type` and the speed limits are ours, because AlohaMini is not a Nova Carter
+# (see ../plan.md).
+#
+# ---------------------------------------------------------------------------------
+# READ THIS BEFORE CHANGING A START POSE.
+#
+# These come from benchmark_full.yaml -- the 85-episode benchmark. They originally
+# came from benchmark_example.yaml, which is a SMOKE/DEMO file, and three of its four
+# episodes spawn the robot facing roughly 180 degrees AWAY from their own goal:
+#
+#     episode              start_yaw   goal bearing   off by
+#     hospital_smoke            0.0         +15.5      +15.5   ok
+#     office_smoke             90.0         -77.7     -167.7   facing away
+#     outdoor_smoke          -123.0         +57.0     -180.0   facing away
+#     warehouse_smoke        -141.0         +52.3     -166.7   facing away
+#
+# That is not a convention mismatch on our side. DynaNav applies start_yaw as a plain
+# RotateZ on the robot prim (benchmark.py:_spawn_robot), which is exactly what
+# sim/base_drive.py's reset_to() does, and across all 85 real episodes 54 start within
+# 30 degrees of their goal bearing and NOT ONE is improved by a 180 degree flip. The
+# smoke episodes are simply not aimed at anything.
+#
+# Running one of them looks exactly like a broken policy: the robot drives off in the
+# wrong direction and never sees the landmark the instruction names, because the
+# landmark is behind it. It cost a full debugging round here. Every episode below is
+# annotated with how far off its own goal bearing it starts; keep that within ~30
+# degrees, or the run is not testing navigation.
+# ---------------------------------------------------------------------------------
 #
 # Ordering below is deliberate: `warehouse` is first because it is the default.
 #
@@ -21,7 +47,7 @@
 # what we hand someone who wants to see this work the first time.
 
 defaults:
-  success_threshold_m: 1.5   # DynaNav's own criterion (benchmark_example.yaml)
+  success_threshold_m: 1.5   # DynaNav's own criterion (benchmark_full.yaml)
   robot_type: "wheeled robot"  # goes into TIC-VLA's system prompt verbatim
   max_speed_mps: 0.6
   max_yaw_rate_radps: 1.2
@@ -29,47 +55,67 @@ defaults:
 
 episodes:
 
+  # DynaNav episode_61. The Aisle 5 task, with the traffic cones the prompt names.
   warehouse:
     scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
-    start: [-18.98, -14.3, 0.01]
-    start_yaw_deg: -141
-    goal: [-2.9, 6.54, 0.01]
-    instruction: "Go straight and stop in front of Aisle 5, where traffic cones and a yellow caution sign block the entrance."
+    start: [-10.22, -7.36, 0.01]
+    start_yaw_deg: 90
+    goal: [-3.26, 7.61, 0.01]
+    instruction: "Proceed to the traffic cones at the entrance of Aisle 05 (the second aisle from the right)."
     timeout_s: 70
+    notes: "starts 24.9 deg off the goal bearing, 16.5 m out"
 
+  # DynaNav episode_76. The best-aimed warehouse episode in the whole benchmark, and a
+  # much longer run -- useful for checking the robot still tracks an instruction after
+  # it has had to commit to a turn.
+  warehouse_aisle6:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
+    start: [-13.22, -6.36, 0.01]
+    start_yaw_deg: 59
+    goal: [1.82, 24.5, 0.01]
+    instruction: "Go straight to enter Aisle 06 (the last aisle from the left), passing the yellow forklift to reach the end of the aisle."
+    timeout_s: 250
+    notes: "starts 5.0 deg off the goal bearing, 34.3 m out"
+
+  # DynaNav episode_6.
   hospital:
     scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
-    start: [-3.0, -1.2, 0.01]
-    start_yaw_deg: 0.0
-    goal: [9.72, 2.33, 0.01]
-    instruction: "Go straight ahead and stop at the front of the vending machine."
-    timeout_s: 70
+    start: [19.7, 29.3, 0.01]
+    start_yaw_deg: -90
+    goal: [16.1, -3.04, 0.01]
+    instruction: "Walk straight down the hallway and stop at the red bed located to the right of the doors."
+    timeout_s: 55
+    notes: "starts 6.4 deg off the goal bearing, 32.5 m out"
 
+  # DynaNav episode_26.
   office:
     scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
-    start: [-10.6, -12.1, 0.01]
-    start_yaw_deg: 90.0
-    goal: [-7.68, -25.53, 0.01]
-    instruction: "Go straight ahead through the hallway behind the black glass doors, then turn left at the end to approach the red emergency exit door."
-    timeout_s: 85
+    start: [-2.85, 9.6, 0.01]
+    start_yaw_deg: -132
+    goal: [-13.4, -1.2, 0.01]
+    instruction: "Go straight ahead and stop at the nearest elevator."
+    timeout_s: 50
     # See the header note. Phase 8 measured this stage at 1063.55 x 677.15 m.
-    notes: "1 km stage; spawn pose below is inside the navigable region, do NOT spawn at origin."
+    notes: "starts 2.3 deg off the goal bearing, 15.1 m out; 1 km stage, do NOT spawn at origin"
 
+  # DynaNav episode_51.
   outdoor:
     scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
-    start: [-34.05, 151.7, 6.1]
-    start_yaw_deg: -123
-    goal: [-24.79, 165.96, 6.0]
-    instruction: "Go straight across the street and head toward the wall with the words 'Northside Branch Library.'"
+    start: [26.9, 148.8, 6.85]
+    start_yaw_deg: 160
+    goal: [9.39, 154.52, 5.97]
+    instruction: "Go straight until reach the black and white striped umbrellas."
     timeout_s: 100
     # Note the Z: this terrain is elevated ~6 m. Spawning at z=0.01 drops the robot
     # through the world.
+    notes: "starts 1.9 deg off the goal bearing, 18.4 m out"
 
-# Deliberately NOT replicated from DynaNav: `num_people: 20`.
-# DynaNav spawns 20 animated pedestrians as dynamic obstacles. AlohaMini's base is
+# Deliberately NOT replicated from DynaNav: `num_people`.
+# DynaNav spawns animated pedestrians as dynamic obstacles. AlohaMini's base is
 # kinematically teleported (../../CLAUDE.md: real wheel traction never held up, so
 # locomotion is set_world_poses() rather than physics-driven), which means it has NO
 # collision response -- it would walk straight through a pedestrian without either
 # body reacting. Spawning people would therefore make the demo look like it handles
 # dynamic obstacles when it provably does not. sim/collision_guard.py raycasts
 # instead, which is honest about being a guard rather than real contact physics.
+# The episodes chosen above are the num_people: 0 variants wherever one exists.

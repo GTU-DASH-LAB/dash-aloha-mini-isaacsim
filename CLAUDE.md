@@ -408,8 +408,26 @@ affect the *rest* of this repo:
   robot is going. `camera_nav` is deliberately kept OUT of `CAMERA_PRIM_PATHS`: that
   dict is the LeRobot observation contract, and adding a key would silently change the
   shape of every recorded manipulation dataset. Its rotation is outside the
-  `(x, 0, 180)` family the cheat sheet in `add_cameras.py` covers — `(80, 0, -90)`
-  gives view `(0.985, 0, -0.174)`, with the derivation written out there.
+  `(x, 0, 180)` family the cheat sheet in `add_cameras.py` covers — `(90, 0, -90)`
+  gives view `(1, 0, 0)` and image-up `(0, 0, 1)`, with the derivation written out there.
+- **`camera_nav`'s intrinsics and mount are NOT AlohaMini's — they are a copy of Nova
+  Carter's front Hawk.** A camera is part of a VLA's input distribution, not a styling
+  choice: TIC-VLA is trained through DynaNav's render of
+  `nova_carter_sensors.usd`'s `/chassis_link/front_hawk/left/camera_left`. Probed off
+  that asset: focal 2.8734 mm, aperture 5.760×3.600 → **HFOV 90.1°**, mounted at
+  **z=0.346 on `chassis_link`**, **pitch 0.0° (level)**, rendered **1920×1080**. The
+  first version used AlohaMini's own webcam intrinsics (78° HFOV) at 1.15 m on the lift
+  column tilted 10° down, and the policy could not find the landmarks the benchmark
+  prompts name — 90° cropped to 78° and pitched into the floor loses exactly the
+  peripheral and distant context that "the second aisle from the right" is expressed in.
+  It sits on `base_link`, not `vertical_link`: a nav camera on the lift has a horizon
+  that moves for reasons the policy cannot account for.
+- **`add_cameras.py` deletes any camera of ours found off its spec'd path.** Defining a
+  prim at a new path does not remove the old one. When `camera_nav` moved from the lift
+  column to `base_link`, a plain re-run left BOTH prims in the stage — the code read the
+  new one while Kit went on rendering the stale one every frame. The invariant is now
+  enforced in the script, so changing a mount point is a one-line spec edit rather than
+  a spec edit plus a USD cleanup someone has to remember.
 - **And a fifth, `camera_chase`** — the third-person view the UI can open. Parented to
   `base_link` (not `vertical_link`, which would ride the lift) so it inherits position
   and yaw and stays behind the robot through turns. It is created **lazily, on the first
@@ -437,6 +455,23 @@ affect the *rest* of this repo:
   demotes the body parameter to a query string, and every POST answers
   `{"loc": ["query", "req"], "msg": "Field required"}`. Cost one 3-minute Isaac Sim
   restart to find, in `nav/ui/ui_bridge.py`.
+- **Episodes come from `benchmark_full.yaml`, NEVER `benchmark_example.yaml`.** The
+  latter is a four-episode smoke/demo config, and three of its four spawn the robot
+  facing ~180° away from their own goal (office −167.7°, outdoor −180.0°, warehouse
+  −166.7°). Running one looks precisely like a broken policy — the robot drives off the
+  wrong way and never sees the landmark the prompt names, because the landmark is behind
+  it. This is not a yaw-convention mismatch: DynaNav applies `start_yaw` as a plain
+  `rotate_z_op.Set()` with forward=+X, identical to `base_drive.reset_to()`, and across
+  all 85 real episodes not one is improved by a 180° flip. `nav/config/episodes.yaml`
+  now annotates every episode with its own off-bearing; keep new ones inside ~30° or the
+  run is not testing navigation.
+- **Lesson, and it cost two runs: don't narrate a bad number into a good story.** Run 2's
+  193° opening turn got written up in `nav/plan.md` as the task working — "it read the
+  instruction and went looking for aisles." It was the robot turning around because the
+  goal was behind it. The same file *also* carried an open question saying the smoke
+  episodes driving away from the goal was not normal behaviour. A plausible explanation
+  fitted to a suspicious measurement is worse than no explanation, because it closes the
+  question.
 - **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
   Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
   wheel traction is poor but not zero. If anyone root-causes the traction issue below,

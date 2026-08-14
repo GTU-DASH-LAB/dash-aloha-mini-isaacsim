@@ -416,15 +416,93 @@ level.
 
 ---
 
+### Phase 15 — "it goes in the wrong direction and can't see Aisle 5" (user report, run 3)
+
+Two complaints in one sentence, and they turned out to be two separate bugs. Both were
+mine; neither was the policy.
+
+**Bug 1 — the episodes were the wrong episodes.**
+
+`nav/config/episodes.yaml` was built from `TIC-VLA/DynaNav/configs/benchmark_example.yaml`.
+That file is a four-episode **smoke/demo** config, not the benchmark. Three of its four
+episodes spawn the robot facing roughly 180° away from their own goal:
+
+| episode | start_yaw | goal bearing | off by |
+|---|---|---|---|
+| hospital_smoke | 0.0 | +15.5 | +15.5 |
+| office_smoke | 90.0 | −77.7 | **−167.7** |
+| outdoor_smoke | −123.0 | +57.0 | **−180.0** |
+| warehouse_smoke | −141.0 | +52.3 | **−166.7** |
+
+- [x] Ruled out the obvious explanation first: a yaw-convention mismatch on our side.
+      DynaNav applies `start_yaw` as a plain `rotate_z_op.Set(start_yaw)` on the robot
+      prim (`benchmark.py:_spawn_robot`), with robot-forward = +X — byte for byte what
+      `sim/base_drive.py:reset_to()` does. Checked against the real 85-episode
+      `benchmark_full.yaml`: 54 episodes start within 30° of their goal bearing, 29
+      within 30–90°, 2 within 90–150°, **none** beyond 150°, and **not one is improved
+      by a 180° flip**. The convention is right. The smoke episodes are simply not aimed
+      at anything.
+- [x] Rewrote `episodes.yaml` from `benchmark_full.yaml`. Five real episodes, each
+      annotated with its own off-bearing, all now within 30°:
+
+      episode              yaw  bearing  off by   dist
+      warehouse             90     65.1   -24.9   16.5 m   (episode_61, the Aisle 5 task)
+      warehouse_aisle6      59     64.0     5.0   34.3 m   (episode_76)
+      hospital             -90    -96.4    -6.4   32.5 m   (episode_6)
+      office              -132   -134.3    -2.3   15.1 m   (episode_26)
+      outdoor              160    161.9     1.9   18.4 m   (episode_51)
+
+- [x] Header warning in the file so the next person does not "helpfully" copy the demo
+      config back in. Running a smoke episode looks *exactly* like a broken policy — the
+      robot drives off the wrong way and never sees the landmark the prompt names,
+      because the landmark is behind it.
+
+**What I got wrong before, for the record:** run 2's 193° opening turn is written up
+earlier in this plan as the task working — "it read the instruction and went looking for
+aisles." It was not. It was the robot turning around because the goal was behind it.
+A plausible story fitted to a bad number is worse than no story, because it closes the
+question.
+
+**Bug 2 — the nav camera was AlohaMini's, not the one the policy was trained through.**
+
+A camera is part of a VLA's input distribution, not a free design choice. TIC-VLA is fed
+DynaNav's render of the Nova Carter asset's front Hawk stereo left eye. Probed straight
+off `nova_carter_sensors.usd` (`/chassis_link/front_hawk/left/camera_left`) rather than
+guessed:
+
+| | ours (before) | Hawk (now) |
+|---|---|---|
+| HFOV | 77.8° | **90.1°** |
+| height | 1.15 m (on the lift column) | **0.346 m** (on `base_link`) |
+| pitch | 10° down | **0.0°, level** |
+| render aspect | 640×480, 4:3 | **1920×1080, 16:9** |
+
+- [x] All four now match. Every one of them crops or shifts exactly the peripheral and
+      distant context that "the second aisle from the right" is *expressed in* — a
+      90° view rendered at 78° and pitched into the floor cannot contain a phrase about
+      the far end of a row of aisles.
+- [x] Moved to `base_link`. On the lift column, the nav camera's horizon moves whenever
+      the lift moves — for reasons the policy has no way to account for.
+- [x] Mounted at x=+0.25 to clear the base's own front face (half-extent ~0.21 in X).
+- [x] `add_cameras.py` now **deletes any camera of ours found off its spec'd path**
+      before authoring. Defining `camera_nav` at its new path does not remove the old
+      one; a plain re-run left both prims in the stage, with Kit rendering the stale
+      lift-mounted one every frame. Moving a mount point is now a one-line spec change.
+
+---
+
 ## Open questions
 
 - **Does the DynaNav office scene load in Isaac Sim 6.0.1 at all?** Phase 8 answers
   this. It is the single largest schedule risk; everything downstream assumes it.
-- **Is the straight-line bias the policy, or this machine's integration of it?** The
-  49-episode run scoring 55% argues the pipeline basically works, which makes a pure
-  integration bug less likely — but the smoke episodes driving *away* from the goal is
-  not normal for a policy at 55%. Phase 9 separates the two. Worth resolving regardless
-  of AlohaMini, since it affects the thesis result directly.
+- ~~**Is the straight-line bias the policy, or this machine's integration of it?**~~
+  **Answered in Phase 15, and the question contained the answer.** "The smoke episodes
+  driving away from the goal is not normal for a policy at 55%" was correct — it was not
+  the policy. Three of the four smoke episodes *spawn* facing away from their own goal,
+  so a policy driving off in the wrong direction was the only thing it could have done.
+  Fixed by using `benchmark_full.yaml`. Note the observation sat here as an open
+  question for two runs while the behaviour it described was being written up elsewhere
+  in this file as the task succeeding.
 - **Should the arms and lift do anything during navigation?** Assumed parked in a safe
   tucked pose for now. Manipulation-after-navigation is a natural follow-on and is
   explicitly out of scope here.

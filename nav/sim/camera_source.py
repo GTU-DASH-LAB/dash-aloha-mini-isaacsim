@@ -28,6 +28,7 @@ from alohamini1_specs import (  # noqa: E402
     CAMERA_RESOLUTION,
     CHASE_CAMERA_PRIM_PATH,
     NAV_CAMERA_PRIM_PATH,
+    NAV_CAMERA_RESOLUTION,
 )
 
 DEFAULT_SCRATCH = Path("/tmp/alohamini-nav-frames")
@@ -73,7 +74,11 @@ class NavCameraSource(_Source):
         self,
         scratch_dir: Path | str = DEFAULT_SCRATCH,
         prim_path: str = NAV_CAMERA_PRIM_PATH,
-        resolution: tuple[int, int] = CAMERA_RESOLUTION,
+        # 1920x1080, not the LeRobot 640x480: DynaNav renders its Hawk feed at this
+        # size, and the frame's ASPECT decides how much of the world falls inside the
+        # 90 deg horizontal field. Rendering 4:3 through a 16:9 camera would crop the
+        # periphery back off and undo the point of matching the intrinsics at all.
+        resolution: tuple[int, int] = NAV_CAMERA_RESOLUTION,
         keep_frames: bool = True,
     ):
         super().__init__(prim_path, resolution)

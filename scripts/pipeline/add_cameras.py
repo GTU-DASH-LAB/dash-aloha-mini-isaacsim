@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -28,6 +29,9 @@ sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohami
 from alohamini1_specs import (  # noqa: E402
     CAMERA_PRIM_PATHS,
     CHASE_CAMERA_PRIM_PATH,
+    NAV_CAMERA_APERTURE,
+    NAV_CAMERA_FOCAL_MM,
+    NAV_CAMERA_HEIGHT_M,
     NAV_CAMERA_PRIM_PATH,
 )
 
@@ -100,26 +104,34 @@ CAMERA_SPECS = {
     # camera rather than being handed a sideways view. Kept out of CAMERA_PRIM_PATHS
     # so the LeRobot observation contract is unchanged (see alohamini1_specs.py).
     #
-    # This one is NOT in the (x, 0, 180) family the cheat sheet above covers, so the
-    # derivation, using the same R = Rz*Ry*Rx convention:
+    # THIS CAMERA IS A COPY OF NOVA CARTER'S FRONT HAWK, NOT A CHOICE. TIC-VLA is
+    # trained through DynaNav's render of nova_carter_sensors.usd's
+    # /chassis_link/front_hawk/left/camera_left; the intrinsics and the mount height in
+    # alohamini1_specs.py were probed off that asset. Deviating from them moves the
+    # input off the model's training distribution, which is a silent accuracy loss, not
+    # a stylistic difference. The first version of this file used AlohaMini's own
+    # webcam intrinsics (78 deg HFOV) at 1.15 m tilted 10 deg down; the policy could
+    # not find the landmarks the prompts name, because a 90 deg view cropped to 78 deg
+    # and pitched at the floor loses exactly the peripheral and distant context that
+    # "the second aisle from the right" is expressed in.
+    #
+    # Rotation, using the same R = Rz*Ry*Rx convention as the cheat sheet above:
     #   after Rx(x):   view = (0, sin x, -cos x)      up = (0, cos x, sin x)
     #   after Rz(-90): view = (sin x, 0, -cos x)      up = (cos x, 0, sin x)
-    # so x=80 gives view = (0.985, 0, -0.174): straight down +X, tilted 10 deg down,
-    # with up = (0.174, 0, 0.985) -- image-up still world-up, i.e. not upside down.
-    # 10 deg down rather than level so the floor immediately ahead is in frame (that
-    # is where an obstacle the robot is about to hit actually appears) while keeping
-    # the horizon visible for the distant landmarks the benchmark prompts name --
-    # "the red emergency exit door", "the wall with the words 'Northside Branch
-    # Library'". Tilt much further down and those leave the frame entirely.
+    # x=90 gives view = (1, 0, 0) and up = (0, 0, 1): straight down the driving
+    # direction, dead level, image-up = world-up. Level is the point -- the Hawk sits
+    # at pitch 0.0, measured, not assumed.
     "nav": {
         "path": NAV_CAMERA_PRIM_PATH,
         # x=+0.25 clears the base's own front face (half-extent ~0.21 in X, the same
         # number behind the 0.375 m turning swing radius in CLAUDE.md), so the chassis
-        # does not occlude the lower frame. z=1.15 matches the forward camera's height
-        # on the column, which also puts it in the same ballpark as Nova Carter's
-        # camera height -- the robot TIC-VLA was trained on.
-        "translate": (0.25, 0.0, 1.15),
-        "rotateXYZ": (80.0, 0.0, -90.0),
+        # does not occlude the lower frame. z from NAV_CAMERA_HEIGHT_M = Nova Carter's
+        # own Hawk height. y=0: the Hawk's 0.075 offset is just the left eye of a
+        # stereo pair, and the policy is fed one image.
+        "translate": (0.25, 0.0, NAV_CAMERA_HEIGHT_M),
+        "rotateXYZ": (90.0, 0.0, -90.0),
+        "focal": NAV_CAMERA_FOCAL_MM,
+        "aperture": NAV_CAMERA_APERTURE,
     },
     # --- Third-person chase camera: for WATCHING, never fed to the policy ---
     # Parented to base_link, so it inherits the base's position and yaw and stays
@@ -139,6 +151,24 @@ CAMERA_SPECS = {
     },
 }
 
+# --- Remove any camera of ours that is sitting somewhere it no longer belongs ---
+# Defining a prim at the new path does NOT delete the old one. When camera_nav moved
+# from the lift column to base_link, a plain re-run left BOTH prims in the stage: the
+# code read the new one, Kit went on rendering the old one every frame, and a stale
+# camera parented to the lift is exactly the kind of thing that looks fine in a diff
+# and wrong in a frame. The invariant this enforces is "a camera we author exists at
+# the path the spec names, and nowhere else" -- so moving a mount point is a one-line
+# spec change from here on, not a spec change plus a manual USD cleanup someone has to
+# remember. Only OUR camera names are touched; anything the environment asset brings
+# with it is left alone.
+_authored_paths = {spec["path"] for spec in CAMERA_SPECS.values()}
+_authored_names = {p.rsplit("/", 1)[1] for p in _authored_paths}
+for prim in list(stage.Traverse()):
+    path = prim.GetPath().pathString
+    if prim.GetName() in _authored_names and path not in _authored_paths:
+        stage.RemovePrim(prim.GetPath())
+        print(f"Removed stale camera prim: {path}")
+
 for name, spec in CAMERA_SPECS.items():
     parent_path = spec["path"].rsplit("/", 1)[0]
     parent = stage.GetPrimAtPath(parent_path)
@@ -150,15 +180,23 @@ for name, spec in CAMERA_SPECS.items():
         parent.SetInstanceable(False)
         print(f"Un-instanced camera parent: {parent_path}")
 
+    # Default intrinsics approximate a 640x480 USB webcam (~78 deg HFOV), which is what
+    # the LeRobot cameras actually are. A spec can override them -- the nav camera does,
+    # because it has to match the sensor TIC-VLA was trained through rather than
+    # AlohaMini's own hardware.
+    focal = spec.get("focal", 13.0)
+    h_ap, v_ap = spec.get("aperture", (20.955, 15.716))
+
     cam = UsdGeom.Camera.Define(stage, spec["path"])
-    cam.CreateFocalLengthAttr(13.0)          # ~78 deg HFOV at 20.955mm aperture
-    cam.CreateHorizontalApertureAttr(20.955)
-    cam.CreateVerticalApertureAttr(15.716)   # 4:3, matches 640x480
+    cam.CreateFocalLengthAttr(float(focal))
+    cam.CreateHorizontalApertureAttr(float(h_ap))
+    cam.CreateVerticalApertureAttr(float(v_ap))
     cam.CreateClippingRangeAttr((0.01, 100.0))
     xform = UsdGeom.XformCommonAPI(cam.GetPrim())
     xform.SetTranslate(spec["translate"])
     xform.SetRotate(spec["rotateXYZ"])
-    print(f"Authored camera '{name}' at {spec['path']}")
+    hfov = 2 * math.degrees(math.atan(h_ap / (2 * focal)))
+    print(f"Authored camera '{name}' at {spec['path']}  (HFOV {hfov:.1f} deg)")
 
 stage.Save()
 print(f"\nSaved: {args.scene}")

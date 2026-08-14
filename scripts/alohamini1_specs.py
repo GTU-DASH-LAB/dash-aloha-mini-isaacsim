@@ -80,7 +80,8 @@ CAMERA_FPS = 30
 # Prim paths where scripts/pipeline/add_cameras.py authors the USD cameras (children of the
 # robot links so they move with the wrist/column). LeRobot observation keys are
 # "observation.images.<name>" for each <name> key here.
-_ARM_CHAIN = "/World/Aloha/Geometry/base_link/vertical_link"
+_BASE_LINK = "/World/Aloha/Geometry/base_link"
+_ARM_CHAIN = f"{_BASE_LINK}/vertical_link"
 CAMERA_PRIM_PATHS = {
     "forward": f"{_ARM_CHAIN}/camera_forward",
     "wrist_left": f"{_ARM_CHAIN}/left_link1/left_link2/left_link3/left_link4/left_link5/camera_wrist_left",
@@ -98,13 +99,33 @@ CAMERA_PRIM_PATHS = {
 # useless: the camera would show whatever is 90 degrees off the side of the direction
 # of travel, and a vision-language navigation policy asked to "go straight ahead" would
 # be reasoning about a view the robot is not driving into.
-NAV_CAMERA_PRIM_PATH = f"{_ARM_CHAIN}/camera_nav"
+#
+# Its INTRINSICS ARE NOT AlohaMini's -- they are copied verbatim off the sensor TIC-VLA
+# was trained through. DynaNav feeds the policy the Nova Carter asset's own front Hawk
+# stereo left eye (nova_carter_sensors.usd, /chassis_link/front_hawk/left/camera_left),
+# rendered 1920x1080. Probed directly off that asset rather than guessed:
+#
+#     focal 2.8734 mm, aperture 5.760 x 3.600  ->  HFOV 90.1 deg, VFOV 64.1 deg
+#     mounted x=0.100 y=0.075 z=0.346 on chassis_link, view (1,0,0), pitch 0.0 deg
+#
+# A camera is not a free choice here, it is part of the model's input distribution. The
+# first version of this file used AlohaMini's own webcam-ish 78 deg HFOV at 1.15 m and
+# tilted 10 deg down, and the policy could not see the landmarks the benchmark prompts
+# name -- a 90 deg view cropped to 78 deg loses exactly the peripheral context that
+# "the second aisle from the right" depends on.
+# On base_link, not the lift column: Nova Carter's is on chassis_link, and a nav camera
+# that rises and falls with the lift is a nav camera whose horizon moves for reasons the
+# policy has no way to account for.
+NAV_CAMERA_PRIM_PATH = f"{_BASE_LINK}/camera_nav"
+NAV_CAMERA_RESOLUTION = (1920, 1080)     # DynaNav's render product size
+NAV_CAMERA_FOCAL_MM = 2.8734347820281982
+NAV_CAMERA_APERTURE = (5.760000228881836, 3.5999999046325684)
+NAV_CAMERA_HEIGHT_M = 0.346              # Nova Carter's Hawk height on chassis_link
 
 # --- Third-person chase camera (also NOT part of the LeRobot camera set) ---
 # Parented to base_link rather than the lift column, so it does not ride up and down
 # when the lift moves -- and so it inherits the base's yaw, giving a chase view that
 # turns with the robot instead of a fixed world camera the robot drives out of.
-_BASE_LINK = "/World/Aloha/Geometry/base_link"
 CHASE_CAMERA_PRIM_PATH = f"{_BASE_LINK}/camera_chase"
 
 # --- Mobile base (LeKiwi 3-wheel omni base, alohamini1 dims) ---

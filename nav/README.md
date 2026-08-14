@@ -73,7 +73,7 @@ pinned through Kit's own `active_gpu`/`physics_gpu` config instead.
 
 | path | what it does |
 |---|---|
-| `config/episodes.yaml` | the four DynaNav episodes, prompts copied verbatim |
+| `config/episodes.yaml` | five DynaNav episodes from `benchmark_full.yaml`, prompts verbatim |
 | `policy_server/server.py` | FastAPI wrapper over `TICVLA.predict()` (py3.11, GPU1) |
 | `policy_server/client.py` | stdlib-only client, so Isaac Sim's py3.12 can import it |
 | `sim/build_nav_scene.sh` | compose environment + robot, then apply the pipeline |
@@ -90,6 +90,22 @@ pinned through Kit's own `active_gpu`/`physics_gpu` config instead.
 manipulation front (−Y); the base drives +X. Navigation uses a fourth camera,
 `camera_nav`, deliberately kept out of `CAMERA_PRIM_PATHS` so the LeRobot observation
 contract is unchanged.
+
+**`camera_nav` is a copy of Nova Carter's front Hawk, not AlohaMini's own camera.**
+90.1° HFOV, 0.346 m up, dead level, rendered 1920×1080 — probed off
+`nova_carter_sensors.usd`, because that is the sensor DynaNav renders and therefore the
+one TIC-VLA was trained through. A camera is part of a VLA's input distribution, not a
+styling choice. The first version used AlohaMini's own webcam intrinsics (78° HFOV) at
+1.15 m on the lift column, tilted 10° down, and the policy could not find the landmarks
+the prompts name: `docs/nav_start_frame_hawk.jpg` shows what it sees now — all six aisle
+placards legible and the Aisle 05 traffic cones in frame from the start line.
+
+**Use `benchmark_full.yaml`, never `benchmark_example.yaml`.** The example file is a
+four-episode smoke config, and three of its four spawn the robot facing ~180° away from
+their own goal. Running one is indistinguishable from a broken policy — the robot drives
+off the wrong way and never sees the landmark, because the landmark is behind it. Every
+episode in `config/episodes.yaml` is annotated with how far off its goal bearing it
+starts; keep that inside ~30°.
 
 **The base does not collide.** Locomotion is `set_world_poses()` teleportation —
 `../CLAUDE.md` has the full story of why real wheel traction never held up. A

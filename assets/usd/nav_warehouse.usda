@@ -23,8 +23,8 @@ def "World"
         prepend references = @/home/gtu-dsa/robotics/dash-aloha-mini-isaacsim/assets/usd/Aloha/Aloha.usda@
     )
     {
-        float3 xformOp:rotateXYZ = (0, 0, -141)
-        double3 xformOp:translate = (-18.98, -14.3, 0.01)
+        float3 xformOp:rotateXYZ = (0, 0, 90)
+        double3 xformOp:translate = (-10.22, -7.36, 0.01)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
 
         over "Physics"
@@ -360,17 +360,17 @@ def "World"
                             }
                         }
                     }
+                }
 
-                    def Camera "camera_nav"
-                    {
-                        float2 clippingRange = (0.01, 100)
-                        float focalLength = 13
-                        float horizontalAperture = 20.955
-                        float verticalAperture = 15.716
-                        float3 xformOp:rotateXYZ = (80, 0, -90)
-                        double3 xformOp:translate = (0.25, 0, 1.15)
-                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
-                    }
+                def Camera "camera_nav"
+                {
+                    float2 clippingRange = (0.01, 100)
+                    float focalLength = 2.8734348
+                    float horizontalAperture = 5.76
+                    float verticalAperture = 3.6
+                    float3 xformOp:rotateXYZ = (90, 0, -90)
+                    double3 xformOp:translate = (0.25, 0, 0.346)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
                 }
 
                 def Camera "camera_chase"
@@ -415,8 +415,8 @@ over Camera "OmniverseKit_Persp" (
     float exposure:fStop = 5
     float exposure:responsivity = 1.1026709
     float exposure:time = 0.02
-    float3 xformOp:rotateXYZ = (65, 0, -231)
-    double3 xformOp:translate = (-15.871416154172117, -11.782718435800652, 3.01)
+    float3 xformOp:rotateXYZ = (65, 0, 0)
+    double3 xformOp:translate = (-10.22, -11.36, 3.01)
     uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
 }
 

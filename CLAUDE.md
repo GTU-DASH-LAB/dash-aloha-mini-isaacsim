@@ -389,7 +389,49 @@ environment → joint drives applied → wheel collision fixed → terminal cont
   display. See `plan.md` Phase 5 for the exact steps to check yourself in a
   non-headless Isaac Sim session.
 
+## Language-driven navigation (`nav/`)
+
+TIC-VLA + the DynaNav benchmark drive the base from a typed sentence. Full detail in
+[`nav/README.md`](nav/README.md) and [`nav/plan.md`](nav/plan.md); the facts that
+affect the *rest* of this repo:
+
+- **Two processes, and the split is forced.** TIC-VLA needs Python 3.11 (Isaac Sim
+  5.0's NumPy 1.x ABI), AlohaMini needs 3.12; separately, a DynaNav scene alone was
+  measured holding 25.4 GiB of GPU0's 31.35 GiB, so the 1.9 GB checkpoint could not
+  share that card even if the Pythons matched. Sim → GPU0, policy → GPU1.
+- **GPU pinning differs by process ON PURPOSE.** The policy server sets
+  `CUDA_VISIBLE_DEVICES=1`, which is safe *only* because it never starts Kit. Isaac Sim
+  is pinned through Kit's own `active_gpu`/`physics_gpu` config instead — Kit warns that
+  the env var "can lead to undesired behavior or crashes".
+- **There is now a fourth camera, `camera_nav`.** The three LeRobot cameras all face the
+  manipulation front (−Y) while the base drives +X, so none of them looks where the
+  robot is going. `camera_nav` is deliberately kept OUT of `CAMERA_PRIM_PATHS`: that
+  dict is the LeRobot observation contract, and adding a key would silently change the
+  shape of every recorded manipulation dataset. Its rotation is outside the
+  `(x, 0, 180)` family the cheat sheet in `add_cameras.py` covers — `(80, 0, -90)`
+  gives view `(0.985, 0, -0.174)`, with the derivation written out there.
+- **Nav scenes are separate stage files** (`assets/usd/nav_<episode>.usda`), built by
+  `nav/sim/build_nav_scene.sh`. They never touch `scene.usda`. Note they still need all
+  three pipeline steps applied — a freshly authored layer has no joint drives, no wheel
+  colliders and no cameras, because those are overrides in the *scene* file rather than
+  in `Aloha.usda`.
+- **Anything after `SimulationApp.close()` does not execute.** The first version of the
+  scene builder authored its layer, reported success, and applied none of the pipeline
+  — no error anywhere. This is why both `rebuild_all.sh` and `build_nav_scene.sh` chain
+  separate process invocations instead of looping in Python.
+- **The kinematic base does not collide** (already documented above, but it bites
+  harder here): a teleported body has no contact response and will pass straight
+  through shelving. `nav/sim/collision_guard.py` raycasts instead. Verified live rather
+  than assumed — `nav/tools/check_collision_guard.py` sweeps the ray fan through a
+  circle and hits 9/16 bearings on real warehouse geometry at 6.8–12.5 m.
+- **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
+  Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
+  wheel traction is poor but not zero. If anyone root-causes the traction issue below,
+  check this at the same time; they are probably the same phenomenon from two sides.
+
 ## Next step
 
 Nothing blocking. Optional future work: root-cause the wheel traction issue properly
-(would remove the kinematic-drive limitation), or Phase 6 (ROS2) if requested.
+(would remove the kinematic-drive limitation, and probably explains the nav speed
+discrepancy above), finish the remaining nav episodes × controllers
+(`nav/plan.md` Phase 13), or Phase 6 (ROS2) if requested.

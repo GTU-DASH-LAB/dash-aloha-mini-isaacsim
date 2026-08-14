@@ -36,18 +36,40 @@ class KinematicBase:
         ]
         self._velocity_targets = np.zeros((1, len(dof_names)), dtype=np.float32)
         self._yaw = 0.0
+        self._xy: np.ndarray | None = None
         self._initialized = False
+
+    # If the sim's idea of where the robot is diverges from ours by more than this,
+    # something moved it that was not us -- a fall, a reset, a physics correction --
+    # and the sim wins. Well above per-step wheel drag (~1 cm) and well below any
+    # distance that matters to an episode, so it catches real events without letting
+    # drag leak back in.
+    RESYNC_TOLERANCE_M = 0.25
 
     def sync_from_sim(self) -> None:
         """Read the true pose out of the sim.
 
-        Called once at episode start, and never again mid-episode: the integrated yaw
+        Called once at episode start, and never again mid-episode: the integrated pose
         below IS the authority afterwards. Re-reading it every step would fight the
         teleport (the pose we just wrote is the pose we would read back).
+
+        **That was true of yaw and stated here, but position was re-read every step
+        anyway, and it cost 11%.** The wheels are commanded at the kinematically
+        correct rate and carry no load, but traction is not zero, so each step the
+        robot was dragged a little on top of the `vx * dt` the teleport had already
+        applied -- and because the next step read that dragged position back as its
+        starting point, the error compounded instead of cancelling. Measured over a
+        full episode: 0.663 m/s mean against a 0.600 m/s cap, 1.11x.
+
+        That is not a cosmetic discrepancy at this scale. Over the 32.4 m
+        `hospital_down_hallway` episode it is ~3.5 m of extra travel, and the episode
+        failed by plateauing 2.88 m from its goal. Integrating position the same way
+        yaw already was makes the commanded speed exact.
         """
-        _, orientations = self.art.get_world_poses()
+        positions, orientations = self.art.get_world_poses()
         w, _x, _y, z = orientations[0]
         self._yaw = 2.0 * math.atan2(z, w)
+        self._xy = np.array([positions[0][0], positions[0][1]], dtype=np.float64)
         self._initialized = True
 
     @property
@@ -79,10 +101,20 @@ class KinematicBase:
         dy = (vx * math.sin(yaw) + vy * math.cos(yaw)) * dt
         self._yaw = yaw + omega * dt
 
+        # Integrate x/y ourselves rather than reading the sim's value back and adding
+        # to it. See sync_from_sim(): reading back folds wheel drag into the next
+        # step's starting point, so the error compounds and the robot travels 1.11x
+        # its commanded speed. Resync only if something OTHER than us has clearly
+        # moved the robot -- otherwise the drag we are trying to exclude comes
+        # straight back in through the tolerance check.
+        if np.hypot(t[0] - self._xy[0], t[1] - self._xy[1]) > self.RESYNC_TOLERANCE_M:
+            self._xy[:] = (t[0], t[1])
+        self._xy += (dx, dy)
+
         # Z is carried through untouched, never recomputed. Forcing a target height
         # against the contact solver caused measurable drift before (0.0078 -> 0.0611 m
         # over 3 s) -- let gravity and the wheel contacts settle it.
-        new_positions = np.array([[t[0] + dx, t[1] + dy, t[2]]], dtype=np.float32)
+        new_positions = np.array([[self._xy[0], self._xy[1], t[2]]], dtype=np.float32)
         half = self._yaw / 2.0
         new_orientations = np.array(
             [[math.cos(half), 0.0, 0.0, math.sin(half)]], dtype=np.float32
@@ -95,9 +127,11 @@ class KinematicBase:
     def reset_to(self, position: tuple[float, float, float], yaw: float) -> None:
         """Teleport back to a known pose — what the UI's Reset button does.
 
-        Sets the integrated yaw to match rather than re-reading it afterwards: the
-        teleport and the internal yaw must agree, or the first drive step after a reset
-        moves in the direction the robot was facing *before* it.
+        Sets the integrated pose to match rather than re-reading it afterwards: the
+        teleport and the internal state must agree, or the first drive step after a
+        reset moves in the direction the robot was facing *before* it. The same now
+        goes for x/y, which is integrated too -- leaving `_xy` stale here would make
+        the first step teleport the robot straight back to where it was.
 
         Zeroes the wheel velocity targets too. Skipping that leaves the wheels spinning
         at whatever they were last commanded, which looks like the robot is still
@@ -114,4 +148,5 @@ class KinematicBase:
             ),
         )
         self._yaw = yaw
+        self._xy = np.array([position[0], position[1]], dtype=np.float64)
         self._initialized = True

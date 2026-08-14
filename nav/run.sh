@@ -18,7 +18,7 @@ PYTHON_SH="${ISAACSIM_PYTHON:-/home/gtu-dsa/robotics/isaacsim-6.0.1/python.sh}"
 POLICY_PORT="${NAV_POLICY_PORT:-8765}"
 UI_PORT="${NAV_UI_PORT:-8080}"
 
-EPISODE="warehouse"; CONTROLLER="holonomic"; GUI=""; USE_UI=1; INSTRUCTION=""
+EPISODE="warehouse"; CONTROLLER="pursuit"; GUI=""; USE_UI=1; INSTRUCTION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --episode)     EPISODE="$2"; shift 2 ;;

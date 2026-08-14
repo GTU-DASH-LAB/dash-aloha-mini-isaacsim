@@ -21,7 +21,7 @@ because the world moved underneath it), and sim time is not wall time so nothing
 lost but patience. Noted as a real difference from the published setup, not hidden.
 
 Usage:
-    nav/run.sh --episode warehouse --controller holonomic
+    nav/run.sh --episode warehouse --controller pursuit
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class NavigationRunner:
     def __init__(
         self,
         episode: Episode,
-        controller_name: str = "holonomic",
+        controller_name: str = "pursuit",
         policy_host: str = "127.0.0.1",
         policy_port: int = 8765,
         scene_path: Path | None = None,
@@ -559,7 +559,7 @@ def main() -> int:
     episodes = load_episodes()
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode", default="warehouse", choices=sorted(episodes))
-    ap.add_argument("--controller", default="holonomic", choices=["holonomic", "pursuit"])
+    ap.add_argument("--controller", default="pursuit", choices=["holonomic", "pursuit"])
     ap.add_argument("--instruction", default=None,
                     help="Override the benchmark instruction (the UI's job, mostly).")
     ap.add_argument("--policy-host", default="127.0.0.1")

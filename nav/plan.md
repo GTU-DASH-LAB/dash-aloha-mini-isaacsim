@@ -317,6 +317,45 @@ It did not get there efficiently: 50.85 m of path to close 11.43 m of gap. Consi
 with Phase 9's finding that turn authority is only ~±14° per plan — enough to curve,
 not enough to commit.
 
+**Run 2 — same episode, started from the UI by clicking Run:**
+
+```
+[TIMEOUT] warehouse (holonomic)
+  distance to goal : 26.32 m -> 12.38 m  (closed +13.94 m)
+  path travelled   : 50.93 m in 70.0 s sim (329.4 s wall, 4201 steps, 141 policy calls)
+  guard stops      : 0
+```
+
+Confirms the whole chain works from the browser: prompt in, robot drives, camera and
+status stream back live. It also confirms the run is **near-deterministic** — same
+prompt, same 4201 steps, same 141 calls, path length within 0.08 m of run 1 — exactly
+what Phase 9's 0.000 within-instruction spread predicted.
+
+The mid-run reasoning is the most convincing artifact the stack produces:
+
+> *"I am in a warehouse with shelving and a wall on my right and a clear path. The
+> critical obstacle is the right wall and cones, which are stationary... Next I
+> continue forward, maintain clearance, **align to Aisle 5, and stop at its
+> entrance**."*
+
+That is the benchmark instruction being grounded in what the camera sees, not a canned
+response.
+
+**But the failure mode is now clear, and it is the one Phase 9 predicted.** Watching
+distance-to-goal over run 2: 26.32 → 22.19 (6.5 s) → 21.51 (19 s) → **24.63 (27 s)** →
+12.38 (70 s). It closes ground fast, then *loses* ground, and a frame grabbed at the
+27 s mark shows the robot **nose-on to a blank wall**. It is not blocked — the guard
+never fired, the wall was still metres away — it is mis-aimed and cannot turn hard
+enough to recover, because turn authority is ~±14° per plan. It eventually curves
+around and resumes, which is why the final number is still the best of the two runs.
+
+This is the same shape as DynaNav's own published office failure (started 13.74 m from
+the goal, finished 40 m away) and it now has a mechanism rather than a shrug:
+**the policy points the right way but cannot commit to a turn.** Testable next steps,
+in order of cheapness: raise `max_yaw_rate_radps`; shorten the pursuit lookahead so the
+controller tracks the near part of the plan more aggressively; scale the emitted
+heading rather than tracking it literally.
+
 **Two real issues this surfaced, both recorded rather than papered over:**
 
 - **Actual speed exceeds the commanded limit.** 50.85 m / 70.02 s = **0.726 m/s**

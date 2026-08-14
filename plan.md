@@ -214,6 +214,15 @@ mirrors SO-101's Rotation/Pitch/Elbow/Wrist_Pitch/Wrist_Roll/Jaw).
       publish `/joint_states`, subscribe to per-arm command topics. Kept as a stretch
       goal, not a default dependency, per your instruction.
 
+## Phase 8+ — Language-driven navigation (TIC-VLA + DynaNav)
+
+Tracked separately in **[`nav/plan.md`](nav/plan.md)** — drive AlohaMini through a
+DynaNav benchmark scene from an English instruction typed into a web UI, using the
+pretrained TIC-VLA policy. It runs as a **second process** in a different Python /
+Isaac Sim version and on the other GPU; `nav/plan.md` explains why that is forced
+rather than chosen, and why this repo's kinematic base drive needs a collision guard
+before any navigation metric means anything.
+
 ## Open questions / decisions to revisit
 - Exact `vertical_move` travel range (no spec found — measuring empirically in Phase 1/2)
 - Wheel collision/friction strategy (Phase 3 — will report findings before picking a

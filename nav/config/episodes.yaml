@@ -1,0 +1,75 @@
+# DynaNav benchmark episodes, adapted for AlohaMini.
+#
+# The scene/start/goal/instruction/timeout values are copied VERBATIM from
+# TIC-VLA/DynaNav/configs/benchmark_example.yaml -- do not "improve" the prompts.
+# The whole point of using a published benchmark is that the task is not one we
+# invented to suit our robot, so the instructions must stay exactly as the authors
+# wrote them. `robot_type` and `speed` are ours, because AlohaMini is not a Nova
+# Carter (see ../plan.md).
+#
+# Ordering below is deliberate: `warehouse` is first because it is the default.
+#
+# Why warehouse and not office, even though office is DynaNav's showcase episode:
+#   * office.usd DOES open in Isaac Sim 6.0.1 (Phase 8 verified it -- 4665 prims,
+#     zero unresolved references), so this is not a compatibility dodge.
+#   * But it measures 1063 m across and is the same NVIDIA Office asset that
+#     ../../CLAUDE.md records as having caused a physics explosion at spawn and a
+#     camera-framing bug in this exact repo.
+#   * Simple_Warehouse is a real DynaNav benchmark episode AND is the environment
+#     this repo already verified as physically stable with a true floor at Z=0.
+# office is kept below and is fully runnable with `--episode office`; it is just not
+# what we hand someone who wants to see this work the first time.
+
+defaults:
+  success_threshold_m: 1.5   # DynaNav's own criterion (benchmark_example.yaml)
+  robot_type: "wheeled robot"  # goes into TIC-VLA's system prompt verbatim
+  max_speed_mps: 0.6
+  max_yaw_rate_radps: 1.2
+  replan_every_steps: 30     # physics steps between policy calls (60 Hz -> 0.5 s)
+
+episodes:
+
+  warehouse:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
+    start: [-18.98, -14.3, 0.01]
+    start_yaw_deg: -141
+    goal: [-2.9, 6.54, 0.01]
+    instruction: "Go straight and stop in front of Aisle 5, where traffic cones and a yellow caution sign block the entrance."
+    timeout_s: 70
+
+  hospital:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [-3.0, -1.2, 0.01]
+    start_yaw_deg: 0.0
+    goal: [9.72, 2.33, 0.01]
+    instruction: "Go straight ahead and stop at the front of the vending machine."
+    timeout_s: 70
+
+  office:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
+    start: [-10.6, -12.1, 0.01]
+    start_yaw_deg: 90.0
+    goal: [-7.68, -25.53, 0.01]
+    instruction: "Go straight ahead through the hallway behind the black glass doors, then turn left at the end to approach the red emergency exit door."
+    timeout_s: 85
+    # See the header note. Phase 8 measured this stage at 1063.55 x 677.15 m.
+    notes: "1 km stage; spawn pose below is inside the navigable region, do NOT spawn at origin."
+
+  outdoor:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [-34.05, 151.7, 6.1]
+    start_yaw_deg: -123
+    goal: [-24.79, 165.96, 6.0]
+    instruction: "Go straight across the street and head toward the wall with the words 'Northside Branch Library.'"
+    timeout_s: 100
+    # Note the Z: this terrain is elevated ~6 m. Spawning at z=0.01 drops the robot
+    # through the world.
+
+# Deliberately NOT replicated from DynaNav: `num_people: 20`.
+# DynaNav spawns 20 animated pedestrians as dynamic obstacles. AlohaMini's base is
+# kinematically teleported (../../CLAUDE.md: real wheel traction never held up, so
+# locomotion is set_world_poses() rather than physics-driven), which means it has NO
+# collision response -- it would walk straight through a pedestrian without either
+# body reacting. Spawning people would therefore make the demo look like it handles
+# dynamic obstacles when it provably does not. sim/collision_guard.py raycasts
+# instead, which is honest about being a guard rather than real contact physics.

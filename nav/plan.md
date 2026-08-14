@@ -538,10 +538,102 @@ optional decoration:
 Aisle 05 entrance and wedges on the rack endcap: 2734 of 4201 steps (65%) were guard
 stops, against 723 before. `collision_guard.py` fans ±35° over 7 rays and stops at
 0.6 m, so when the robot hugs an endcap corner the outer rays sit inside the racking and
-translation is cancelled for most of the run while the centre path is clear. That is a
-guard-tuning problem, not perception and not intent — logged rather than tuned by
-guesswork, because picking fan numbers to make one episode pass is how a benchmark stops
-measuring anything.
+translation is cancelled for most of the run while the centre path is clear.
+
+**Bug 4 — the guard blocked speed when it should have blocked directions.**
+
+Called guard *tuning* above. It was not; it was structural, and tuning it would have hidden
+the defect. The old guard scaled the entire velocity to zero whenever any ray came back
+short — including a ray aimed 35° off the direction of travel. That makes it strictly
+less physical than the contact response it substitutes for: a real wall stops you along
+its normal and lets you slide along it.
+
+The deadlock follows: hugging an endcap, one outer ray sits in the racking → translation
+0; the plan says "straight ahead" → heading error ~0 → the controller's
+`omega = yaw_align * heading_error` ~0. Neither driving nor turning, beside an aisle it
+could have driven into.
+
+- [x] Project, don't scale. For each blocking ray bearing, remove the component of world
+      velocity pointing *into* it and keep the remainder, capped at half speed:
+
+      for angle in blockers:
+          approach = wx*cos(angle) + wy*sin(angle)
+          if approach > 0:                # only cancel motion TOWARD the hit
+              wx -= approach*cos(angle); wy -= approach*sin(angle)
+
+- [x] Per blocker, not against an averaged bearing — in a corner each hit has to remove
+      its own component, and averaging leaves a velocity still driving into one of them.
+      Successive projection converges to ~0 for a genuine dead end, which is correct there.
+- [x] Same fan, same 0.6 m stop distance, no threshold widened. Interventions:
+      **2734 → 32 → 0 → 80** across the runs after. The freezing is gone.
+
+**Bug 5 — TIC-VLA is a video model and we were sending one still.**
+
+Its system prompt says it verbatim: "a video consisting of visual observations, including
+historical and current frames" (`ticvla/data/vlm_data.py:_build_messages`). DynaNav sends
+**four** frames at 3 s spacing, oldest first
+(`nova_carter_test_ticvla.py:_get_sampled_image_paths`).
+
+- [x] `sim/frame_history.py` samples `[-9s, -6s, -3s, now]`, with DynaNav's edge cases:
+      skip an offset the history cannot reach, always keep the current frame, dedupe
+      preserving order (a young history collapses to one frame — sending the same JPEG
+      four times is not a video, it is one frame plus a claim about motion that did not
+      happen).
+- [x] Also fixed `robot_state`'s `dx, dy`. DynaNav's is displacement since the VLM
+      generation *started*, because it infers on a background thread while the robot keeps
+      driving. Ours is synchronous — the robot is frozen for the whole call — so the honest
+      value is 0.0, not the one-physics-step (~1 cm) displacement that used to go there.
+
+- [x] `EpisodeResult.save()` writes every run to `nav/results/*.json` (gitignored), trace
+      included, `(x, y, yaw)` per sample. Runs were being compared on final distance
+      alone, which cannot distinguish a robot that drove to the wrong place from one that
+      drove nowhere — opposite fixes. This is what produced the diagnosis below.
+
+**Where it actually stands, measured (warehouse, holonomic, 70 s):**
+
+| run | change | initial → final | closed | path | guard |
+|---|---|---|---|---|---|
+| 1 | camera + episodes fixed | 16.51 → 16.91 | −0.40 | 32.04 m | 723 |
+| 2 | + waypoint history | 16.51 → 7.78 | **+8.73** | 15.80 m | 2734 |
+| 3 | + directional guard | 16.51 → 28.80 | −12.30 | 46.98 m | 32 |
+| 4 | + trace saving | 16.51 → 28.77 | −12.26 | 52.53 m | 0 |
+| 5 | + 4-frame video | 16.51 → 28.86 | −12.35 | 48.34 m | 80 |
+
+Run 2's good number was **the broken guard freezing the robot next to the aisle**, not
+navigation. Removing the freeze made the number worse and the behaviour honest — which is
+the right trade, but it has to be said out loud rather than being read as a regression.
+
+**The trace names the remaining failure exactly.** Goal `(-3.26, 7.61)`; the robot starts
+at `(-10.22, -7.36)` facing 90° (north) and needs to end up ~7 m **east**:
+
+    t= 0.0s  (-10.22, -7.36)  yaw  90.0   d=16.51
+    t=17.4s  (-10.14,  5.79)  yaw  93.9   d= 7.12   <- level with the goal, 7 m west of it
+    t=20.9s  (-10.46,  7.92)  yaw 105.9   d= 7.20
+    t=34.8s  (-11.95, 14.54)  yaw  90.7   d=11.11
+    t=69.5s  (-25.50, 26.00)  yaw 240.9   d=28.86
+
+It holds yaw ~88–94° for the first 20 s, drives dead straight past the aisle mouth at a
+closest approach of **6.98 m** against a 1.5 m success threshold, and never turns east.
+
+- [x] Ruled out an integration bug by probing the policy directly on the start frame.
+      It responds correctly to directional language, so the plumbing is fine:
+
+      | instruction | mean heading of returned waypoints |
+      |---|---|
+      | "Turn right and…" | **−9.1°** |
+      | "Turn left and…" | **+14.3°** |
+      | "Go straight ahead" | +2.1° |
+      | "Stop. Do not move." | reach collapses to 0.21 m |
+      | the benchmark instruction | **+1.2°** (straight) |
+
+      From this viewpoint the model genuinely chooses straight. That is a model/viewpoint
+      question, not a wiring one.
+
+**Open, and stated as open:** the policy will not commit to the ~25° turn this episode
+needs. The next test is an episode requiring no large turn — `warehouse_aisle6` (5.0° off
+bearing) or `hospital` (6.4° off, straight hallway) — to separate "the pipeline cannot
+turn" from "this episode is hard". Not fixed by widening the guard or nudging the
+controller, because either would make the benchmark stop measuring anything.
 
 ---
 

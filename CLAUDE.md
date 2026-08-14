@@ -483,11 +483,45 @@ affect the *rest* of this repo:
   `nav/sim/waypoint_history.py`, whose format is copied character for character from
   `ticvla/data/vlm_data.py:_format_previous_waypoints_text`; a reworded version reads
   fine to a human and sits off the model's distribution.
-- **Open: the guard wedges the robot at aisle entrances.** With the above fixed, the
-  warehouse episode still times out because `collision_guard.py`'s ±35°/7-ray fan at a
-  0.6 m stop distance buries its outer rays in the rack endcap the robot is hugging —
-  2734 of 4201 steps were guard stops, with the centre path clear. Guard tuning, not
-  perception.
+- **A collision guard must block DIRECTIONS, not speed.** The first `collision_guard.py`
+  scaled the whole velocity to zero whenever any ray — including one aimed 35° off the
+  direction of travel — came back short. That is strictly less physical than the contact
+  it stands in for: a real wall stops you along its normal and lets you slide. It
+  deadlocked for real at the Aisle 05 entrance, where the robot hugs a rack endcap: an
+  outer ray sits in the racking, translation goes to zero, and since the plan says
+  "straight ahead" the controller's `omega` is ~0 too — neither driving nor turning, with
+  the centre path clear. 2734 of 4201 steps frozen. The fix is structural, not tuning:
+  project out the component of velocity pointing *into* each blocker (per blocker, not
+  against an averaged bearing, or a corner leaves you driving into one of them) and keep
+  the rest, capped at half speed. Same fan numbers, same 0.6 m: interventions went
+  2734 → 0–80 and the motion is smooth. Do not "fix" a guard like this by widening
+  thresholds until one episode passes; that is how a benchmark stops measuring anything.
+- **TIC-VLA is a video model, and one still image is off-distribution.** Its own system
+  prompt (emitted verbatim by `ticvla/data/vlm_data.py:_build_messages`) says it is given
+  "a video consisting of visual observations, including historical and current frames",
+  and DynaNav passes **four** frames at 3 s spacing, oldest first
+  (`nova_carter_test_ticvla.py:_get_sampled_image_paths`). We were passing one.
+  `nav/sim/frame_history.py` now samples `[-9s, -6s, -3s, now]` with DynaNav's edge cases
+  — skip an offset the history cannot reach, always keep the current frame, dedupe with
+  order preserved so a young history collapses to one frame rather than four copies of
+  it. This is the visual twin of `previous_waypoints_text`; both were defaulted away.
+- **Every run writes its trace to `nav/results/*.json`** (`EpisodeResult.save()`, gitignored).
+  Runs used to be compared on final distance alone, which cannot tell a robot that drove
+  to the wrong place from one that drove nowhere — and those have opposite fixes. The
+  trace carries `(x, y, yaw)` per sample precisely because position alone cannot tell a
+  robot that *chose* the wrong way from one that never turned. A 70 s episode is ~140
+  points.
+- **Open: the policy will not commit to the ~25° turn the warehouse episode needs.** With
+  camera, episode, waypoint history, video input and guard all fixed, the run still times
+  out, and the trace says why: the robot holds yaw ~88–94° and drives dead straight north
+  up the aisle-mouth corridor, passing **7.1 m west** of the goal at t≈21 s (threshold is
+  1.5 m), then continues to 28.9 m away. It is not a wiring bug — probing the policy
+  directly on the start frame moves it exactly as instructed: "turn right" → −9.1°,
+  "turn left" → +14.3°, "Stop. Do not move." → reach collapses to 0.21 m, "go straight
+  ahead" → +2.1°. The benchmark's own instruction yields +1.2°, i.e. from that viewpoint
+  the model genuinely chooses straight. Next test is an episode that needs no big turn
+  (`warehouse_aisle6`, 5.0° off bearing; `hospital`, 6.4° off, straight hallway) to
+  separate "the pipeline can't turn" from "this episode is hard".
 - **Unresolved: measured speed exceeds the commanded limit** (0.726 m/s against 0.6).
   Most likely the teleport and the wheel spin add — `base_drive.apply()` does both, and
   wheel traction is poor but not zero. If anyone root-causes the traction issue below,

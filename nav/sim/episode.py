@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "episodes.yaml"
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,9 @@ class EpisodeResult:
     guard_interventions: int
     timed_out: bool
     controller: str
-    trace: list[tuple[float, float]] = field(default_factory=list)
+    # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
+    # robot that chose to drive the wrong way from one that never turned at all.
+    trace: list[tuple[float, float, float]] = field(default_factory=list)
 
     def summary(self) -> str:
         verdict = "SUCCESS" if self.success else ("TIMEOUT" if self.timed_out else "FAILED")
@@ -132,3 +135,23 @@ class EpisodeResult:
             f"{self.policy_calls} policy calls)\n"
             f"  guard stops      : {self.guard_interventions}"
         )
+
+    def save(self, directory: Path | str = RESULTS_DIR) -> Path:
+        """Write the run to JSON, trace included.
+
+        The trace is the only artifact that answers "where did it actually go?", and
+        it used to live in memory until the process exited. Two runs were compared on
+        their final distance alone, which cannot distinguish a robot that drove to the
+        wrong place from one that drove nowhere at all -- and those two failures have
+        opposite fixes. Cheap to keep: a 70 s episode is ~140 points.
+        """
+        import dataclasses
+        import json
+        from datetime import datetime
+
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = directory / f"{stamp}_{self.episode}_{self.controller}.json"
+        path.write_text(json.dumps(dataclasses.asdict(self), indent=2))
+        return path

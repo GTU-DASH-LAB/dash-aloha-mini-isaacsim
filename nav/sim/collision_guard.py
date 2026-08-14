@@ -29,8 +29,10 @@ from dataclasses import dataclass
 class GuardResult:
     blocked: bool
     distance_m: float
-    scale: float  # multiply the commanded velocity by this: 1.0 clear, 0.0 stopped
+    vx: float  # body-frame velocity to actually apply -- already guarded
+    vy: float
     hit_prim: str = ""
+    scale: float = 1.0  # speed factor from the slow band, for telemetry only
 
 
 class CollisionGuard:
@@ -38,6 +40,19 @@ class CollisionGuard:
 
     The fan matters: a single centre ray misses a shelf leg the chassis is about to
     clip, because the ray passes cleanly to one side of it.
+
+    Blocking is DIRECTIONAL: a hit cancels the part of the commanded velocity pointing
+    into it and leaves the rest. The first version scaled the whole velocity to zero
+    whenever any ray -- including one aimed 35 degrees off the direction of travel --
+    came back short, which made the guard strictly less physical than the contact it
+    substitutes for. A real wall stops you along its normal and lets you slide; that one
+    stopped you dead because something was near your shoulder.
+
+    It deadlocked for real. At the Aisle 05 entrance the robot hugs a rack endcap, an
+    outer ray sits in the racking, and translation goes to zero -- while the plan says
+    "straight ahead", so the controller's omega (yaw_align * heading_error) is also ~0.
+    Neither driving nor turning, with the centre path clear: 2734 of 4201 steps stopped,
+    two thirds of the episode spent frozen beside an aisle it could have driven into.
     """
 
     def __init__(
@@ -87,7 +102,7 @@ class CollisionGuard:
         """
         speed = math.hypot(vx, vy)
         if speed < 1e-6:
-            return GuardResult(blocked=False, distance_m=float("inf"), scale=1.0)
+            return GuardResult(False, float("inf"), vx, vy)
 
         # Body-frame travel direction -> world.
         travel = math.atan2(vy, vx) + yaw
@@ -95,6 +110,7 @@ class CollisionGuard:
 
         nearest = float("inf")
         nearest_prim = ""
+        blockers: list[float] = []  # world bearings of rays that came back too short
         for i in range(self.fan_rays):
             frac = (i / (self.fan_rays - 1)) * 2.0 - 1.0 if self.fan_rays > 1 else 0.0
             angle = travel + frac * self.fan_half_angle
@@ -114,19 +130,49 @@ class CollisionGuard:
             if prim.startswith(self.robot_prim_prefix):
                 continue
             distance = float(hit.get("distance", float("inf"))) + self.chassis_radius_m
+            if distance <= self.stop_distance_m:
+                blockers.append(angle)
             if distance < nearest:
                 nearest = distance
                 nearest_prim = prim
 
-        if nearest <= self.stop_distance_m:
-            self.interventions += 1
-            return GuardResult(True, nearest, 0.0, nearest_prim)
-        if nearest < self.slow_distance_m:
+        if nearest >= self.slow_distance_m:
+            return GuardResult(False, nearest, vx, vy, nearest_prim)
+
+        if not blockers:
             # Ramp linearly between stop and slow distance rather than dropping to
             # zero at a threshold -- a hard cutoff makes the robot judder in and out
             # of the guard band as the fan flickers on and off a thin obstacle.
             span = self.slow_distance_m - self.stop_distance_m
-            scale = (nearest - self.stop_distance_m) / span
-            return GuardResult(False, nearest, max(0.15, scale), nearest_prim)
+            scale = max(0.15, (nearest - self.stop_distance_m) / span)
+            return GuardResult(False, nearest, vx * scale, vy * scale, nearest_prim, scale)
 
-        return GuardResult(False, nearest, 1.0, nearest_prim)
+        # --- blocked: keep whatever motion is not INTO an obstacle -----------------
+        self.interventions += 1
+
+        # Work in world for the projection, because the ray bearings are world angles.
+        wx = speed * math.cos(travel)
+        wy = speed * math.sin(travel)
+        for angle in blockers:
+            nx, ny = math.cos(angle), math.sin(angle)
+            approach = wx * nx + wy * ny
+            if approach > 0.0:  # only cancel motion TOWARD the hit, never away from it
+                wx -= approach * nx
+                wy -= approach * ny
+        # Applied per blocker rather than to the average bearing: in a corner, two hits
+        # from different sides must each remove their own component. Averaging leaves a
+        # velocity that still drives into one of them. Successive projection converges
+        # to ~0 for a genuine dead end, which is the right answer there.
+
+        # Slide at half speed, not at full tilt along a wall we are already touching.
+        moving = math.hypot(wx, wy)
+        if moving > 1e-6:
+            slide_speed = min(moving, 0.5 * speed)
+            wx *= slide_speed / moving
+            wy *= slide_speed / moving
+
+        # World -> body.
+        c, s = math.cos(yaw), math.sin(yaw)
+        return GuardResult(
+            True, nearest, wx * c + wy * s, -wx * s + wy * c, nearest_prim, 0.0
+        )

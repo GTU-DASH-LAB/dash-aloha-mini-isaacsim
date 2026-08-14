@@ -42,6 +42,7 @@ for p in (REPO / "nav" / "sim", REPO / "nav" / "policy_server", REPO / "nav" / "
 from client import PolicyClient, PolicyServerError  # noqa: E402
 from controllers import Command, make_controller  # noqa: E402
 from episode import Episode, EpisodeResult, load_episode, load_episodes  # noqa: E402
+from frame_history import FrameHistory  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
@@ -318,7 +319,7 @@ class NavigationRunner:
         )
 
         command = Command(0.0, 0.0, 0.0)
-        trace: list[tuple[float, float]] = [start_pos[:2]]
+        trace: list[tuple[float, float, float]] = [(*start_pos[:2], self.base.yaw)]
         path_length = 0.0
         policy_calls = 0
         prev_pos = start_pos
@@ -326,9 +327,9 @@ class NavigationRunner:
         t0 = time.time()
         success = False
         timed_out = False
-        last_displacement = (0.0, 0.0)
         history = WaypointHistory(PHYSICS_DT)
         history.observe(0, start_pos, self.base.yaw)
+        frames = FrameHistory()
 
         while True:
             # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long
@@ -363,15 +364,25 @@ class NavigationRunner:
                         self.kit.update()
                     continue
 
+                frames.add(sim_time, frame_path)
                 self.latest_jpeg = frame_path.read_bytes()
                 try:
                     out = self.policy.predict(
-                        image_paths=[str(frame_path)],
+                        # Four frames at 3 s spacing, oldest first -- TIC-VLA is a
+                        # video model and its system prompt says so. One still gave
+                        # it no evidence it had been moving at all.
+                        image_paths=frames.sample(sim_time),
                         instruction=instruction,
                         # TICVLA unpacks the 6-form as [vx, vy, _, yaw_speed, dx, dy].
+                        # dx/dy is DynaNav's displacement since inference STARTED, and
+                        # it is zero here on purpose: DynaNav infers on a background
+                        # thread while the robot keeps driving, so by the time a plan
+                        # lands the robot has moved and the model is told how far. Ours
+                        # is synchronous -- the robot is frozen for the whole call -- so
+                        # the honest value is 0.0, not the one-physics-step (~1 cm)
+                        # displacement that used to go here, which described nothing.
                         robot_state=[
-                            command.vx, command.vy, 0.0, command.omega,
-                            last_displacement[0], last_displacement[1],
+                            command.vx, command.vy, 0.0, command.omega, 0.0, 0.0,
                         ],
                         current_step=step,
                         # What the robot has already done. Omitting this (the default
@@ -399,8 +410,10 @@ class NavigationRunner:
             # --- guard + step ---------------------------------------------
             guard = self.guard.check(position, self.base.yaw, command.vx, command.vy)
             self.base.apply(
-                command.vx * guard.scale,
-                command.vy * guard.scale,
+                # Already guarded, and directionally: what survives is the part of the
+                # command that was not driving into anything.
+                guard.vx,
+                guard.vy,
                 # Let the robot keep turning when the guard stops translation --
                 # otherwise it wedges against a wall with no way to face away from it.
                 command.omega,
@@ -410,7 +423,6 @@ class NavigationRunner:
 
             new_pos = self.base.position()
             path_length += math.dist(new_pos[:2], prev_pos[:2])
-            last_displacement = (new_pos[0] - prev_pos[0], new_pos[1] - prev_pos[1])
             prev_pos = new_pos
             step += 1
             history.observe(step, new_pos, self.base.yaw)
@@ -423,7 +435,7 @@ class NavigationRunner:
                 self._update_chase()
 
             if step % 30 == 0:
-                trace.append(new_pos[:2])
+                trace.append((*new_pos[:2], self.base.yaw))
                 self._set(
                     steps=step,
                     distance_m=round(distance, 3),
@@ -439,7 +451,7 @@ class NavigationRunner:
         self.base.stop()
         final_pos = self.base.position()
         final_distance = math.dist(final_pos[:2], ep.goal[:2])
-        trace.append(final_pos[:2])
+        trace.append((*final_pos[:2], self.base.yaw))
 
         result = EpisodeResult(
             episode=ep.name,
@@ -457,6 +469,14 @@ class NavigationRunner:
             controller=self.controller_name,
             trace=trace,
         )
+        # Save unconditionally, including aborted runs. The run you most want the trace
+        # for is the one that went wrong, and that is exactly the one someone stops early.
+        try:
+            saved = result.save()
+            print(f"\nrun saved: {saved}")
+        except OSError as exc:  # a full disk must not lose the episode itself
+            print(f"\ncould not save run: {exc}")
+
         self._set(
             state="done",
             distance_m=round(final_distance, 3),

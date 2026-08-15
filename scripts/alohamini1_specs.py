@@ -122,6 +122,28 @@ NAV_CAMERA_FOCAL_MM = 2.8734347820281982
 NAV_CAMERA_APERTURE = (5.760000228881836, 3.5999999046325684)
 NAV_CAMERA_HEIGHT_M = 0.346              # Nova Carter's Hawk height on chassis_link
 
+# A light co-mounted with camera_nav, facing the same +X driving direction it does.
+# DynaNav's own environments cannot be trusted to light themselves: office.usd has 121
+# small ceiling fixtures and NO ambient/dome light at all, and hospital.usd's one
+# DomeLight is a dim overcast HDRI that (checked directly against the downloaded USD,
+# not assumed) barely reaches an enclosed corridor anyway -- a dome lights exterior-
+# facing surfaces, and a hallway with a ceiling has none. Measured against the darkest
+# episode start in this benchmark (hospital_down_hallway2, a 30 m interior corridor):
+# no light at all renders at mean pixel value ~14/255; this fixture at the settings
+# below renders the same frame at ~88/255 with 0% of pixels clipped, and does not
+# visibly wash out the brightest episode either (hospital_vending_machine, a
+# window-lit room, +8/255 over its own unlit baseline of ~165). A physically-placed
+# light was the only lever that actually worked: raising the renderer's filmIso
+# (camera-sensitivity) setting looked identical in a quick check but the gain proved to
+# be transient -- fully settled frames (150 sim steps post-teleport, not 40-60) came
+# back indistinguishable from the filmIso=100 default, so something in the render
+# pipeline re-normalizes against manual exposure changes but not against genuine scene
+# radiance. Don't try filmIso again without that same settle time or you will
+# rediscover the same false positive.
+NAV_HEADLIGHT_PRIM_PATH = f"{_BASE_LINK}/camera_nav_headlight"
+NAV_HEADLIGHT_INTENSITY = 45000.0
+NAV_HEADLIGHT_RADIUS_M = 0.3
+
 # --- Third-person chase camera (also NOT part of the LeRobot camera set) ---
 # Parented to base_link rather than the lift column, so it does not ride up and down
 # when the lift moves -- and so it inherits the base's yaw, giving a chase view that

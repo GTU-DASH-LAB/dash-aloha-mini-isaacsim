@@ -383,6 +383,16 @@ def "World"
                     double3 xformOp:translate = (-2.5, 0, 1.8)
                     uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
                 }
+
+                def DiskLight "camera_nav_headlight"
+                {
+                    color3f inputs:color = (1, 0.98, 0.92)
+                    float inputs:intensity = 45000
+                    float inputs:radius = 0.3
+                    float3 xformOp:rotateXYZ = (90, 0, -90)
+                    double3 xformOp:translate = (0.25, 0, 0.346)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                }
             }
         }
     }
@@ -393,6 +403,13 @@ def "World"
     {
         vector3f physics:gravityDirection = (0, 0, -1)
         float physics:gravityMagnitude = 9.81
+    }
+
+    def DomeLight "FillLight"
+    {
+        color3f inputs:color = (0.85, 0.87, 0.95)
+        float inputs:exposure = 0
+        float inputs:intensity = 1500
     }
 
     def "Physics"

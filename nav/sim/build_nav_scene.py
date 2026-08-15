@@ -83,7 +83,7 @@ from isaacsim import SimulationApp  # noqa: E402
 kit = SimulationApp({"headless": True})
 
 import omni.usd  # noqa: E402
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: E402
+from pxr import Sdf, Usd, UsdGeom, UsdLux, UsdPhysics  # noqa: E402
 
 # Author directly into the output layer rather than new_stage()+Export(). Export()
 # flattens the whole composition and bakes every referenced mesh inline -- with the
@@ -122,6 +122,23 @@ UsdGeom.XformCommonAPI(robot_prim).SetRotate((0.0, 0.0, ep.start_yaw_deg))
 physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
 physics_scene.CreateGravityDirectionAttr((0.0, 0.0, -1.0))
 physics_scene.CreateGravityMagnitudeAttr(9.81)
+
+# DynaNav's own environments bring sparse, sometimes-zero ambient light: office.usd has
+# 121 small ceiling spot/point lights and NO dome or distant light at all. hospital.usd
+# has exactly one DomeLight, a dim overcast HDRI (Skies/Cloudy/abandoned_parking_4k.hdr)
+# -- checked directly against the downloaded USD, not assumed. Add an unconditional,
+# textureless dome on top of whatever the environment brings, for whatever geometry has
+# real sky visibility (windows, the warehouse's own skylights). This is a minor
+# complement, not the fix: measured 1200 vs 4000 intensity here made no visible
+# difference to an enclosed corridor's brightness, because a dome lights exterior-facing
+# surfaces and a corridor with a ceiling has none. The actual fix for enclosed interiors
+# is the headlight co-mounted with camera_nav in add_cameras.py (see the comment next to
+# NAV_HEADLIGHT_INTENSITY in alohamini1_specs.py) -- a physically-placed light that
+# moves with the robot, independent of which room's rig it happens to be standing in.
+fill_light = UsdLux.DomeLight.Define(stage, "/World/FillLight")
+fill_light.CreateIntensityAttr(1500.0)
+fill_light.CreateColorAttr((0.85, 0.87, 0.95))
+fill_light.CreateExposureAttr(0.0)
 
 # Bake a viewpoint near the robot. Isaac Sim's "frame all" on stage-open zooms to fit
 # the ENTIRE stage bbox, which on a 1 km environment is what "the scene starts from

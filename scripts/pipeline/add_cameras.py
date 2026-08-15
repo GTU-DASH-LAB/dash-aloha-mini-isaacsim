@@ -33,6 +33,9 @@ from alohamini1_specs import (  # noqa: E402
     NAV_CAMERA_FOCAL_MM,
     NAV_CAMERA_HEIGHT_M,
     NAV_CAMERA_PRIM_PATH,
+    NAV_HEADLIGHT_INTENSITY,
+    NAV_HEADLIGHT_PRIM_PATH,
+    NAV_HEADLIGHT_RADIUS_M,
 )
 
 parser = argparse.ArgumentParser()
@@ -44,7 +47,7 @@ from isaacsim import SimulationApp  # noqa: E402
 kit = SimulationApp({"headless": True})
 
 import omni.usd  # noqa: E402
-from pxr import UsdGeom  # noqa: E402
+from pxr import UsdGeom, UsdLux  # noqa: E402
 
 usd_context = omni.usd.get_context()
 usd_context.open_stage(args.scene)
@@ -161,7 +164,7 @@ CAMERA_SPECS = {
 # spec change from here on, not a spec change plus a manual USD cleanup someone has to
 # remember. Only OUR camera names are touched; anything the environment asset brings
 # with it is left alone.
-_authored_paths = {spec["path"] for spec in CAMERA_SPECS.values()}
+_authored_paths = {spec["path"] for spec in CAMERA_SPECS.values()} | {NAV_HEADLIGHT_PRIM_PATH}
 _authored_names = {p.rsplit("/", 1)[1] for p in _authored_paths}
 for prim in list(stage.Traverse()):
     path = prim.GetPath().pathString
@@ -197,6 +200,23 @@ for name, spec in CAMERA_SPECS.items():
     xform.SetRotate(spec["rotateXYZ"])
     hfov = 2 * math.degrees(math.atan(h_ap / (2 * focal)))
     print(f"Authored camera '{name}' at {spec['path']}  (HFOV {hfov:.1f} deg)")
+
+# --- Headlight, co-mounted with camera_nav ---
+# DynaNav's own environments cannot be trusted to light themselves -- see the long
+# comment in alohamini1_specs.py next to NAV_HEADLIGHT_INTENSITY for the measurements
+# behind these numbers. Reuses the nav camera's own translate/rotateXYZ verbatim: a
+# UsdLux light emits along local -Z exactly like a UsdGeom.Camera looks down local -Z,
+# so whatever rotation points the camera down +X points this light the same way, no
+# separate derivation needed.
+nav_spec = CAMERA_SPECS["nav"]
+headlight = UsdLux.DiskLight.Define(stage, NAV_HEADLIGHT_PRIM_PATH)
+headlight.CreateIntensityAttr(NAV_HEADLIGHT_INTENSITY)
+headlight.CreateRadiusAttr(NAV_HEADLIGHT_RADIUS_M)
+headlight.CreateColorAttr((1.0, 0.98, 0.92))
+headlight_xform = UsdGeom.XformCommonAPI(headlight.GetPrim())
+headlight_xform.SetTranslate(nav_spec["translate"])
+headlight_xform.SetRotate(nav_spec["rotateXYZ"])
+print(f"Authored headlight at {NAV_HEADLIGHT_PRIM_PATH} (co-aimed with camera_nav)")
 
 stage.Save()
 print(f"\nSaved: {args.scene}")

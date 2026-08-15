@@ -39,6 +39,24 @@ nav/sim/build_nav_scene.sh warehouse   # 2 episodes
 
 Or let `nav/bench.sh` build what it needs as it walks the ladder.
 
+**Two full runs recorded from the live UI, third-person view on** — both succeed:
+
+<table>
+<tr><td width="50%">
+
+`hospital_forward_staircase` (+66.1° turn, SPL 0.90 — beats DynaNav's own 0.88)
+
+<video src="../docs/nav_demo_hospital_forward_staircase.mp4" controls muted playsinline width="100%"></video>
+
+</td><td width="50%">
+
+`hospital_down_hallway2` (32.5 m straight approach, SPL 1.00)
+
+<video src="../docs/nav_demo_hospital_down_hallway2.mp4" controls muted playsinline width="100%"></video>
+
+</td></tr>
+</table>
+
 The UI also has:
 
 - **third-person view** — a checkbox above the camera panel. Ticking it opens a second

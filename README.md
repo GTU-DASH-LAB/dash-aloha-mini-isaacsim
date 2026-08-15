@@ -15,12 +15,71 @@ from the Isaac Sim UI.
   from [liyiteng/alohamini](https://github.com/liyiteng/alohamini) (Apache-2.0)
 - [`scripts/control/control_terminal.py`](scripts/control/control_terminal.py) — terminal control (see
   Quick Start below)
+- [`nav/README.md`](nav/README.md) — language-driven navigation (TIC-VLA + DynaNav),
+  see below
 
 Status: Phases 0-4 done and verified (import, physics, terminal control). Phase 5 (UI
 control) has the underlying mechanism verified but not click-tested in an actual GUI
 session — see `plan.md`/`CLAUDE.md` for exact steps to check yourself.
 
 No ROS2 dependency by default. Isaac Sim 6.0.1 install expected at `~/isaacsim`.
+
+## Language-driven navigation
+
+The robot also drives itself from a typed sentence, using **TIC-VLA** (a
+vision-language-action policy) and benchmark environments/instructions from
+**DynaNav**. Full detail — the architecture, the version-pairing constraints that force
+it into two separate processes, every measured result — lives in
+[`nav/README.md`](nav/README.md), [`nav/plan.md`](nav/plan.md), and the "Language-driven
+navigation" section of [`CLAUDE.md`](CLAUDE.md). Short version:
+
+- One camera frame + a sentence go in (never a goal coordinate); a velocity command
+  comes out, at 10Hz, mediated by a controller that turns the policy's short-horizon
+  plan into a safe drive command.
+- The DynaNav benchmark ships across **three environments** — hospital, office,
+  warehouse — each with several scripted episodes (start pose, goal, instruction,
+  success threshold). One Isaac Sim stage is built per *environment*, not per episode,
+  since the runner teleports to each episode's own start pose before every run; the UI
+  can then switch between every episode sharing that stage without a rebuild.
+- Current result on the 13-episode ladder (easiest-first by our own difficulty
+  ranking): **6/13 succeed**, mean SPL 0.52 on the 11 episodes DynaNav also scores —
+  two of those (`hospital_forward_staircase`, `hospital_exit_room`) beat DynaNav's own
+  SPL outright. Full table and the two failure modes behind the other seven are in
+  `nav/plan.md`'s Phase 18.
+
+```bash
+nav/sim/build_nav_scene.sh hospital     # once per environment (hospital/office/warehouse)
+nav/run.sh --episode hospital_down_hallway
+```
+
+Then open `http://127.0.0.1:8080` — every episode in the loaded environment is
+clickable and runnable from there; the others are listed with the relaunch command.
+
+**Two full runs, recorded from the live UI, third-person view on:**
+
+<table>
+<tr><td width="50%">
+
+`hospital_forward_staircase` — turn into a side hallway toward a staircase, `+66.1°`
+turn, one of the harder episodes by turn size. **Succeeds** (SPL 0.90, beating
+DynaNav's own 0.88).
+
+<video src="docs/nav_demo_hospital_forward_staircase.mp4" controls muted playsinline width="100%"></video>
+
+</td><td width="50%">
+
+`hospital_down_hallway2` — straight hallway approach to a bed beside a door,
+`32.5 m` start. **Succeeds** (SPL 1.00, matching DynaNav).
+
+<video src="docs/nav_demo_hospital_down_hallway2.mp4" controls muted playsinline width="100%"></video>
+
+</td></tr>
+</table>
+
+(If your Markdown viewer doesn't render inline `<video>`, the files are at
+[`docs/nav_demo_hospital_forward_staircase.mp4`](docs/nav_demo_hospital_forward_staircase.mp4)
+and
+[`docs/nav_demo_hospital_down_hallway2.mp4`](docs/nav_demo_hospital_down_hallway2.mp4).)
 
 ## Quick start
 

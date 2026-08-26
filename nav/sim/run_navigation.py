@@ -224,12 +224,16 @@ class NavigationRunner:
         Between runs no such frame exists, and a black panel beside a moving chase view
         reads as a broken UI rather than an idle one, so it shows a live preview.
 
-        Throttled to ~3 Hz: the browser polls at 700 ms, and a 640x480 JPEG encode on
-        every idle tick would be pure waste. `grab_jpeg()` rather than `grab_to_file()`
-        on purpose -- the on-disk frame counter belongs to the policy's frames.
+        Throttled to ~10 Hz, matching the browser's chase timer. It used to be ~3 Hz
+        against a 700 ms poll, which was the right pairing then; the chase view now has
+        its own 100 ms timer, and leaving the producer at 3 Hz would just serve the same
+        JPEG three times. Nothing is competing for the main thread while idle, and a
+        `grab_jpeg()` costs 1.70 ms measured, so this is affordable in a way it would
+        not be mid-episode. `grab_jpeg()` rather than `grab_to_file()` on purpose --
+        the on-disk frame counter belongs to the policy's frames.
         """
         now = time.time()
-        if now - self._preview_t < 0.3:
+        if now - self._preview_t < 0.1:
             return
         self._preview_t = now
         if self.camera is not None:
@@ -628,11 +632,24 @@ class NavigationRunner:
             step += 1
             history.observe(step, new_pos, self.base.yaw)
 
-            # Refresh the third-person view ~4x per simulated second. Tying it to the
-            # replan cadence instead would give one frame every ~2.5 s of wall clock
-            # (1 s of driving plus a blocking policy call), which is a slideshow, not
-            # something you can watch the robot navigate in.
-            if step % 15 == 0:
+            # Refresh the third-person view ~20x per simulated second. The old value
+            # was every 15 steps, chosen when a replan cost ~1 s of blocking inference
+            # and the argument was "at least don't tie it to the replan cadence". That
+            # argument expired with `predict_async`, and 15 steps was leaving the view
+            # at 1.9 fps of wall clock -- a slideshow.
+            #
+            # Raising it is nearly free, which is not obvious: Kit renders this camera
+            # EVERY frame whether or not anyone reads it (camera_source.py's docstring
+            # says so), so the throttle was rationing something already paid for. What
+            # a refresh actually costs is the readback plus the JPEG encode. Measured
+            # on the hospital stage: 0.27 ms readback, 1.70 ms for the whole
+            # `grab_jpeg()`, against a 34.6 ms step in a real run. Every 3 steps is
+            # therefore +1.6% sim time for 5x the frame rate.
+            #
+            # Do not push this to every step. 28 fps would cost ~5% and the browser
+            # cannot consume it anyway -- the page fetches /chase.jpg on its own timer,
+            # and these two numbers have to be raised together or neither moves.
+            if step % 3 == 0:
                 self._update_chase()
 
             if step % 30 == 0:

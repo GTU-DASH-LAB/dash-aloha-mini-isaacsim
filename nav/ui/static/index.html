@@ -393,10 +393,12 @@ async function poll() {
 
     $('go').disabled = running;
     $('stop').disabled = !running;
-    // Both views keep updating while idle -- the sim loop renders them between jobs,
-    // and being able to look at where the robot ended up is half the point of them.
+    // The nav panel stays on THIS timer on purpose. During a run it shows the frame
+    // the policy was actually given, which only changes when the policy is called,
+    // and it sits beside that call's reasoning text -- fetching it faster would
+    // decouple the picture from the words next to it for no gain. The chase view is
+    // the one you watch the robot move in, so it runs on its own faster timer below.
     refreshFrame();
-    refreshChase();
   } catch (e) {
     $('msg').textContent = 'lost contact with the simulator';
   }
@@ -439,13 +441,25 @@ $('chaseOn').onchange = async (e) => {
   // runner knew a moment ago -- a scene built before the chase camera existed reports
   // it through /api/status's message field once the first grab is attempted.
   if (on && data.available === false) showChase(false);
-  else if (on) setTimeout(refreshChase, 300);
+  else if (on) refreshChase();   // the 100 ms timer takes over from here
 };
 
 loadExamples();
 refreshFrame();
 poll();
 setInterval(poll, 700);
+
+// The chase view gets its own timer, an order of magnitude faster than the status
+// poll. It used to be refreshed from inside poll(), which capped the third-person
+// view at 1.43 fps -- slower even than the 1.9 fps the simulator was producing, so
+// raising the sim-side cadence alone would have changed nothing on screen.
+//
+// 100 ms against a simulator measured at 7.88 distinct frames/s (median 126 ms
+// between new frames): the browser asks slightly more often than frames appear,
+// which is the right way round -- a duplicate fetch off the local loopback is far
+// cheaper than a missed frame. Status text stays on 700 ms; numbers do not need to
+// be smooth.
+setInterval(refreshChase, 100);
 </script>
 </body>
 </html>

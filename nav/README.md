@@ -64,6 +64,21 @@ The UI also has:
   camera, so you can watch the robot drive and see what it is reasoning over at the same
   time. It is off by default and created on first use: once an Isaac Sim `Camera`
   exists, Kit renders it every frame whether or not anyone is looking.
+
+  That last detail is why the view can be smooth cheaply. The render is already paid
+  for; a refresh costs only the readback and the JPEG encode, measured at 0.27 ms and
+  1.70 ms against a ~37 ms simulator step. The rate is set in two places and **both
+  have to move together** — the simulator produces a frame every 3 steps, and the page
+  fetches `/chase.jpg` on a 100 ms timer of its own. It used to be every 15 steps
+  against a fetch buried inside the 700 ms status poll, which capped the view at
+  1.43 fps: slower than the 1.9 fps the simulator was producing, so raising either one
+  alone would have changed nothing on screen. Measured end to end after the change:
+  **7.88 fps, median 126 ms between distinct frames.**
+
+  The nav panel deliberately does *not* follow that timer. During a run it shows the
+  frame the policy was actually given, which changes only when the policy is called,
+  and it sits next to that call's reasoning text — refreshing it faster would decouple
+  the picture from the words beside it.
 - **Reset** — teleports the robot back to the episode's start pose, aborting a run in
   progress. It also clears the policy server's KV cache, so the next run starts from a
   genuinely blank context rather than carrying the failed attempt's reasoning forward.

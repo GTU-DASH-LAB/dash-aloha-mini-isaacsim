@@ -14,12 +14,15 @@ both are the wrong shape, so they cannot be loaded -- they have to be re-initial
 re-trained. A randomly initialised projection into a trained cross-attention stack does
 not degrade gracefully; it emits noise. Benchmarking that measures nothing.
 
-This script answers, for a candidate VLM, the three questions that decide the swap:
+This script answers, for a candidate VLM, the four questions that decide the swap:
 
   1. SHAPE    -- what would mismatch, and how many parameters have to be retrained;
-  2. MODALITY -- is it a vision-language model at all? A text-only Qwen3 cannot take the
+  2. KV CACHE -- does `past_key_values[-1]` even yield a (key, value) pair? On a hybrid
+                 linear-attention/SSM model most layers carry a recurrent state instead,
+                 and ticvla.py:108 unpacks the last layer unconditionally;
+  3. MODALITY -- is it a vision-language model at all? A text-only Qwen3 cannot take the
                  camera frame, which ends the discussion before shapes matter;
-  3. LATENCY  -- how long one KV-cache generation takes on this hardware. This is the one
+  4. LATENCY  -- how long one KV-cache generation takes on this hardware. This is the one
                  that can kill a swap outright regardless of retraining. The action head
                  plans exactly 3.0 s ahead (30 waypoints at 10 Hz), and `nav/README.md`
                  records staleness already sitting at 1.5-2.0 s with InternVL3-1B. A VLM
@@ -67,7 +70,14 @@ def kv_feat_dim(cfg: dict) -> tuple[int, str]:
 
 
 def load_config(ref: str) -> dict:
-    """Local directory first; fall back to the hub, which may be slow on this network."""
+    """Local directory first, then AutoConfig, then the raw config.json off the hub.
+
+    The third path is not redundant. A candidate new enough to be interesting is often
+    too new for the installed transformers -- Qwen3.8-27B declares `transformers_version:
+    5.8.0.dev0` and AutoConfig on 4.57 dies with "does not recognize this architecture
+    `qwen3_5`". That is a *loader* limitation; the shapes this script reports are plain
+    JSON and need no architecture support at all, so refusing to answer would be wrong.
+    """
     local = Path(ref) / "config.json"
     if local.is_file():
         return json.loads(local.read_text())
@@ -75,9 +85,45 @@ def load_config(ref: str) -> dict:
         from transformers import AutoConfig
         return AutoConfig.from_pretrained(ref, trust_remote_code=True).to_dict()
     except Exception as exc:
+        try:
+            import urllib.request
+            url = f"https://huggingface.co/{ref}/resolve/main/config.json"
+            with urllib.request.urlopen(url, timeout=30) as r:
+                cfg = json.loads(r.read())
+            print(f"note: transformers could not load {ref!r} ({type(exc).__name__}); "
+                  "read config.json off the hub instead.\n", file=sys.stderr)
+            return cfg
+        except Exception:
+            pass
         print(f"ERROR: could not read a config for {ref!r}: {exc}\n"
               "       Pass a local directory, or download the model first.", file=sys.stderr)
         raise SystemExit(2)
+
+
+def kv_cache_reachable(cfg: dict) -> tuple[bool, str]:
+    """Does `past_key_values[-1]` yield a (key, value) pair on this architecture?
+
+    TIC-VLA reads the LAST layer's cache -- `ticvla/models/ticvla.py:108` does
+    `_, last_layer_value = past_key_values[-1]` and asserts 4-D on the next line. On a
+    hybrid (linear-attention / SSM layers interleaved with full attention) most layers
+    carry a recurrent state instead of a KV pair, so that unpack fails unless the final
+    layer happens to be a full-attention one. Qwen3.8-27B passes only by arithmetic:
+    16 full-attention layers at interval 4 in 64 layers puts one exactly at index 63.
+    """
+    text = cfg.get("text_config") or cfg.get("llm_config") or cfg
+    types = text.get("layer_types")
+    if not types:
+        return True, "dense (no layer_types) -- every layer has a KV pair"
+    kinds = sorted(set(types))
+    if len(kinds) == 1:
+        return True, f"uniform {kinds[0]}"
+    full = [i for i, t in enumerate(types) if "full" in t]
+    if not full:
+        return False, f"no full-attention layer at all; layer_types={kinds}"
+    counts = {k: types.count(k) for k in kinds}
+    ok = full[-1] == len(types) - 1
+    return ok, (f"HYBRID {counts}; last full-attention layer is index {full[-1]} "
+                f"of {len(types)} -> last layer is {types[-1]}")
 
 
 def is_vision_language(cfg: dict) -> tuple[bool, str]:
@@ -147,7 +193,24 @@ def main() -> int:
 
     print()
     print("=" * 78)
-    print("2. MODALITY")
+    print("2. KV CACHE REACHABILITY")
+    print("=" * 78)
+    reachable, how = kv_cache_reachable(cand)
+    print(f"  past_key_values[-1] unpacks: {'YES' if reachable else 'NO'}")
+    print(f"  {how}")
+    if not reachable:
+        print("  The action expert is fed the LAST layer's value tensor. On this model")
+        print("  that layer carries a recurrent state, not a (key, value) pair, so")
+        print("  ticvla.py:108 raises before any shape question arises. A port must")
+        print("  select the last FULL-attention layer by index from layer_types.")
+    elif "HYBRID" in how:
+        print("  Works, but by arithmetic rather than by design -- select the last")
+        print("  full-attention layer explicitly, or a sibling with a different layer")
+        print("  count will fail at the dim()!=4 check with an unhelpful message.")
+
+    print()
+    print("=" * 78)
+    print("3. MODALITY")
     print("=" * 78)
     vl, why = is_vision_language(cand)
     print(f"  vision-language: {'YES' if vl else 'NO'}   ({why})")
@@ -158,7 +221,7 @@ def main() -> int:
 
     print()
     print("=" * 78)
-    print("3. LATENCY")
+    print("4. LATENCY")
     print("=" * 78)
     if not args.time_it:
         print("  skipped (pass --time-it with the weights on disk)")

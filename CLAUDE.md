@@ -740,6 +740,38 @@ affect the *rest* of this repo:
   react". Slowing is the right fix for overshooting *past* a target; it is not a fix for
   arriving 1.5 m to the side of one.
 
+- **Swapping the VLM (Q-VLA): what a candidate has to pass, and it is not just shapes.**
+  Design in [`nav/qvla_design.md`](nav/qvla_design.md), feasibility in
+  [`nav/qwen_swap_plan.md`](nav/qwen_swap_plan.md), checker in
+  `nav/tools/check_vlm_swap.py`. The gates that are easy to miss:
+  - **TIC-VLA consumes a KV cache TENSOR, not text.** So a GGUF build — including the
+    Ridge quantisation, which is the lightest option at 11.7 GB and does support vision
+    through an `mmproj` — **cannot be used at all**: llama.cpp exposes no HF-style
+    per-layer `past_key_values` to Python. Quantisation choice is constrained by what
+    `transformers` can load, not by what runs fastest.
+  - **`past_key_values[-1]` assumes every layer has a KV pair** (`ticvla.py:108`, with a
+    `dim() != 4` assert on the next line). Qwen3.8-27B is a hybrid — 48 `linear_attention`
+    + 16 `full_attention` — where most layers carry a recurrent state instead. It passes
+    only because `full_attention_interval: 4` puts a full-attention layer at index 63 of
+    64. Select the last full-attention layer from `layer_types` rather than relying on
+    that. `check_vlm_swap.py` now reports this as its own section.
+  - **A candidate worth swapping to is usually too new for the installed transformers.**
+    4.57.6 cannot even read `qwen3_5` — but the shapes that decide the swap are plain
+    JSON, so the checker falls back to fetching `config.json` off the hub.
+  - **The weights have to fit GPU1 *while Isaac Sim holds GPU0*.** FP8 at 30.89 GB leaves
+    0.5 GB on a 31.35 GiB card and cannot be the closed-loop build; NVFP4 at 23.44 GB
+    can. FP8 across both cards is fine for offline work (pipeline-parallel inference
+    moves activations over PCIe and needs no P2P) — just not while the sim is running.
+- **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
+  images.** Both measured off the completed `DynaNav_json.zip` by reading its central
+  directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,
+  151,183 `.txt` + 137,419 `.json`, zero images. Consequences: the frames are in the
+  `_data` archives so all 538.29 GB is needed, and unzipping costs the archive size
+  *again* — 538 GB of zips plus 538 GB extracted is ~1076 GB against ~936 GB free.
+  **Extract each zip then delete it.** Reading the central directory is the cheap way to
+  learn this; a ratio guessed from "it's JSON, it'll compress" would have been badly wrong
+  in the safe direction and "it's JPEG, it won't" wrong in the dangerous one.
+
 ## Next step
 
 Nothing blocking. Optional future work: root-cause the wheel traction issue properly

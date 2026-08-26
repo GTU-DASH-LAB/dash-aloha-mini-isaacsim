@@ -4,6 +4,13 @@ Branch `nav/qwen-vlm-swap`. Written before doing the work, because the cheap ver
 this idea does not exist and it is better to find that out on paper than after a
 download.
 
+> **Superseded in part by [`qvla_design.md`](qvla_design.md).** This file was written
+> before the candidate was known to be `Qwen/Qwen3.8-27B` — a real, post-cutoff model
+> that a search for "Qwen3-VL" could not match. Its shape argument, its 99.46%-is-VLM
+> finding and its two-stage reading still hold. Its **candidate table, its latency
+> estimate and its dataset arithmetic are corrected there**; the corrections are marked
+> in place below.
+
 ## The VLM is not a plug-in part
 
 Two `nn.Linear` layers inside the action expert are shaped by whatever VLM produced the
@@ -46,13 +53,19 @@ alone:
 | candidate | bf16 weights | fits one card? | stage-1 fine-tune here? |
 |---|---|---|---|
 | InternVL3-1B (current) | ~2 GB | yes | yes |
-| Qwen3-VL **8B** class | ~16 GB | yes | plausible with LoRA + gradient checkpointing |
-| Qwen3-VL **27–32B** | ~54–64 GB | **no** | no — needs FSDP across PCIe with no P2P |
+| an 8B class | ~16 GB | yes | plausible with LoRA + gradient checkpointing |
+| **Qwen3.8-27B** (measured: 55.59 GB) | ~54–64 GB | **no** | no — needs FSDP across PCIe with no P2P |
 
-4-bit quantisation gets a 27B *inference* footprint to ~14 GB, so **running** one is
+4-bit quantisation gets a 27B *inference* footprint to ~21–23 GB, so **running** one is
 possible. Fine-tuning through a 4-bit base for a navigation task is a research gamble,
 not a step. Note also `memory/pi05-memory-is-activations-not-params` — LoRA does not
 reduce activation memory, which is what actually OOMs.
+
+**The conclusion this section reached — "the ceiling is well under 27B" — was about
+stage 1, and stage 1 is where it still holds.** `qvla_design.md` resolves it by dropping
+stage 1 and training only the 10.27 M action expert against a frozen 4-bit Qwen, which
+does fit. The measured build sizes are tabulated there; the short version is that FP8
+(30.89 GB) does not fit GPU1 alongside Isaac Sim on GPU0, and NVFP4 (23.44 GB) does.
 
 ## Latency is the argument that does not go away
 
@@ -63,11 +76,19 @@ with InternVL3-1B at ~1.7 s per generation.
 Generation is memory-bandwidth-bound. Rough scaling on one 5090 (~1.8 TB/s): 1B at bf16
 is ~2 GB of weight traffic per token; a 4-bit 27B is ~14 GB, i.e. **~7× slower per
 token**, before the heavier prefill over four frames. A 1.7 s generation becomes roughly
-**7–12 s** — two to four times the entire plan horizon. Async inference means the robot
-will not freeze; it means it drives on plans that expired several seconds ago, far outside
-the horizon the action head was trained for.
+**7–12 s** — two to four times the entire plan horizon.
 
-Making the VLM 27× larger attacks the premise of the paper it implements.
+> **CORRECTION — that estimate assumed a dense 27B, and Qwen3.8-27B is not dense.**
+> Its `layer_types` is 48 `linear_attention` + 16 `full_attention`, a GatedDeltaNet
+> hybrid built precisely to make decode cheap; published single-card NVFP4 figures sit
+> near ~140 tok/s. Do not quote the 7–12 s number. What survives is the *prefill*
+> concern: four frames through a `patch_size 16` / `spatial_merge_size 2` vision tower
+> is ~8000 vision tokens per call, and that is where the cost moves. It is measurable —
+> `check_vlm_swap.py --time-it` — and must be measured before any training, not argued.
+
+Async inference means the robot will not freeze; it means it drives on plans that expired
+several seconds ago, far outside the horizon the action head was trained for. That risk
+is unchanged whatever the cause of the delay.
 
 ## And the failure we just measured is not a language failure
 
@@ -96,6 +117,14 @@ is not aimed at the measured defect.
 
 Stage 2 points only at the three `_json` dirs = 223.40 GB compressed.
 
+> **CORRECTION — `_json` alone is not enough, and the zips do not compress.** Reading
+> the completed `DynaNav_json.zip`'s central directory: 288,602 entries, **151,183 `.txt`
+> and 137,419 `.json`, and no images at all** (paths like
+> `DynaNav_json/office_6_spot_50s_70s/rgb_01812.json`). The frames are in the `_data`
+> archives, so the full 538.29 GB is the right pull. Same measurement gives **1.00×
+> expansion — the archives are `stored`, not deflated** — so extracting everything while
+> keeping the zips needs ~1076 GB against ~936 GB free. Extract each zip then delete it.
+
 **Download speed matters and the obvious measurement is wrong.** A single-connection
 `curl` gets **1.35 MB/s** from HuggingFace here; `aria2c -x16` gets **~10.5 MiB/s**, the
 same parallel-beats-serial effect `memory/gtu-network-cdn-speeds` records for NVIDIA's
@@ -118,8 +147,11 @@ produces a model that cannot be meaningfully benchmarked.
 
 ## Recommended order
 
-1. Name the exact candidate and run `check_vlm_swap.py` on it. An 8B-class **vision**-
-   language Qwen3-VL is the only size this hardware supports end to end.
+1. Name the exact candidate and run `check_vlm_swap.py` on it. ✅ done — the candidate is
+   `Qwen/Qwen3.8-27B` (5120 / 1024, vision-language, 3.15 M params to retrain), and the
+   design that follows from it is [`qvla_design.md`](qvla_design.md). The claim this step
+   used to make — that an 8B class is the only size this hardware supports end to end —
+   is true of *stage 1* and not of inference; see the correction in the hardware section.
 2. Pull `DynaNav_json` first (25.9 GB, ~36 min) and confirm stage 2 trains against the
    *current* VLM. Reproducing the released action expert is the control — without it, a
    bad result after the swap cannot be attributed to the swap.

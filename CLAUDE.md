@@ -671,11 +671,74 @@ affect the *rest* of this repo:
 - **6/13 on the benchmark ladder (Phase 18), from 0/13.** Two episodes beat DynaNav's own
   spl. The remaining failures are not one thing: some arrive and brake correctly ~2 m off
   the scored goal (`hospital_down_hallway` — plan reach collapses to 0.05 m at 2.11 m
-  out), others never see the landmark at all and cruise past at full plan speed
-  (`hospital_vending_machine2`, whose variant 1 succeeds at spl 0.98). And **`final` ≫
+  out), others cruise past at full plan speed (`hospital_vending_machine2`, whose variant
+  1 succeeds at spl 0.98 — but see the next entry: "never sees the landmark" was the wrong
+  reading of that one). And **`final` ≫
   `closest` in five of seven failures** — the robot arrives and then leaves. DynaNav never
   had to solve that: their harness terminates at 1.5 m, so their controller is never asked
   to stop. Parity with their controller is not parity with their scoring harness.
+- **The vending-machine failure is NOT a prompting problem, and the attractive story
+  about it is wrong.** Worth writing down because the wrong answer is very compelling.
+  The two episodes share a scene, a start pose and a goal and differ only in the
+  sentence — `hospital_vending_machine` "…at the vending machine at front." passes 3/4
+  here, `hospital_vending_machine2` "…at the front of the vending machine at front left."
+  passes 0/3. Every failing run shows the same signature: at ~4.5 m out, with the goal
+  within a few degrees of dead ahead, the policy asks for another ~+9° **left** and keeps
+  asking left while the goal slides off to the right, so the robot passes the machine
+  1.5–2 m to its left. The miss is **lateral, not longitudinal** — it never stops short,
+  it goes around. "front left" contradicting a machine that is by then dead ahead is an
+  irresistible explanation. It is false. Held that exact frame and history fixed and
+  varied only the sentence (`nav/tools/probe_stop_decision.py`):
+
+  | instruction | asked heading |
+  |---|---|
+  | v2, "…at front left" (fails 0/3) | **+13.45°** |
+  | v2 with left→**right** | **+12.44°** |
+  | v1, "…at front" (passes 3/4) | **+20.56°** |
+  | "Go straight ahead." (no object named) | **+15.61°** |
+  | "Turn right." / "Turn left." | −14.11° / +21.51° |
+
+  Swapping left for right moves the answer 1.0°, the *passing* sentence asks for **more**
+  left than the failing one, and a sentence that never mentions the machine asks for the
+  same left turn. The model is listening — 35.6° of authority between "turn left" and
+  "turn right" — but the left bias is the **scene**, not the words: the machine stands
+  against a wall, so a traversable forward plan bends around it. It first appears at
+  ~5 m and grows as the machine fills more of the frame, which is what avoidance looks
+  like. Also note "never sees the landmark" was wrong: `nav_000167.jpg` has the machine
+  large and centred, 0.7° off the nose.
+- **What actually separates success from failure there is whether the plan BRAKES, and
+  it is inconsistent run to run.** Plan reach over the final approach, five runs:
+
+  | run | reach on final approach | closest |
+  |---|---|---|
+  | v1 150443 | 0.551 → 0.574 | **1.50 ✓** |
+  | v1 145416 | 0.715 → 0.625 → 0.479 → **0.424** | **1.50 ✓** |
+  | v1 145727 | 0.93–1.08, flat | 2.12 ✗ |
+  | v2 144637 | 1.04–1.14, flat | 1.85 ✗ |
+  | v2 150620 | 0.99–1.08, flat | 2.13 ✗ |
+
+  Perfect separation, and it **cuts across** the sentence split — v1's own failure is a
+  no-brake run under the *passing* sentence. So the policy does decide when to stop (that
+  authority was never missing) and the `braking` controller does honour it; what is
+  unreliable is *recognising arrival*. The two are coupled: the runs that brake are the
+  ones tracking y≈2.5–2.8 at x≈7.9, actually in front of the machine, while the failures
+  are 0.9–1.7 m wider in y and never get in front of it. The wider arc comes from holding
+  the left turn ~1 s longer after the spike, ≈0.5 m of lateral offset that then compounds.
+- **`predict()` is deterministic but a RUN is not, and async is why.** Repeats on an
+  identical frame + history + robot_state returned headings identical to **0.00° sd**
+  across every arm above. Yet the same episode with the same sentence succeeds twice and
+  fails once. The divergence cannot come from sampling: it comes from which KV cache
+  happens to be ready at which step, which depends on wall-clock generation timing. Do
+  not read a single episode outcome as a property of the prompt or the policy — n=1 on
+  this stack is noise, and `stale` alternating 1.5/2.0 s is visible in every trace above.
+- **"Slow down on approach" does not fix a lateral miss, and in this controller it
+  tightens the turn.** `PursuitController` splits steering into `w_ff = 0.5 * v_cmd *
+  kappa`, which is speed-invariant in *path shape* (dyaw/ds = kappa/2), and
+  `w_fb = k_angular * yaw_err_filt`, which is not scaled by `v` at all. Halving speed
+  therefore roughly doubles the yaw per metre travelled — the robot commits to whatever
+  heading the plan asked for *sooner* in arc length, rather than getting "more time to
+  react". Slowing is the right fix for overshooting *past* a target; it is not a fix for
+  arriving 1.5 m to the side of one.
 
 ## Next step
 

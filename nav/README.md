@@ -136,6 +136,7 @@ pinned through Kit's own `active_gpu`/`physics_gpu` config instead.
 | `sim/collision_guard.py` | raycast fan — the base does not collide on its own |
 | `ui/` | prompt box, live camera, benchmark examples |
 | `tools/check_policy_sanity.py` | does the output depend on the prompt? |
+| `tools/probe_stop_decision.py` | replay one recorded call, vary only the sentence |
 | `tools/check_scene_compat.py` | will a 5.0-authored scene open in 6.0.1? |
 
 ## Things that will surprise you
@@ -208,6 +209,24 @@ headings identical to 0.000°. Retrying a stuck state will not shake it loose.
 
 **Turn authority is modest.** About ±14° at the end of a 30-waypoint plan. The policy
 does respond to "turn left" (verified, correctly signed), but not sharply.
+
+**A failing episode is usually not a prompting problem, however much it looks like one.**
+The two hospital vending-machine episodes share a scene, a start pose and a goal and
+differ only in the sentence — one passes 3/4 here, the other 0/3. The failing one says
+"at front left" and the robot does indeed bend left past a machine that is by then dead
+ahead. Replaying that exact frame and history and varying only the sentence
+(`tools/probe_stop_decision.py`) says otherwise: swapping *left* for *right* moves the
+answer 1.0°, the **passing** sentence asks for more left than the failing one, and
+"Go straight ahead." — naming no machine at all — asks for the same left turn. The bend
+is the scene, not the words: the machine stands against a wall and a traversable forward
+plan goes around it. What actually separates the passing runs is whether the plan's reach
+collapses on the final approach, and that varies run to run under the *same* sentence.
+Replay the state before rewriting the prompt.
+
+**`predict()` is deterministic; a run is not.** Repeats on an identical frame, history
+and `robot_state` return headings identical to 0.00° sd. The same episode still succeeds
+twice and fails once, because with async inference the outcome depends on which KV cache
+happens to be ready at which step. Treat a single episode result as noise.
 
 ## Checking it is real, not a moving robot
 

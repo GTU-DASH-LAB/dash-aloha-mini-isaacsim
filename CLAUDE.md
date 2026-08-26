@@ -495,6 +495,13 @@ affect the *rest* of this repo:
   path length unchanged at 31.72 → 31.68 m and success preserved. The arithmetic closes
   exactly: 123 calls × 1.6 s ≈ 197 s of the old run's 322 s was inference, and removing
   it lands on the observed number, so the saving is the inference cost and nothing else.
+  Confirmed on three episodes. The cleanest signal is **wall seconds per policy call**,
+  which normalises out episode length: `office_hallway_turn` 2.23/2.31/2.28/2.50 → 1.15,
+  `hospital_exit_room` 2.18 → 1.03, `hospital_down_hallway2` 2.62 → 1.02. Every prior
+  synchronous run of those episodes sits near 2.2–2.5 s/call and every async run near
+  1.0–1.15. Note this is not the 35 ms figure: a "call" also buys 30 physics steps of
+  rendering, physics and guard raycasts, which is the ~1.0 s floor. Inference went from
+  roughly half that budget to 3% of it.
 - **Measure staleness in SIM seconds, and check it against the 3 s horizon.** With async
   inference `time_delay` is the age of the cache in use — measured against the
   *second-to-last* generation start, since the cache was produced by the generation
@@ -505,6 +512,17 @@ affect the *rest* of this repo:
   roughly 0.5× realtime, so a 2.05 s wall-clock generation costs just 1.0 s of sim time.
   Speed the sim up and the delay grows toward the horizon. `summarize_runs.py` prints it
   as `stale` for exactly this reason.
+- **What tests the body-frame rotation is a nonzero `yaw_ref`, not a turn.** The `dx, dy`
+  handed to the action head is the world displacement rotated by `-yaw_ref`. The obvious
+  sanity check — "`|dy|` stayed at 0.009 m, so it works" — proves nothing: small `|dy|`
+  only says the robot drove along its own heading, which is true whichever way you
+  rotate. The reasoning that a *turning* episode is needed is also wrong. The real test
+  is `atan2(dy, dx)` against `world_bearing(ref→cur) - yaw_ref`, and it discriminates
+  whenever `yaw_ref != 0`. Verified across three episodes whose `yaw_ref` together covers
+  roughly the whole circle (−117°..−89°, −92°..+9°, +81°..+180°): angle error **0.01–0.02°
+  mean, 0.13° max**, where the flipped sign would give 100–168°. Residual length error is
+  0.0008–0.0014 m and is not error at all — `robot_state` is bfloat16 on the server, so
+  ~3 significant digits is the floor.
 - **A benchmark that runs faster than realtime cannot measure a wall-clock-bound
   mechanism.** A standalone harness hammering `/predict` in a tight loop showed only 2
   generations in 25 calls and `time_delay` climbing to 12 s, which looks exactly like a

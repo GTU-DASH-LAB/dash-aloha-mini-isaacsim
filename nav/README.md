@@ -166,6 +166,18 @@ rotated into the body frame the model was reasoning in. Each replan records its 
 staleness as the last element of `plans`. Watch it: the action head only plans 3.0 s
 ahead, so a delay approaching that means steering on a plan that has nearly expired.
 
+Verified on three episodes, all of which passed with navigation quality unchanged:
+
+| episode | s/call sync → async | path | result |
+|---|---|---|---|
+| `hospital_down_hallway2` | 2.62 → **1.02** | 31.72 → 31.68 m | YES → YES |
+| `hospital_exit_room`     | 2.18 → **1.03** | 27.1 → 26.6 m   | YES → YES |
+| `office_hallway_turn`    | 2.23–2.50 → **1.15** | 15.0 → 13.6 m | 1/4 → YES |
+
+Wall seconds per policy call is the honest comparison — it normalises out episode
+length. `office_hallway_turn` succeeded only once in four synchronous runs, so its
+async pass is a single sample and not evidence of improvement.
+
 **Episode timeouts still count sim time, not wall clock.** The gap between the two
 clocks narrowed a lot with the async switch, but a wall clock would still silently
 re-scale every episode's budget with GPU load.

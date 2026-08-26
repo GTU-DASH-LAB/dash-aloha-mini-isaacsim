@@ -192,7 +192,7 @@ class EpisodeResult:
     # interesting comparison is plan_heading vs guidance_deg vs bearing_to_goal on one
     # row: when the first two disagree, the 3 s action head is truncating a turn the
     # policy has actually planned, and that is a horizon problem, not a perception one.
-    plans: list[tuple[float, float, float, float, float | None, float]] = field(
+    plans: list[tuple[float, float, float, float, float | None, float, float]] = field(
         default_factory=list
     )
 

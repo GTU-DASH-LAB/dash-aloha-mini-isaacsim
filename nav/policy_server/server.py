@@ -12,6 +12,14 @@ Frames cross the process boundary as *file paths*, not bytes: both processes are
 machine, and TICVLA.predict() already takes `image_paths: list[str]`. That keeps a
 448x448 render out of JSON entirely.
 
+The two-process split lands on the paper's own slow/fast seam almost exactly. TIC-VLA
+is "Think-in-Control": a ~1 s VLM generation that produces a KV cache, and a millisecond
+action expert that consumes whatever cache is currently on hand. `/predict` calls
+`predict_async`, so the slow half runs on a background thread INSIDE this process and
+the HTTP call only pays for the fast half. The sim never has to thread anything: it
+issues a normal blocking request and gets an answer back quickly, while the VLM keeps
+churning on GPU1 between calls.
+
 Usage:
     nav/policy_server/launch.sh
     # then, from anywhere:
@@ -79,6 +87,15 @@ class PredictResponse(BaseModel):
     num_waypoints: int
     latency_s: float
     kv_cache_available: bool
+    # Set only on the call where a NEW background generation was kicked off; None on
+    # every other call. The caller needs it because `time_delay`/`dx,dy` must be
+    # measured against the generation that produced the cache currently IN USE, which
+    # is the one before the one now running -- DynaNav's own wording is "second-to-last
+    # inference start frame". The server cannot answer that on its own: the model
+    # overwrites `_kv_cache_generation_step` the moment a new generation starts, so by
+    # the time a cache is being consumed its own start step is gone. DynaNav keeps the
+    # bookkeeping in the behaviour script for exactly this reason and so do we.
+    vlm_generation_start_step: int | None
 
 
 def _load_model() -> None:
@@ -148,7 +165,27 @@ def predict(req: PredictRequest) -> PredictResponse:
 
     t0 = time.perf_counter()
     with torch.no_grad():
-        reasoning, waypoints, _gen_step, kv_ok, _gen_pose = model.predict(
+        # `predict_async`, NOT `predict` -- this is the paper's headline mechanism and
+        # the two entry points differ in where the ~1 s VLM generation happens.
+        # `predict` (DynaNav/ticvla.py:548) runs it inline, so every call pays for a
+        # 200-token autoregressive decode and the caller is stopped for the whole
+        # thing. `predict_async` (:891) instead polls the previous generation, kicks a
+        # new one onto a background thread if none is running (it SKIPS when one
+        # already is, so calling every step is safe), and then runs only the fast
+        # half: one 448px vision-encoder pass over the current frame plus the 3-layer
+        # cross-attention action expert, against whatever KV cache is on hand. The
+        # cache it uses is therefore STALE by roughly one generation -- that is the
+        # design, not a defect, and `time_delay`/`dx,dy` in the request are how the
+        # caller declares how stale so the action head can compensate.
+        #
+        # The very first call after a reset still blocks: there is no cache to be
+        # stale, and acting before the model has ever looked at the scene would be
+        # driving on nothing. Correct, and unavoidable.
+        #
+        # `current_robot_pose` is deliberately not passed. That argument only exists so
+        # the model can stash a pose to compute dx/dy from later; we compute dx/dy on
+        # the sim side, where the pose actually lives, and hand it in via `robot_state`.
+        reasoning, waypoints, gen_step, kv_ok, _gen_pose = model.predict_async(
             image_paths=req.image_paths,
             instruction=req.instruction,
             robot_state=torch.tensor(req.robot_state, dtype=torch.float32),
@@ -170,6 +207,7 @@ def predict(req: PredictRequest) -> PredictResponse:
         num_waypoints=len(wp),
         latency_s=round(latency, 3),
         kv_cache_available=bool(kv_ok),
+        vlm_generation_start_step=int(gen_step) if gen_step is not None else None,
     )
 
 

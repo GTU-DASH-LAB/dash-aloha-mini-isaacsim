@@ -100,6 +100,13 @@ def score(path: Path, cfg: dict) -> dict | None:
     plans = d.get("plans") or []
     asked = [p[1] for p in plans]
     guide = [p[4] for p in plans if len(p) > 4 and p[4] is not None]
+    # Staleness of the KV cache each plan was built on. Absent from runs recorded
+    # before the async switch, where it was 0.0 by construction -- hence the length
+    # guard rather than a bare index. Worth watching because the action head only
+    # plans 3.0 s ahead: a mean creeping toward that means the robot is being steered
+    # by plans that have nearly expired, which is a real regression even if the
+    # success flag has not moved yet.
+    stale = [p[6] for p in plans if len(p) > 6 and p[6] is not None]
 
     return {
         "file": path.name,
@@ -118,6 +125,8 @@ def score(path: Path, cfg: dict) -> dict | None:
         "asked_mean": (sum(asked) / len(asked)) if asked else float("nan"),
         "guide_mean": (sum(guide) / len(guide)) if guide else float("nan"),
         "guide_frac": (len(guide) / len(plans)) if plans else 0.0,
+        "stale_mean": (sum(stale) / len(stale)) if stale else float("nan"),
+        "stale_max": max(stale) if stale else float("nan"),
         **reference(spec),
     }
 
@@ -159,7 +168,7 @@ def main() -> None:
     hdr = (
         f"{'episode':<24}{'ctrl':<10}{'ok':<4}{'init':>7}{'closest':>8}{'final':>7}"
         f"{'closed':>8}{'spl':>6}{'path':>7}{'guard':>6}{'asked':>7}{'guide':>7}"
-        f"{'  DynaNav':<18}"
+        f"{'stale':>7}{'  DynaNav':<18}"
     )
     print(hdr)
     print("-" * len(hdr))
@@ -175,7 +184,8 @@ def main() -> None:
             f"{fmt(r['initial_m'], '7.1f')}{fmt(r['closest_m'], '8.2f')}"
             f"{fmt(r['final_m'], '7.1f')}{r['closed_frac'] * 100:7.0f}%"
             f"{r['spl']:6.2f}{r['path_m']:7.1f}{r['guard']:6d}"
-            f"{fmt(r['asked_mean'], '7.1f')}{fmt(r['guide_mean'], '7.1f')}{ref:<18}"
+            f"{fmt(r['asked_mean'], '7.1f')}{fmt(r['guide_mean'], '7.1f')}"
+            f"{fmt(r['stale_mean'], '7.2f')}{ref:<18}"
         )
 
     done = [r for r in rows if r["success"]]
@@ -186,7 +196,9 @@ def main() -> None:
     )
     print(
         "asked = mean heading the ACTION head requested (deg, + is left); "
-        "guide = same from the 9s TEXT head."
+        "guide = same from the 9s TEXT head; stale = mean age of the KV cache each "
+        "plan was built on (s; the action head only plans 3.0 s ahead, and '-' means "
+        "a run recorded before inference went async)."
     )
 
 

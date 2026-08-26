@@ -483,6 +483,35 @@ affect the *rest* of this repo:
   `nav/sim/waypoint_history.py`, whose format is copied character for character from
   `ticvla/data/vlm_data.py:_format_previous_waypoints_text`; a reworded version reads
   fine to a human and sits off the model's distribution.
+- **TIC-VLA is a latency-aware architecture, and we were running it in latency-free
+  mode.** The paper's whole mechanism is the slow/fast split: a ~1.5 s VLM generation
+  producing a KV cache, and a millisecond action expert driving on whatever cache is on
+  hand. The server was calling blocking `predict()` and passing `time_delay=0.0`,
+  `dx=dy=0.0`. Those zeros were *honest* while inference was synchronous — a frozen
+  robot really has moved nowhere — but they meant the compensation pathway never
+  carried a signal. Switching `/predict` to `predict_async` (the VLM backgrounds itself
+  inside the server process, so the sim needs no threading at all) measured **1669 ms →
+  34.8 ms mean per call, 48×**; `hospital_down_hallway2` went **322 s → 121 s wall** with
+  path length unchanged at 31.72 → 31.68 m and success preserved. The arithmetic closes
+  exactly: 123 calls × 1.6 s ≈ 197 s of the old run's 322 s was inference, and removing
+  it lands on the observed number, so the saving is the inference cost and nothing else.
+- **Measure staleness in SIM seconds, and check it against the 3 s horizon.** With async
+  inference `time_delay` is the age of the cache in use — measured against the
+  *second-to-last* generation start, since the cache was produced by the generation
+  before the one now running. Observed here: **1.70 s mean, 2.00 s max**, safely under
+  the action head's 3.0 s plan horizon. That margin is not guaranteed by anything in our
+  code: DynaNav's 3 s staleness cutoff lives in its *behaviour* script, not in the model,
+  so nothing in this stack bounds the delay. It stays small only because the sim runs at
+  roughly 0.5× realtime, so a 2.05 s wall-clock generation costs just 1.0 s of sim time.
+  Speed the sim up and the delay grows toward the horizon. `summarize_runs.py` prints it
+  as `stale` for exactly this reason.
+- **A benchmark that runs faster than realtime cannot measure a wall-clock-bound
+  mechanism.** A standalone harness hammering `/predict` in a tight loop showed only 2
+  generations in 25 calls and `time_delay` climbing to 12 s, which looks exactly like a
+  throttling bug. It was not: the loop finished ~2.5 s of wall time while claiming 12 s
+  of sim time, so only two ~1.5 s generations could physically fit. The real episode
+  showed 1.5–2.0 s. Do not conclude anything about async behaviour from a harness whose
+  clock does not advance the way the simulator's does.
 - **A collision guard must block DIRECTIONS, not speed.** The first `collision_guard.py`
   scaled the whole velocity to zero whenever any ray — including one aimed 35° off the
   direction of travel — came back short. That is strictly less physical than the contact

@@ -12,13 +12,21 @@ cones and a yellow caution sign block the entrance" and finding that in the imag
 version that fed the goal coordinate to a planner would look identical on video and
 would prove nothing.
 
-Inference is SYNCHRONOUS here: the simulation pauses while the policy thinks (~1.0-1.5
-s wall time per call). DynaNav instead runs inference in a background thread and keeps
-driving on the previous plan, which is what a real robot must do. Synchronous is the
-right call for this stack -- it removes a whole class of race between plan and state
-(DynaNav's own code carries an `_is_backing_up` re-check *after* inference precisely
-because the world moved underneath it), and sim time is not wall time so nothing is
-lost but patience. Noted as a real difference from the published setup, not hidden.
+Inference is ASYNCHRONOUS, the way the paper is. TIC-VLA is "Think-in-Control": a ~1 s
+VLM generation producing a KV cache, and a millisecond action expert that drives on
+whatever cache is currently on hand. The policy server calls `predict_async`, so the
+slow half runs on a background thread over there and this loop only ever waits for the
+fast half -- the robot no longer stands still while the model thinks.
+
+The consequence is that every plan is built on thinking that is roughly one generation
+old, and that staleness is declared rather than hidden: `time_delay` says how many
+seconds old, and the dx,dy tail of `robot_state` says how far the robot travelled
+meanwhile, rotated into the body frame the model was reasoning in. Those two fields are
+the paper's latency compensation. Zeroing them does not remove the delay, it only stops
+the model being able to correct for it.
+
+This was synchronous until the async switch, and the zeros were correct then: a frozen
+robot really has moved nowhere. If you ever put `predict` back, put the zeros back too.
 
 Usage:
     nav/run.sh --episode warehouse --controller braking
@@ -433,7 +441,8 @@ class NavigationRunner:
 
         command = Command(0.0, 0.0, 0.0)
         trace: list[tuple[float, float, float]] = [(*start_pos[:2], self.base.yaw)]
-        plans: list[tuple[float, float, float, float]] = []
+        # (t, asked_deg, reach_m, goal_rel_deg, guide_deg|None, plan_speed, staleness_s)
+        plans: list[tuple[float, float, float, float, float | None, float, float]] = []
         path_length = 0.0
         policy_calls = 0
         prev_pos = start_pos
@@ -445,13 +454,24 @@ class NavigationRunner:
         history.observe(0, start_pos, self.base.yaw)
         frames = FrameHistory()
 
+        # Where the robot was each time the server started a new background VLM
+        # generation: (step, x, y, yaw). The plan we get back is built on a KV cache
+        # that is one generation old, so `[0]` -- the second-to-last start, the one that
+        # actually produced the cache in use -- is the reference for how stale it is.
+        # Capped at two entries for the same reason DynaNav caps it at two
+        # (nova_carter_test_ticvla.py:952, `pop(0)` once the list exceeds 2): the older
+        # ones describe caches that have already been superseded, and referencing them
+        # would make the reported delay grow without bound.
+        gen_starts: list[tuple[int, float, float, float]] = []
+
         while True:
-            # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long
-            # the robot has to do the task, and inference here is synchronous -- each
-            # call blocks ~1.0-1.5 s of wall clock while the robot stands still. Timing
-            # by wall clock would spend most of a 70 s budget on the policy thinking
-            # and cut the episode to roughly a third of its intended length, which
-            # would look like a navigation failure and be a stopwatch bug.
+            # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long the
+            # robot has to do the task, not how long the hardware takes to decide. That
+            # mattered enormously when every call froze the robot for ~1.0-1.5 s; with
+            # `predict_async` the freeze is down to the action expert alone, so the two
+            # clocks now run much closer together. Still sim time: the gap is smaller,
+            # not gone, and a wall clock would silently re-scale every episode's budget
+            # with GPU load -- a stopwatch bug that reads as a navigation failure.
             sim_time = step * PHYSICS_DT
             wall_time = time.time() - t0
             position = self.base.position()
@@ -480,6 +500,28 @@ class NavigationRunner:
 
                 frames.add(sim_time, frame_path)
                 self.latest_jpeg = frame_path.read_bytes()
+
+                # How stale is the thinking behind the plan we are about to get, and
+                # how far has the robot travelled since that thinking began? Measured
+                # against the generation that produced the cache now in use, and
+                # expressed in THAT moment's body frame (FLU: +x forward, +y left) --
+                # the frame the model was reasoning in. Rotating by -yaw_ref is the 2D
+                # form of DynaNav's `R_start.T @ delta_world`
+                # (nova_carter_test_ticvla.py:815-822); we have a yaw where they have a
+                # quaternion, so the matrix collapses to a sin/cos pair.
+                if gen_starts:
+                    ref_step, ref_x, ref_y, ref_yaw = gen_starts[0]
+                    time_delay = (step - ref_step) * PHYSICS_DT
+                    dxw = position[0] - ref_x
+                    dyw = position[1] - ref_y
+                    cos_r, sin_r = math.cos(ref_yaw), math.sin(ref_yaw)
+                    dx = cos_r * dxw + sin_r * dyw
+                    dy = -sin_r * dxw + cos_r * dyw
+                else:
+                    # Nothing has been generated yet, so the first call is genuinely
+                    # not stale -- it blocks until the first cache exists.
+                    time_delay, dx, dy = 0.0, 0.0, 0.0
+
                 try:
                     out = self.policy.predict(
                         # Four frames at 3 s spacing, oldest first -- TIC-VLA is a
@@ -488,17 +530,20 @@ class NavigationRunner:
                         image_paths=frames.sample(sim_time),
                         instruction=instruction,
                         # TICVLA unpacks the 6-form as [vx, vy, _, yaw_speed, dx, dy].
-                        # dx/dy is DynaNav's displacement since inference STARTED, and
-                        # it is zero here on purpose: DynaNav infers on a background
-                        # thread while the robot keeps driving, so by the time a plan
-                        # lands the robot has moved and the model is told how far. Ours
-                        # is synchronous -- the robot is frozen for the whole call -- so
-                        # the honest value is 0.0, not the one-physics-step (~1 cm)
-                        # displacement that used to go here, which described nothing.
+                        # dx/dy is the displacement since the VLM started thinking,
+                        # which is real now that the server runs `predict_async` and the
+                        # robot keeps driving through a generation. It used to be hard
+                        # 0.0, and that was the honest value while inference was
+                        # synchronous and the robot stood still for every call -- the
+                        # zero described the world accurately. It would be a lie here.
                         robot_state=[
-                            command.vx, command.vy, 0.0, command.omega, 0.0, 0.0,
+                            command.vx, command.vy, 0.0, command.omega, dx, dy,
                         ],
                         current_step=step,
+                        # Paired with dx/dy above: together they are the whole of the
+                        # paper's latency compensation. The action head is not asked to
+                        # guess that its cache is old, it is told, in seconds.
+                        time_delay=time_delay,
                         # What the robot has already done. Omitting this (the default
                         # "") is why every plan used to come back as a fresh straight
                         # line: with no record of having driven for the last minute,
@@ -512,6 +557,14 @@ class NavigationRunner:
                     raise
 
                 import numpy as np
+
+                # Non-None only when this call kicked off a NEW background generation;
+                # the server skips starting one while another is still running, so most
+                # calls report nothing and leave the reference where it was.
+                gen_step = out.get("vlm_generation_start_step")
+                if gen_step is not None:
+                    gen_starts.append((int(gen_step), position[0], position[1], self.base.yaw))
+                    del gen_starts[:-2]
 
                 waypoints = np.asarray(out["waypoints"], dtype=float)
                 # The text head reaches 9 s; the action head stops at 3. Only the
@@ -541,6 +594,14 @@ class NavigationRunner:
                     round((goal_rel + 180.0) % 360.0 - 180.0, 2),
                     round(math.degrees(guide_deg), 2) if guide_deg is not None else None,
                     round(plan_speed(waypoints), 3),
+                    # How old the thinking behind this plan was, in seconds of sim
+                    # time. Under synchronous inference this was 0.0 by construction
+                    # and not worth recording; with `predict_async` it is the single
+                    # number that says whether the async switch is operating in the
+                    # regime the paper trained for. The action head plans 3.0 s
+                    # ahead, so a delay approaching that means the robot is being
+                    # steered by a plan that has nearly expired.
+                    round(time_delay, 3),
                 ))
                 self._set(
                     policy_calls=policy_calls,

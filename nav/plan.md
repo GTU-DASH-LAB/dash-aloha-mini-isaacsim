@@ -198,6 +198,12 @@ addressable rather than fundamental, and Phase 11 must handle both explicitly:
 checkpoint accepted with `strict=True`, `num_action_chunks=30`, `/predict` round-trip
 **1.0–1.5 s** per call.
 
+*Superseded:* `/predict` now calls `predict_async`, which moves the VLM generation to a
+background thread inside the server. Re-measured: **1669 ms** for the first call after a
+reset (no cache yet, so it blocks on a full generation — this is the old synchronous
+cost, measured in-run) versus a **34.8 ms mean / 34.0 ms median** over the 24 calls
+after it. 48×.
+
 ### Phase 9 — Policy sanity (the gate; see finding 3)
 - [x] `nav/tools/check_policy_sanity.py` — fixed frame, contradictory instructions,
       repeats to separate language response from sampling noise
@@ -272,10 +278,13 @@ Two caveats that matter for later phases:
    file, not in `Aloha.usda`.
 3. **Nothing after `SimulationApp.close()` executes.** The first builder authored the
    layer, reported success, and applied none of the pipeline. Hence the `.sh` wrapper.
-4. **Episode timeouts must count sim time, not wall clock.** Inference is synchronous
-   and blocks ~1.0–1.5 s per call. Timing by wall clock spends most of a 70 s budget on
-   the policy thinking and cuts the episode to roughly a third of its intended length —
-   which would have looked like a navigation failure and been a stopwatch bug.
+4. **Episode timeouts must count sim time, not wall clock.** When this was written
+   inference was synchronous and blocked ~1.0–1.5 s per call, so timing by wall clock
+   spent most of a 70 s budget on the policy thinking and cut the episode to roughly a
+   third of its intended length — a stopwatch bug that would have read as a navigation
+   failure. `predict_async` shrank that per-call cost to ~35 ms, so the two clocks now
+   run far closer together. The rule stands anyway: the gap is smaller, not gone, and a
+   wall clock would still re-scale every episode's budget with GPU load.
 
 ### Phase 12 — Web UI
 - [x] `nav/ui/ui_bridge.py` — uvicorn on a worker thread of the sim process. It cannot
@@ -581,8 +590,15 @@ historical and current frames" (`ticvla/data/vlm_data.py:_build_messages`). Dyna
       happen).
 - [x] Also fixed `robot_state`'s `dx, dy`. DynaNav's is displacement since the VLM
       generation *started*, because it infers on a background thread while the robot keeps
-      driving. Ours is synchronous — the robot is frozen for the whole call — so the honest
-      value is 0.0, not the one-physics-step (~1 cm) displacement that used to go there.
+      driving. Ours was synchronous — the robot frozen for the whole call — so the honest
+      value was 0.0, not the one-physics-step (~1 cm) displacement that used to go there.
+- [x] **Superseded by the async switch.** Now that the server runs `predict_async`, the
+      robot really does keep driving through a generation, so 0.0 became the lie the
+      earlier note was guarding against. `run_navigation.py` computes real `dx, dy`
+      against `gen_starts[0]` — the *second-to-last* generation start, since the cache in
+      use was produced by the generation before the one now running — and rotates the
+      world-frame delta into that moment's body frame by `-yaw_ref`, the 2D form of
+      DynaNav's `R_start.T @ delta_world`. `time_delay` is the matching term in seconds.
 
 - [x] `EpisodeResult.save()` writes every run to `nav/results/*.json` (gitignored), trace
       included, `(x, y, yaw)` per sample. Runs were being compared on final distance

@@ -152,8 +152,23 @@ teleported body has no contact response and will pass through a wall, so
 `collision_guard.py` raycasts ahead instead. That is genuinely weaker than physics: it
 stops the robot, it does not push back.
 
-**Episode timeouts count sim time, not wall clock.** Inference is synchronous and
-blocks ~1.0–1.5 s per call while the robot stands still.
+**Inference is asynchronous, the way the paper is.** The policy server calls TIC-VLA's
+`predict_async`, so the ~1.5 s VLM generation runs on a background thread inside the
+server and the sim only ever waits for the action expert. Measured here: **1669 ms for
+the first call after a reset** — which has no cache yet and therefore blocks on a full
+generation — against a **34.8 ms mean** for every call after it, a 48× drop. The robot
+no longer stands still to think.
+
+The price is that every plan is built on a KV cache roughly one generation old, and
+that staleness is *declared* rather than hidden: `time_delay` says how many seconds old,
+and the `dx, dy` tail of `robot_state` says how far the robot travelled meanwhile,
+rotated into the body frame the model was reasoning in. Each replan records its own
+staleness as the last element of `plans`. Watch it: the action head only plans 3.0 s
+ahead, so a delay approaching that means steering on a plan that has nearly expired.
+
+**Episode timeouts still count sim time, not wall clock.** The gap between the two
+clocks narrowed a lot with the async switch, but a wall clock would still silently
+re-scale every episode's budget with GPU load.
 
 **The office episode is not the default.** It runs (`--episode office`) and Isaac Sim
 6.0.1 opens it cleanly, but it is 1063 m across and is the same NVIDIA Office asset

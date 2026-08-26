@@ -90,10 +90,21 @@ class PolicyClient:
         delayed_image_paths: list[str] | None = None,
         robot_type: str = "wheeled robot",
     ) -> dict[str, Any]:
-        """Returns {waypoints: [[dx,dy],...], reasoning, num_waypoints, latency_s}.
+        """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
+        vlm_generation_start_step}.
 
         Waypoints are body-frame FLU displacements, same convention DynaNav's Nova
         Carter behaviour consumes.
+
+        `time_delay` and the dx,dy tail of `robot_state` are not decoration: the server
+        runs `predict_async`, so the plan comes back built on a KV cache that is roughly
+        one VLM generation old. These two fields are how the caller tells the action
+        head how old, and how far the robot travelled meanwhile. Leaving them at zero
+        does not make the staleness go away -- it just hides it from the model.
+
+        `vlm_generation_start_step` is non-None only on calls that started a new
+        background generation; the caller is expected to keep those and reference the
+        second-to-last one. See run_navigation.py's `gen_starts`.
         """
         return self._post(
             "/predict",

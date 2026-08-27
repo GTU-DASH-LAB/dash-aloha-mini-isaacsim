@@ -784,9 +784,23 @@ affect the *rest* of this repo:
   layers off DeepGEMM onto Triton/`grouped_mm`, because DeepGEMM's cached kernels are
   bound to a single CUDA context. FP8 at 30.89 GB *had* to be split here (no card has that
   free while Isaac Sim holds GPU0), so its 16 tok/s is a property of the forced placement,
-  not the checkpoint — quote it as provisional. Also check the load report: this
-  checkpoint flags `layers.{0..63}.mlp.gate_proj.weight_scale_inv` as **UNEXPECTED**,
-  which leaves timing valid (same shapes, same FLOPs) and output quality untrustworthy.
+  not the checkpoint — quote it as provisional.
+- **`modules_to_not_convert` is PREFIX-matched, so an entry naming a module that does not
+  exist can still disable one that does.** This produced a model that loaded, ran at full
+  speed, raised nothing, and emitted pure gibberish. Qwen3.8-27B-FP8's skip list has 882
+  entries including `layers.N.mlp.gate` and `...mlp.shared_expert_gate` for every layer —
+  MoE routers, and this checkpoint is dense, so they look like harmless leftovers. They
+  are not: `mlp.gate` is a **prefix of `mlp.gate_proj`**, a real linear in all 64 blocks.
+  So `gate_proj` was skipped, stayed a plain `nn.Linear`, took its e4m3 weights raw, and
+  its `weight_scale_inv` was dropped — the gate half of every SwiGLU off by a per-block
+  scale. `"What is the capital of France?"` answered
+  `'althocie不成这儿ardy礼拜 forth喜怒哀perationarked…'`; after dropping the 130 spurious
+  entries, `'The capital of France is Paris.'` The **only** signal was a load report
+  listing those `weight_scale_inv` keys as UNEXPECTED next to a note saying UNEXPECTED
+  "can be ignored". **Read the load report, and treat an unexpected `*_scale*` key as an
+  error.** Fixed in `nav/policy_server/qwen_load.py`, which everything in this repo loads
+  Qwen through — at runtime, never in site-packages. Note it does not affect timing (same
+  shapes, same FLOPs), so latency measured before the fix stands and quality did not.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

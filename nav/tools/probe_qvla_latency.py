@@ -76,11 +76,43 @@ def main() -> int:
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--gpu0-gib", type=float, default=18.0)
     ap.add_argument("--gpu1-gib", type=float, default=16.0)
+    # On this vision tower a frame costs exactly pixels / (patch_size * spatial_merge)^2
+    # = pixels / (16*2)^2 = pixels / 1024 tokens. So max_pixels IS a token budget:
+    #   200704 -> 196 tok/frame, which is 448x448 -- what InternVL3-1B feeds today
+    #   524288 -> 512 tok/frame
+    #  1048576 -> 1024 tok/frame
+    #        0 -> native 1920x1080, ~2025 tok/frame
+    ap.add_argument("--max-pixels", type=int, nargs="+",
+                    default=[200704, 524288, 1048576, 0],
+                    help="token budget per frame x1024; 0 means native resolution")
     args = ap.parse_args()
 
     import torch
     from PIL import Image
     from transformers import AutoProcessor, AutoModelForImageTextToText
+
+    # --- work around an upstream bug in transformers 5.16.1 -------------------------
+    # quantizers/quantizer_finegrained_fp8.py:update_tp_plan does
+    #
+    #     impl = getattr(config, "_experts_implementation", None)
+    #     layer_overrides = FP8Experts._impl_tp_layer_overrides.get(impl)
+    #     ... {k: layer_overrides.get(v, v) for k, v in base_plan.items()}
+    #
+    # and `_impl_tp_layer_overrides` has exactly one key, 'deepgemm_megamoe'. A DENSE
+    # model has no `_experts_implementation`, so the lookup returns None and the
+    # comprehension raises AttributeError -- but only after the branch above has filled
+    # base_model_tp_plan, which it does for anything whose config class name contains
+    # "Qwen3". Qwen3_5Config does. So every dense Qwen3-family FP8 checkpoint hits this.
+    #
+    # Registering None -> {} makes the rewrite an identity for the dense path and leaves
+    # the real 'deepgemm_megamoe' path untouched. Patched here rather than in
+    # site-packages because a `uv pip install --upgrade` reverts that silently --
+    # see memory/lelab-local-patches for what that costs.
+    #
+    # None of this affects the measurement: device_map="auto" is PIPELINE parallel, so
+    # the tensor-parallel plan is never consulted.
+    from transformers.integrations.finegrained_fp8 import FP8Experts
+    FP8Experts._impl_tp_layer_overrides.setdefault(None, {})
 
     frames = pick_frames(args.frame_dir, N_FRAMES)
     print(f"frames    : {', '.join(f.name for f in frames)}")
@@ -92,48 +124,74 @@ def main() -> int:
 
     t0 = time.time()
     proc = AutoProcessor.from_pretrained(args.model)
+    # dtype="auto", not bfloat16: this checkpoint carries a quantization_config
+    # (quant_method fp8, e4m3, dynamic activations) and forcing a dtype fights it.
+    # Qwen leaves the vision blocks out of the FP8 conversion, so they load at their
+    # stored precision either way.
     model = AutoModelForImageTextToText.from_pretrained(
-        args.model, dtype=torch.bfloat16, device_map="auto", max_memory=max_memory)
+        args.model, dtype="auto", device_map="auto", max_memory=max_memory)
     model.eval()
     print(f"load      : {time.time() - t0:.1f} s")
     print(f"placement : {sorted(set(str(d) for d in model.hf_device_map.values()))}\n")
 
-    messages = [{"role": "user", "content":
-                 [{"type": "image", "image": im} for im in imgs]
-                 + [{"type": "text", "text": INSTRUCTION}]}]
-    inputs = proc.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=True,
-        return_dict=True, return_tensors="pt").to(model.device)
+    def measure(max_pixels: int | None):
+        """One resolution: build the 4-frame prompt, time prefill and full generation.
 
-    n_tok = int(inputs["input_ids"].shape[-1])
-    print(f"prompt    : {n_tok} tokens for {N_FRAMES} frames + instruction")
-    print(f"            ~{n_tok // N_FRAMES} tokens per frame\n")
+        Resolution is the one lever that is independent of which FP8 kernel path the
+        placement happens to select, so it is swept rather than fixed. The processor
+        resizes to fit `max_pixels`; None means the frames' native 1920x1080.
+        """
+        p_kwargs = {} if max_pixels is None else {"max_pixels": max_pixels}
+        pr = AutoProcessor.from_pretrained(args.model, **p_kwargs)
+        messages = [{"role": "user", "content":
+                     [{"type": "image", "image": im} for im in imgs]
+                     + [{"type": "text", "text": INSTRUCTION}]}]
+        inputs = pr.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt").to(model.device)
+        n = int(inputs["input_ids"].shape[-1])
 
-    def timed(max_new: int) -> float:
-        torch.cuda.synchronize()
-        t = time.time()
-        with torch.no_grad():
-            model.generate(**inputs, max_new_tokens=max_new, do_sample=False)
-        torch.cuda.synchronize()
-        return time.time() - t
+        def timed(max_new: int) -> float:
+            torch.cuda.synchronize()
+            t = time.time()
+            with torch.no_grad():
+                model.generate(**inputs, max_new_tokens=max_new, do_sample=False)
+            torch.cuda.synchronize()
+            return time.time() - t
 
-    print("warm-up...")
-    timed(4)
+        timed(4)                                     # warm-up at this shape
+        pre = statistics.fmean(timed(1) for _ in range(args.repeats))
+        ful = statistics.fmean(timed(args.max_new_tokens) for _ in range(args.repeats))
+        return n, pre, ful
 
-    prefill = [timed(1) for _ in range(args.repeats)]
-    full = [timed(args.max_new_tokens) for _ in range(args.repeats)]
-    p, f = statistics.fmean(prefill), statistics.fmean(full)
-    decode = f - p
+    rows = []
+    for mp in args.max_pixels:
+        mp = mp or None
+        label = "native 1920x1080" if mp is None else f"{mp // 1024} tok/frame"
+        print(f"measuring {label} ...", flush=True)
+        try:
+            rows.append((label,) + measure(mp))
+        except Exception as exc:                     # one bad shape must not kill the sweep
+            print(f"  SKIPPED {label}: {type(exc).__name__}: {exc}", flush=True)
+    if not rows:
+        print("no resolution measured successfully", file=sys.stderr)
+        return 1
 
     print()
-    print("=" * 74)
-    print(f"{'PREFILL (4 frames -> first token)':44}{p:8.2f} s   "
-          f"({min(prefill):.2f}-{max(prefill):.2f})")
-    print(f"{'DECODE  (' + str(args.max_new_tokens - 1) + ' more tokens)':44}"
-          f"{decode:8.2f} s   ({(args.max_new_tokens - 1) / decode:.0f} tok/s)")
-    print(f"{'TOTAL   (one TIC-VLA call)':44}{f:8.2f} s   "
-          f"({min(full):.2f}-{max(full):.2f})")
-    print("=" * 74)
+    print("=" * 78)
+    print(f"{'resolution':22}{'tokens':>9}{'/frame':>8}{'prefill':>10}"
+          f"{'decode':>10}{'tok/s':>8}{'TOTAL':>9}")
+    for label, n, pre, ful in rows:
+        dec = ful - pre
+        print(f"{label:22}{n:>9}{n // N_FRAMES:>8}{pre:>9.2f}s{dec:>9.2f}s"
+              f"{(args.max_new_tokens - 1) / dec:>8.0f}{ful:>8.2f}s")
+    print("=" * 78)
+    # Verdict on the CHEAPEST configuration measured: the question is whether 27B can be
+    # made to fit at all, so the fastest legitimate setting is the one that answers it.
+    best = min(rows, key=lambda r: r[3])
+    label, p, f = best[0], best[2], best[3]
+    decode = f - p
+    print(f"verdict below is for the cheapest setting measured: {label}")
 
     print(f"\nbudget: {ACTION_HORIZON_S:.1f} s of SIM time; the sim runs ~0.5x realtime so "
           f"the\n        wall-clock allowance is roughly {2 * ACTION_HORIZON_S:.1f} s "

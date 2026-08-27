@@ -127,8 +127,15 @@ def main() -> int:
     imgs = [Image.open(f).convert("RGB") for f in frames]
     print(f"resolution: {imgs[0].size[0]}x{imgs[0].size[1]}")
 
-    max_memory = {0: f"{args.gpu0_gib}GiB", 1: f"{args.gpu1_gib}GiB"}
-    print(f"max_memory: {max_memory}\n")
+    # A zero budget must DROP the device, not cap it at 0GiB: the point of a single-GPU
+    # run is that the model cannot span two cards, and spanning is exactly what changes
+    # which FP8 kernels transformers selects (DeepGEMM's cached kernels are bound to one
+    # CUDA context, so a split silently falls back to Triton/grouped_mm). Leaving the key
+    # in with "0GiB" would let accelerate reintroduce the very penalty being measured.
+    max_memory = {i: f"{g}GiB" for i, g in ((0, args.gpu0_gib), (1, args.gpu1_gib))
+                  if g > 0 and i < torch.cuda.device_count()}
+    print(f"max_memory: {max_memory}"
+          + ("   [single GPU -- DeepGEMM path]" if len(max_memory) == 1 else "") + "\n")
 
     t0 = time.time()
     proc = AutoProcessor.from_pretrained(args.model)

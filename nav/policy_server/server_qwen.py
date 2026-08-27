@@ -192,6 +192,45 @@ Reply with the waypoints only, inside answer tags, and nothing else:
 <answer>(x, y), (x, y), (x, y), (x, y), (x, y), (x, y)</answer>
 """
 
+# The output format the FLIP_Y measurement points at. Under `pairs` the model must write a
+# signed lateral offset and it will not write a positive one -- not for any wording, and
+# not for either sign convention. `arc` removes the signed number from the model's job
+# entirely: it writes a DIRECTION WORD, an UNSIGNED magnitude in degrees, and the six
+# distances it already writes correctly. We apply the sign and build the curve.
+#
+# The split is deliberate about which channel it touches. Speed is the part that measured
+# GOOD -- Q-VLA braked to 0.01 m/s at the same call TIC-VLA braked to 0.18 -- so the six
+# cumulative path lengths stay exactly as expressive as the six x values were. Only the
+# lateral channel changes representation. If left turns appear under `arc` and nothing
+# else moves, the cause is isolated to the signed-offset encoding and nothing else.
+_ARC_FORMAT = os.environ.get("QVLA_FORMAT", "pairs").lower()
+if _ARC_FORMAT not in ("pairs", "arc"):
+    # Loudly, not by falling back. A typo here would silently run the format we already
+    # know is one-sided and label the result as the new one -- an hour of GPU time spent
+    # re-measuring a known negative.
+    raise SystemExit(f"QVLA_FORMAT must be 'pairs' or 'arc', got {_ARC_FORMAT!r}")
+
+_TASK_ARC = """
+The four images are consecutive frames from your forward camera, oldest first, about 3 seconds apart. The last one is NOW.
+
+Your camera: mounted {cam_h:.2f} m above the floor, pointing straight ahead and level, horizontal field of view {cam_fov:.0f} degrees. The horizontal centre of the image is straight ahead; the left edge is about {half_fov:.0f} degrees to your left, the right edge {half_fov:.0f} degrees to your right.
+
+Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed is normally about 0.7 m/s and never above 1.5 m/s, so over the next 3 seconds you will cover roughly 2 metres unless you are slowing down or stopping.
+
+Describe the path you should drive over the next 3 seconds, as a turn plus a distance profile.
+
+First the turn, as one word and one number:
+- LEFT, RIGHT, or STRAIGHT.
+- Then how many degrees you will have turned by the end of the 3 seconds, as a POSITIVE number from 0 to 90. Never write a minus sign. The word carries the direction; the number is only the size. A gentle course correction is 5 to 15 degrees; a corridor turn is 45 to 90. Write STRAIGHT 0 if you are not turning.
+
+Then the distance, as {n} numbers: how far you will have travelled ALONG THE PATH at {times} seconds from now, in metres, cumulative from where you are right now. These must never decrease. Slow down by making the gaps between them shrink.
+- Do not drive into walls, furniture, people or shelving. Turn away from obstacles and leave clearance.
+- If you have arrived at the target the instruction names, STOP: write STRAIGHT 0 and distances that barely change, for example 0.05 repeated. Stopping at the right place is part of the task, not the end of it. Do not drive past the target.
+
+Reply with the turn and the distances only, inside answer tags, and nothing else:
+<answer>LEFT 30 | 0.35, 0.70, 1.05, 1.40, 1.75, 2.10</answer>
+"""
+
 _THINK_TASK = (
     "\nBefore the answer, give at most two short sentences of reasoning inside "
     "<think></think> tags: what you see, and where you are going.\n"
@@ -201,7 +240,10 @@ _THINK_TASK = (
 # is free to choose is already inside a coordinate. See `_generate` for why the polite
 # version of this instruction is not enough. It is prepended back onto the decoded text
 # before parsing -- without that the leading "(" is missing and the first pair is lost.
-ANSWER_PREFIX = "<answer>("
+#
+# `arc` stops one token earlier. The prefill has to leave the direction word free -- that
+# word IS the prediction -- so it can only force the tag, not the first character inside it.
+ANSWER_PREFIX = "<answer>" if _ARC_FORMAT == "arc" else "<answer>("
 
 
 def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> list[dict]:
@@ -213,12 +255,18 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
         # line back when the TIC-VLA server did it.
         prev = "From 0.0s to current timestamp time is 0.0s. No waypoints available."
 
-    task = _TASK.format(
-        cam_h=0.346, cam_fov=90.1, half_fov=45.0,
-        times=", ".join(f"{t:.1f}" for t in CTRL_TIMES), n=len(CTRL_TIMES),
-        pos_side="RIGHT" if FLIP_Y else "LEFT",
-        neg_side="left" if FLIP_Y else "right",
-    )
+    if _ARC_FORMAT == "arc":
+        task = _TASK_ARC.format(
+            cam_h=0.346, cam_fov=90.1, half_fov=45.0,
+            times=", ".join(f"{t:.1f}" for t in CTRL_TIMES), n=len(CTRL_TIMES),
+        )
+    else:
+        task = _TASK.format(
+            cam_h=0.346, cam_fov=90.1, half_fov=45.0,
+            times=", ".join(f"{t:.1f}" for t in CTRL_TIMES), n=len(CTRL_TIMES),
+            pos_side="RIGHT" if FLIP_Y else "LEFT",
+            neg_side="left" if FLIP_Y else "right",
+        )
     if think:
         task += _THINK_TASK
 
@@ -240,6 +288,51 @@ _NUM = r"-?\d+(?:\.\d+)?"
 # so a model that emits one out of habit is not wrong, just verbose. Rejecting those
 # would throw away a perfectly good plan over a number that carries no information.
 _PAIR = re.compile(rf"\(\s*({_NUM})\s*,\s*({_NUM})\s*(?:,\s*{_NUM}\s*)?\)")
+
+
+_ARC_HEAD = re.compile(r"\b(LEFT|RIGHT|STRAIGHT)\b[^0-9\-]*(\d+(?:\.\d+)?)?", re.I)
+
+
+def parse_arc(text: str) -> np.ndarray | None:
+    """Pull `WORD degrees | d1, d2, ...` out of a generation. Returns (K, 2) or None.
+
+    The whole point of this format is that the model never writes a signed number, so the
+    sign is applied here, once, from the direction word. Everything downstream is FLU and
+    stays FLU: left is +y, which is the convention the model was measured to already hold.
+
+    The curve is a constant-curvature arc, which is the honest reading of "you will have
+    turned D degrees by the end". Two numbers cannot describe more than that, and pretending
+    otherwise -- easing the turn in, say -- would be us inventing a manoeuvre the model did
+    not write, the same failure mode PCHIP was chosen over a natural cubic to avoid.
+    """
+    m = re.search(r"<answer>(.*?)</answer>", text, re.S)
+    body = m.group(1) if m else text
+
+    h = _ARC_HEAD.search(body)
+    if h is None:
+        return None
+    word = h.group(1).upper()
+    deg = float(h.group(2)) if h.group(2) else 0.0
+    # Unsigned by construction: a minus sign cannot survive the regex, and clamping at 90
+    # matches the prompt. 90 deg in 3 s is already 30 deg/s -- past that is a misread.
+    deg = min(abs(deg), 90.0)
+
+    # Distances come from AFTER the header, so the degree number can never be read as the
+    # first distance. Without that slice, "LEFT 30 | 0.35, ..." parses 30 as a 30 m step.
+    dists = [float(v) for v in re.findall(_NUM, body[h.end():])]
+    if len(dists) < 2:
+        return None
+    s = np.maximum.accumulate(np.clip(np.array(dists[:len(CTRL_TIMES)]), 0.0, None))
+    if s[-1] > 6.0:                       # 3 s at the 1.5 m/s cap is 4.5 m
+        return None
+
+    total = float(s[-1])
+    psi = np.deg2rad(deg) * (1.0 if word == "LEFT" else -1.0 if word == "RIGHT" else 0.0)
+    if total < 1e-6 or abs(psi) < 1e-6:
+        return np.stack([s, np.zeros_like(s)], axis=-1)   # straight, and the kappa->0 limit
+    kappa = psi / total                   # constant curvature: heading(s) = kappa * s
+    return np.stack([np.sin(kappa * s) / kappa,
+                     (1.0 - np.cos(kappa * s)) / kappa], axis=-1)
 
 
 def parse_control_points(text: str) -> np.ndarray | None:
@@ -394,7 +487,7 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
     """
     try:
         text = _generate(messages, image_paths, max_new)
-        ctrl = parse_control_points(text)
+        ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
         with _lock:
             _state["generations"] += 1
             _state["reasoning"] = text
@@ -424,6 +517,9 @@ def health() -> dict:
             "ok": _state["model"] is not None,
             "model": MODEL_PATH,
             "mode": "qvla-direct (no action expert)",
+            # Reported so a probe can never misattribute a result to the wrong format.
+            # The two are not comparable: `arc` cannot express an S-curve at all.
+            "format": _ARC_FORMAT,
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],
             "generations": _state["generations"],

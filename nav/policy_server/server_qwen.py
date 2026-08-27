@@ -133,6 +133,35 @@ class PredictResponse(BaseModel):
 # assumes. What is added below is only what a model that was never fine-tuned on this
 # task cannot know.
 
+# Ask for the plan in a y-is-RIGHT-positive frame, then negate y on the way back in.
+#
+# This exists because of a measured, one-sided failure and not because either convention
+# is nicer. Under the natural FLU wording (y positive = left), Qwen3.8-27B writes a clean
+# right-turn arc when told "Turn right." -- (0.32, -0.01), (0.64, -0.03), (0.96, -0.06),
+# ... a proper parabola -- and writes literal 0.00 six times for "Turn left.", in five
+# different scenes, and again when told "y must be POSITIVE and grow along the list", and
+# again when told "answer with the exact mirror image of a right turn". It never emits a
+# positive y at all. That is not a comprehension failure and not obstacle avoidance; the
+# geometry it produces for the direction it CAN express is correct.
+#
+# The hypothesis it tested was narrow: the model can only put a MINUS sign in that slot,
+# so the steerable side should follow the wording and flipping should buy left turns at
+# the cost of right ones.
+#
+# MEASURED, AND THE ANSWER IS NO -- keep this at 0. Flipping does not move the dead side,
+# it kills the live one: with y-positive-is-RIGHT, "Turn right." goes to 0.00 as well, in
+# all five scenes. Both directions dead. So the constraint is not "only minus is
+# writable". What fits both runs is that the model holds its own FLU convention (right is
+# negative y, which is correct) and will only produce a nonzero y when the prompt AGREES
+# with it; contradict it and it stops steering entirely rather than following the wording.
+#
+# The consequence is the useful part: a sign convention is not the bug, so no rewording of
+# it is the fix. Getting a left turn out of this model requires an output format that does
+# not ask it to emit a signed lateral offset at all -- a direction word plus an unsigned
+# magnitude, say. Kept, not deleted, so the next person does not re-derive it: this is
+# 20 generations of evidence for one line of config.
+FLIP_Y = os.environ.get("QVLA_FLIP_Y", "0") == "1"
+
 _SYSTEM = (
     "You are a {robot_type} assigned to perform navigation tasks.\n"
     "You are provided with a video consisting of visual observations, including "
@@ -153,9 +182,9 @@ Your camera: mounted {cam_h:.2f} m above the floor, pointing straight ahead and 
 Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed is normally about 0.7 m/s and never above 1.5 m/s, so over the next 3 seconds you will cover roughly 2 metres unless you are slowing down or stopping.
 
 Predict where you should be at {times} seconds from now, as {n} waypoints (x, y):
-- x is metres FORWARD, positive; y is metres LEFT, positive.
+- x is metres FORWARD, positive; y is metres {pos_side}, positive.
 - Each waypoint is the CUMULATIVE offset from where you are right now, not from the previous waypoint. So x must increase along the list while you are still moving forward.
-- Steer by making y negative to go right and positive to go left. A gentle course correction is a few centimetres of y; a real turn is tens of centimetres.
+- Steer by making y negative to go {neg_side} and positive to go {pos_side}. A gentle course correction is a few centimetres of y; a real turn is tens of centimetres.
 - Do not drive into walls, furniture, people or shelving. Steer around obstacles and leave clearance.
 - If you have arrived at the target the instruction names, STOP: return waypoints that barely change, for example (0.05, 0.00) repeated. Stopping at the right place is part of the task, not the end of it. Do not drive past the target.
 
@@ -187,6 +216,8 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
     task = _TASK.format(
         cam_h=0.346, cam_fov=90.1, half_fov=45.0,
         times=", ".join(f"{t:.1f}" for t in CTRL_TIMES), n=len(CTRL_TIMES),
+        pos_side="RIGHT" if FLIP_Y else "LEFT",
+        neg_side="left" if FLIP_Y else "right",
     )
     if think:
         task += _THINK_TASK
@@ -226,6 +257,11 @@ def parse_control_points(text: str) -> np.ndarray | None:
     if len(pairs) < 2:
         return None
     pts = np.array([[float(a), float(b)] for a, b in pairs], dtype=np.float64)
+    if FLIP_Y:
+        # The model was asked in a y-is-right-positive frame; everything downstream of
+        # here -- densify, reframe, the controllers, the traces -- is FLU. Undo it once,
+        # here, so the convention cannot leak past this function. See FLIP_Y above.
+        pts[:, 1] = -pts[:, 1]
 
     # A plan that goes backwards is a misread, not a manoeuvre: this base does not
     # reverse and no training trajectory does either. Clamp rather than reject, so one

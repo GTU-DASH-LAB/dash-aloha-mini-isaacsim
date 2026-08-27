@@ -801,6 +801,40 @@ affect the *rest* of this repo:
   error.** Fixed in `nav/policy_server/qwen_load.py`, which everything in this repo loads
   Qwen through — at runtime, never in site-packages. Note it does not affect timing (same
   shapes, same FLOPs), so latency measured before the fix stands and quality did not.
+- **Q-VLA-direct (VLM writes the waypoints, no action expert): the plan is well-formed,
+  the SPEED is real, and the STEERING is one-sided and unfixable by prompting.** Measured
+  against TIC-VLA on 8 moments of `office_hallway_turn`, identical frames/history/state,
+  every call its own generation (`compare_qvla_ticvla.py`):
+
+  | | asked heading @1 s | implied speed | vs bearing to goal |
+  |---|---|---|---|
+  | TIC-VLA (action expert) | −46.8° … +5.9°, tracks the turn | 0.62 m/s (0.18–0.86) | 20.9° mean |
+  | Q-VLA-direct | **+0.00° in 8 of 8** | 0.56 m/s (0.01–0.70) | 29.1° mean |
+
+  Format and parsing are not the problem: 36 generations, **0 parse failures, 0 errors**.
+  Speed is genuinely read off the image — Q-VLA braked to 0.01 m/s at the same call where
+  TIC-VLA braked to 0.18. What is flat is the lateral channel, and the shape of that
+  failure is specific: told "Turn right." the model writes a textbook arc —
+  `(0.32, -0.01), (0.64, -0.03), (0.96, -0.06), (1.28, -0.10), (1.60, -0.15), (1.92, -0.21)`,
+  a proper parabola — and told "Turn left." it writes literal `0.00` six times. **It never
+  emits a positive y.** Ruled out, each by direct probe:
+  - *Not comprehension.* "y must be POSITIVE and grow along the list" → `0.00`. "Answer
+    with the exact mirror image of a right turn, y of the opposite sign" → `0.00`.
+  - *Not obstacle avoidance.* Dead in **5 of 5** different scenes across the episode
+    (`probe_steering_authority.py` exists to make that distinction, because one frame
+    cannot: a side dead *everywhere* is an encoding bug, a side dead in *some* scenes is
+    a wall and is correct behaviour).
+  - *Not the sign convention.* Flipping the prompt to y-positive-is-RIGHT (`QVLA_FLIP_Y=1`)
+    does not move the dead side — it kills the live one. Both directions go to `0.00`.
+    So the model holds its own FLU convention and will only steer when the prompt agrees
+    with it; contradicted, it stops steering rather than following the wording.
+
+  The conclusion for the architecture: **the action expert is doing real work that this
+  27B cannot do in text as prompted**, and the gap is not prose quality. Any fix has to
+  stop asking the model for a signed lateral offset inside a tuple — a direction word plus
+  an unsigned magnitude, with the arc built our side. Note what this does *not* say: the
+  slow/fast split is still worth having on speed alone, and Q-VLA's braking was as good as
+  the action expert's.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

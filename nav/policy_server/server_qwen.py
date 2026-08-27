@@ -82,10 +82,11 @@ app = FastAPI(title="Q-VLA direct policy server")
 
 _state: dict = {
     "model": None, "proc": None, "predictions": 0, "generations": 0,
-    "parse_failures": 0, "empty_plans": 0,
+    "parse_failures": 0, "empty_plans": 0, "gen_errors": 0,
     # The plan currently in force, in the body frame of the moment generation STARTED.
     "plan": None, "plan_gen_step": None, "reasoning": None,
     "gen_thread": None, "gen_step": None,
+    "think": os.environ.get("QVLA_THINK", "0") == "1",
 }
 _lock = threading.Lock()
 
@@ -166,6 +167,12 @@ _THINK_TASK = (
     "\nBefore the answer, give at most two short sentences of reasoning inside "
     "<think></think> tags: what you see, and where you are going.\n"
 )
+
+# Written into the assistant's turn before generation starts, so the first token the model
+# is free to choose is already inside a coordinate. See `_generate` for why the polite
+# version of this instruction is not enough. It is prepended back onto the decoded text
+# before parsing -- without that the leading "(" is missing and the first pair is lost.
+ANSWER_PREFIX = "<answer>("
 
 
 def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> list[dict]:
@@ -275,67 +282,74 @@ def reframe(plan: np.ndarray, dx: float, dy: float, dyaw: float,
 def _load_model() -> None:
     if _state["model"] is not None:
         return
-    from transformers import AutoModelForImageTextToText, AutoProcessor
-
-    # Upstream transformers 5.16.1 bug, hit by every dense Qwen3-family FP8 checkpoint:
-    # update_tp_plan looks up `_impl_tp_layer_overrides[None]` for a model with no
-    # experts and gets None back, then calls .get on it. Registering the identity keeps
-    # the real 'deepgemm_megamoe' path untouched. Patched here rather than in
-    # site-packages, which a `uv pip install --upgrade` reverts silently.
-    try:
-        from transformers.integrations.finegrained_fp8 import FP8Experts
-        FP8Experts._impl_tp_layer_overrides.setdefault(None, {})
-    except ImportError:
-        pass
+    from qwen_load import load_qwen
 
     t0 = time.time()
     print(f"[qvla-server] loading {MODEL_PATH}", flush=True)
-    proc = AutoProcessor.from_pretrained(MODEL_PATH, max_pixels=MAX_PIXELS)
-    # QVLA_MAX_MEMORY="0:19,1:22" caps per device. Without a cap, device_map="auto"
-    # takes whatever is free at load time and will happily crowd out a neighbour --
-    # Isaac Sim holds ~25.4 GiB of GPU0 during a benchmark run. A device given 0 is
-    # DROPPED rather than capped at zero, because leaving it in the map lets accelerate
-    # spill onto it and silently turn a single-GPU run into a split one.
+    # QVLA_MAX_MEMORY="0:19,1:22" caps per device. Without a cap, device_map="auto" takes
+    # whatever is free at load time and will crowd out a neighbour -- Isaac Sim holds
+    # ~25.4 GiB of GPU0 during a benchmark run.
     mm = os.environ.get("QVLA_MAX_MEMORY", "").strip()
-    max_memory = None
-    if mm:
-        parsed = {int(k): float(v) for k, v in
-                  (kv.split(":") for kv in mm.split(",") if kv)}
-        max_memory = {i: f"{g}GiB" for i, g in parsed.items()
-                      if g > 0 and i < torch.cuda.device_count()}
-        print(f"[qvla-server] max_memory={max_memory}", flush=True)
-    model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_PATH, dtype="auto", device_map="auto", max_memory=max_memory)
-    model.eval()
+    max_memory = ({int(k): float(v) for k, v in
+                   (kv.split(":") for kv in mm.split(",") if kv)} if mm else None)
+    # load_qwen carries the two fixes without which this checkpoint is either unloadable
+    # or silently broken -- see qwen_load.py. The second one matters here specifically:
+    # a model whose gate_proj lost its FP8 scale still runs at full speed and emits
+    # gibberish, which a navigation benchmark would score as "the policy drove badly".
+    proc, model = load_qwen(MODEL_PATH, max_memory=max_memory, max_pixels=MAX_PIXELS)
     _state["proc"], _state["model"] = proc, model
-    devs = sorted({str(d) for d in model.hf_device_map.values()})
-    print(f"[qvla-server] ready in {time.time() - t0:.1f}s on {devs}", flush=True)
-    if len(devs) > 1:
-        # Not cosmetic: transformers routes FP8 layers off DeepGEMM onto Triton whenever
-        # a model spans devices, because DeepGEMM's cached kernels are bound to one CUDA
-        # context. Measured 16 tok/s split vs the single-card figure this is trying to
-        # get. A benchmark run on a split model measures the placement.
-        print("[qvla-server] WARNING: model spans multiple devices -- decode will be on "
-              "the slow kernel path and timings are not comparable to single-GPU runs",
-              flush=True)
+    print(f"[qvla-server] ready in {time.time() - t0:.1f}s", flush=True)
 
 
-def _generate(messages: list[dict], max_new: int) -> str:
+def _generate(messages: list[dict], image_paths: list[str], max_new: int) -> str:
+    """Generate, with the answer's opening bracket already written for the model.
+
+    Asking politely for "the waypoints only" does not work on a model that was never
+    fine-tuned on this format: it complies with the *format* and still prefaces it with
+    a paragraph of reasoning, which costs decode -- the entire latency budget -- and,
+    worse, gives the parser numbers to find that were never meant as waypoints.
+
+    Putting `<answer>(` at the end of the prompt makes the point structurally instead of
+    rhetorically. The next token cannot be prose; it has to be a digit. Measured against
+    the polite version: the reply goes from a paragraph plus coordinates to coordinates
+    alone, and there is no path by which a stray number from the reasoning reaches the
+    plan, because there is no reasoning.
+
+    `enable_thinking=False` is separate and also needed: Qwen3.5 is a thinking model and
+    its template turns reasoning on by default -- a stock checkpoint answers "what is the
+    capital of France" with a <think> block. QVLA_THINK=1 opts back in, in the two-sentence
+    form the prompt asks for, so the value of reasoning here can be measured rather than
+    assumed.
+    """
+    from PIL import Image
+
     proc, model = _state["proc"], _state["model"]
-    inputs = proc.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=True,
-        return_dict=True, return_tensors="pt").to(model.device)
+    kwargs = {} if _state["think"] else {"enable_thinking": False}
+    try:
+        text = proc.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False, **kwargs)
+    except TypeError:
+        # Older processors do not take the flag; losing the saving beats not running.
+        text = proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+
+    # With QVLA_THINK the model needs room to open its own <think> block first, so the
+    # answer cannot be forced from the very first token.
+    prefix = "" if _state["think"] else ANSWER_PREFIX
+    imgs = [Image.open(p).convert("RGB") for p in image_paths]
+    inputs = proc(text=[text + prefix], images=imgs, return_tensors="pt").to(model.device)
     with torch.no_grad():
         # Greedy. TIC-VLA samples at temperature 0.7, but sampling buys nothing when the
         # output is a list of coordinates, and nav/README.md already records that run-to-
         # run variance on this stack comes from async cache timing rather than sampling.
         # One less source of noise in a benchmark that is scored on 3 repeats.
         out = model.generate(**inputs, max_new_tokens=max_new, do_sample=False)
-    return proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
-                             skip_special_tokens=True)[0]
+    gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
+                            skip_special_tokens=True)[0]
+    return prefix + gen
 
 
-def _generation_worker(messages: list[dict], step: int | None, max_new: int) -> None:
+def _generation_worker(messages: list[dict], image_paths: list[str],
+                       step: int | None, max_new: int) -> None:
     """Runs on a background thread so the control loop never waits on decode.
 
     This is the same two-rate idea as TIC-VLA's `predict_async`, one level up: there the
@@ -343,7 +357,7 @@ def _generation_worker(messages: list[dict], step: int | None, max_new: int) -> 
     A 3 s plan against a ~2-3 s generation leaves the loop a plan at all times.
     """
     try:
-        text = _generate(messages, max_new)
+        text = _generate(messages, image_paths, max_new)
         ctrl = parse_control_points(text)
         with _lock:
             _state["generations"] += 1
@@ -354,8 +368,13 @@ def _generation_worker(messages: list[dict], step: int | None, max_new: int) -> 
                 _state["plan"] = densify(ctrl)
                 _state["plan_gen_step"] = step
     except Exception as exc:                       # never let a worker kill the server
+        # Counted apart from parse_failures on purpose. Those two look identical from the
+        # outside -- no plan came back -- and have nothing in common: a parse failure is
+        # the model writing something unusable, this is the stack being broken. Merging
+        # them once read as "the prompt is bad" when the real answer was HF_HUB_OFFLINE=1
+        # blocking an FP8 kernel download at the first forward pass.
         with _lock:
-            _state["parse_failures"] += 1
+            _state["gen_errors"] += 1
             _state["reasoning"] = f"[generation failed] {type(exc).__name__}: {exc}"
     finally:
         with _lock:
@@ -375,7 +394,10 @@ def health() -> dict:
             # Worth reading after every run. A high failure rate means the benchmark
             # scored the fallback plan, not the model.
             "parse_failures": _state["parse_failures"],
+            # Not the same thing: this one means the stack broke, not the model.
+            "gen_errors": _state["gen_errors"],
             "empty_plans": _state["empty_plans"],
+            "last_reasoning": _state["reasoning"],
             "has_plan": _state["plan"] is not None,
         }
 
@@ -398,7 +420,7 @@ def predict(req: PredictRequest) -> PredictResponse:
             detail=f"image paths not found (is the scratch dir shared?): {missing[:3]}")
 
     t0 = time.perf_counter()
-    think = os.environ.get("QVLA_THINK", "0") == "1"
+    think = _state["think"]
     max_new = int(os.environ.get("QVLA_MAX_NEW_TOKENS", 220 if think else 110))
     messages = build_messages(req, req.image_paths, think)
 
@@ -408,8 +430,9 @@ def predict(req: PredictRequest) -> PredictResponse:
         have_plan = _state["plan"] is not None
 
     if not busy:
-        th = threading.Thread(target=_generation_worker,
-                              args=(messages, req.current_step, max_new), daemon=True)
+        th = threading.Thread(
+            target=_generation_worker,
+            args=(messages, list(req.image_paths), req.current_step, max_new), daemon=True)
         with _lock:
             _state["gen_thread"] = th
         started_step = req.current_step
@@ -458,7 +481,17 @@ def _startup() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
 
-    uvicorn.run(app, host=os.environ.get("NAV_POLICY_HOST", "127.0.0.1"),
-                port=int(os.environ.get("NAV_POLICY_PORT", "8765")), log_level="info")
+    # argparse rather than reading the env directly, because this server is normally run
+    # ALONGSIDE server.py and the whole point of the second process is a second port.
+    # Silently ignoring an unrecognised --port meant loading 30 GB of weights for three
+    # minutes and then failing to bind on top of the TIC-VLA server. An unknown argument
+    # must be an error here, not a shrug.
+    ap = argparse.ArgumentParser(description="Q-VLA-direct policy server")
+    ap.add_argument("--host", default=os.environ.get("NAV_POLICY_HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("NAV_POLICY_PORT", "8765")))
+    a = ap.parse_args()
+    uvicorn.run(app, host=a.host, port=a.port, log_level="info")

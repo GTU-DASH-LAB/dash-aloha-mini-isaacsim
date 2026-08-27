@@ -38,6 +38,7 @@ import json
 import math
 import statistics
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "policy_server"))
@@ -63,27 +64,31 @@ def body_delta(p_from, yaw_from, p_to) -> tuple[float, float]:
     return c * dx + s * dy, -s * dx + c * dy
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--run", required=True, help="an EpisodeResult json from nav/results/")
-    ap.add_argument("--frame-base", type=int, required=True,
-                    help="frame index of this run's FIRST policy call (see module docstring)")
-    ap.add_argument("--plan-index", type=int, required=True,
-                    help="which policy call to replay")
-    ap.add_argument("--frame-dir", default="/tmp/alohamini-nav-frames")
-    ap.add_argument("--instructions", nargs="*", default=None)
-    ap.add_argument("--repeats", type=int, default=1,
-                    help="predict() is effectively greedy; >1 only to re-confirm that")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
-    args = ap.parse_args()
+@dataclass
+class Moment:
+    """One policy call from a finished run, rebuilt well enough to re-ask it."""
+    index: int
+    t: float
+    frames: list[Path]
+    prev_text: str
+    robot_state: list[float]
+    stale: float
+    asked_deg: float          # what the run's policy actually answered here
+    goal_rel_deg: float       # scoring only, never sent to a policy
 
-    run = json.loads(Path(args.run).read_text())
+
+def reconstruct(run: dict, i: int, frame_base: int, frame_dir: str | Path) -> Moment:
+    """Rebuild call `i` of `run` as the inputs the policy saw.
+
+    Shared with `compare_qvla_ticvla.py` on purpose: two tools reconstructing the same
+    state from the same trace by two separate copies of this arithmetic would eventually
+    disagree, and the disagreement would be read as a difference between the models.
+
+    Raises FileNotFoundError when the frames are gone -- a later run overwrites the
+    scratch dir, and substituting whatever is on disk produces a plausible number for a
+    state that never happened.
+    """
     trace, plans = run["trace"], run["plans"]
-    i = args.plan_index
-    if not 0 < i < len(plans):
-        print(f"ERROR: --plan-index must be in 1..{len(plans) - 1}", file=sys.stderr)
-        return 1
     t_now, asked, _reach, goal_rel = plans[i][:4]
     stale = plans[i][6] if len(plans[i]) > 6 and plans[i][6] is not None else 0.0
 
@@ -91,16 +96,14 @@ def main() -> int:
     # same moment in both. A 3 s frame step is 3 / (t_now / i) plans.
     per_plan_s = t_now / i
     step = max(1, round(3.0 / per_plan_s))
-    frame_dir = Path(args.frame_dir)
+    frame_dir = Path(frame_dir)
     idxs = [i - 3 * step, i - 2 * step, i - step, i]
-    frames = [frame_dir / f"nav_{args.frame_base + k:06d}.jpg" for k in idxs if k >= 0]
+    frames = [frame_dir / f"nav_{frame_base + k:06d}.jpg" for k in idxs if k >= 0]
     missing = [f for f in frames if not f.is_file()]
     if missing:
-        # A later run overwrites the scratch dir. Guessing at substitutes would produce
-        # a plausible number for a state that never happened.
-        print(f"ERROR: {len(missing)} frame(s) gone, e.g. {missing[0]}.\n"
-              "       The scratch dir only holds the most recent run.", file=sys.stderr)
-        return 2
+        raise FileNotFoundError(
+            f"{len(missing)} frame(s) gone, e.g. {missing[0]}. "
+            "The scratch dir only holds the most recent run.")
 
     # previous_waypoints_text: one sample per 1.0 s of sim time, body frame at the start
     # of each second, first (0,0,0) filtered out -- WaypointHistory's own contract.
@@ -122,16 +125,59 @@ def main() -> int:
     omega = ((trace[i][2] - trace[i - 1][2] + math.pi) % (2 * math.pi) - math.pi) / per_plan_s
     back = max(0, i - int(round(stale / per_plan_s)))
     dx, dy = body_delta(trace[back], trace[back][2], trace[i])
-    robot_state = [vx, vy, 0.0, omega, dx, dy]
+
+    return Moment(index=i, t=t_now, frames=frames, prev_text=prev_text,
+                  robot_state=[vx, vy, 0.0, omega, dx, dy], stale=stale,
+                  asked_deg=asked, goal_rel_deg=goal_rel)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run", required=True, help="an EpisodeResult json from nav/results/")
+    ap.add_argument("--frame-base", type=int, required=True,
+                    help="frame index of this run's FIRST policy call (see module docstring)")
+    ap.add_argument("--plan-index", type=int, required=True,
+                    help="which policy call to replay")
+    ap.add_argument("--frame-dir", default="/tmp/alohamini-nav-frames")
+    ap.add_argument("--instructions", nargs="*", default=None)
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="predict() is effectively greedy; >1 only to re-confirm that")
+    ap.add_argument("--replay-staleness", action="store_true",
+                    help="send the run's own time_delay and dx,dy. Off by default: this "
+                         "tool resets before every call, so the plan it gets back was "
+                         "generated just now and is not stale. Sending the run's values "
+                         "anyway tells the server to compensate for motion that did not "
+                         "happen in the replay -- on the Q-VLA server that translates the "
+                         "whole plan backwards and drops the first waypoints.")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8765)
+    args = ap.parse_args()
+
+    run = json.loads(Path(args.run).read_text())
+    i = args.plan_index
+    if not 0 < i < len(run["plans"]):
+        print(f"ERROR: --plan-index must be in 1..{len(run['plans']) - 1}", file=sys.stderr)
+        return 1
+    try:
+        mom = reconstruct(run, i, args.frame_base, args.frame_dir)
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    frames, prev_text, robot_state = mom.frames, mom.prev_text, list(mom.robot_state)
+    stale = mom.stale
+    if not args.replay_staleness:
+        robot_state[4] = robot_state[5] = 0.0
+        stale = 0.0
+    vx, vy, _, omega, dx, dy = robot_state
 
     print(f"run          : {Path(args.run).name}")
-    print(f"replaying    : call {i} at t={t_now:.1f}s, frame {frames[-1].name} "
+    print(f"replaying    : call {i} at t={mom.t:.1f}s, frame {frames[-1].name} "
           f"(+{len(frames) - 1} history)")
-    print(f"the run asked: {asked:+.2f} deg   (goal was {goal_rel:+.1f} deg off the nose, "
-          f"scoring only -- never sent)")
+    print(f"the run asked: {mom.asked_deg:+.2f} deg   (goal was {mom.goal_rel_deg:+.1f} deg "
+          "off the nose, scoring only -- never sent)")
     print(f"robot_state  : vx={vx:+.2f} vy={vy:+.2f} omega={omega:+.2f} "
           f"dx={dx:+.2f} dy={dy:+.2f}   time_delay={stale:.2f}s")
-    print(f"history      : {len(parts)} waypoints\n")
+    print(f"history      : {prev_text.count('(')} waypoints\n")
 
     client = PolicyClient(args.host, args.port)
     info = client.wait_until_ready()

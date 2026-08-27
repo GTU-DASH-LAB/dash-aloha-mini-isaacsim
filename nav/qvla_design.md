@@ -132,26 +132,61 @@ fine-tuning help".
 against the *current* InternVL VLM. Without that, a bad Q-VLA number cannot be attributed
 to the swap rather than to our training loop.
 
-## Latency — the earlier estimate was built on a wrong premise
+## Latency — measured, and prefill was never the problem
 
-`qwen_swap_plan.md` argued a 27B would generate in 7–12 s against a 3.0 s action horizon,
-by scaling InternVL3-1B's 1.7 s by the weight-traffic ratio of a **dense** 27B. Qwen3.8-27B
-is not dense: 48 of its 64 layers are linear attention, which is the architecture whose
-whole point is cheap decode. Published single-card NVFP4 numbers for this model are in the
-~140 tok/s range. That estimate does not transfer and should not be quoted.
+This section previously predicted that **prefill** would be where the time went, on the
+reasoning that four 1920×1080 frames become ~8000 vision tokens before a single output
+token is emitted. That prediction was wrong, and so was `qwen_swap_plan.md`'s earlier
+7–12 s estimate (which scaled InternVL3-1B by the weight traffic of a *dense* 27B —
+Qwen3.8-27B is 48/64 linear attention, so that arithmetic does not transfer).
 
-What has *not* gone away is **prefill**. TIC-VLA passes four frames, and Qwen's vision
-tower at `patch_size 16` / `spatial_merge_size 2` turns a 1920×1080 frame into ~2000
-tokens, so ~8000 vision tokens per call before a single output token. That is where the
-time will go, and it is measurable rather than arguable: `check_vlm_swap.py --time-it`
-answers it once the weights are on disk, and it should be run **before** any training.
+Measured with `nav/tools/probe_qvla_latency.py` on `Qwen/Qwen3.8-27B-FP8`, four real nav
+frames, 3 repeats after a warm-up, generation length 134 tokens (see below):
 
-The budget is unchanged. One generation must stay well inside 3.0 s of *sim* time; the
-sim runs at ~0.5× realtime so the wall-clock allowance is roughly double, and
-`nav/README.md` records staleness already at 1.5–2.0 s with the 1B model.
+| resolution | prompt tokens | /frame | prefill | decode | TOTAL |
+|---|---|---|---|---|---|
+| 196 tok/frame (448×448, InternVL parity) | 796 | 199 | **0.47 s** | 8.17 s | **8.64 s** |
+| 512 tok/frame | 1996 | 499 | 0.99 s | 8.23 s | 9.23 s |
+| native 1920×1080 | 8236 | 2059 | 4.57 s | 8.21 s | 12.78 s |
 
-**If prefill blows the budget, the fallback is `empero-ai/Qwen3.8-9B-Distill`** — same
-family, same tokenizer, a third of the size — not a return to InternVL.
+Two things fall out, and both invert the plan:
+
+- **Decode is flat at ~8.2 s across a 10× change in prompt size**, and is 95% of the call
+  at InternVL-parity resolution. Prefill scales exactly linearly (~0.55 ms/token) and is
+  therefore a real lever — 9.7× from native to 448×448 — but pulling it all the way to
+  zero would still leave 8.2 s. **Resolution cannot save this design.** Worth keeping the
+  reduction anyway, since it is free, but it is not the answer.
+- **The 200-token cap is not the cost.** `ticvla.py:579` caps generation at 200; the model
+  emits EOS well before. Sampled off the *live* policy server on real frames: 131, 133,
+  134, 135, 135, 135 tokens — mean **134**, a tight distribution because the output has a
+  fixed shape (a `<think>` paragraph, then one `<answer>` line of three triples). Budgeting
+  the cap instead of the reality overstates every 27B call by 1.5×.
+
+**The verdict is not yet in, and the script's automated one should not be quoted.** The
+model had to be split across both GPUs, because FP8 is 30.89 GB and no single card has
+that free while Isaac Sim holds GPU0 — and transformers logged that this specific
+placement forces FP8 layers off DeepGEMM onto Triton/`grouped_mm`, since DeepGEMM's
+cached kernels are bound to one CUDA context. So the 16 tok/s decode is a property of a
+configuration this machine forced, not of the checkpoint. `Qwen3.8-27B-NVFP4` at 23.44 GB
+fits GPU1 alone; that run is what settles it.
+
+What it has to clear, at 448×448 where prefill is 0.47 s:
+
+| target | decode budget | tok/s needed | speedup over the 16 measured |
+|---|---|---|---|
+| 6.0 s wall-clock allowance | 5.5 s | 24 | **1.4×** |
+| 3.0 s sim horizon | 2.5 s | 53 | **3.2×** |
+
+1.4× from removing a documented kernel penalty *and* moving to hardware FP4 tensor cores
+is plausible; 3.2× is a stretch. Note also that FP8's load report flags
+`layers.{0..63}.mlp.gate_proj.weight_scale_inv` as **UNEXPECTED** — the timing is
+unaffected (same shapes, same FLOPs) but nothing about this build's *output quality*
+should be trusted.
+
+**If NVFP4 on one card still misses, the fallback is `empero-ai/Qwen3.8-9B-Distill`** —
+same family, same tokenizer, a third of the size — not a return to InternVL. Note the
+lever that fallback pulls is the right one: decode cost is set by model size, which is
+exactly what the distill changes.
 
 ## Data
 
@@ -171,11 +206,15 @@ worth keeping:
 
 ## Order of work
 
-1. `check_vlm_swap.py --time-it` on the FP8 build across both GPUs, **before** anything
-   is written. If four-frame prefill cannot fit the horizon, the 27B is over and the 9B
-   distill is the design.
-2. `~/envs/qvla` with transformers ≥ 5.8, torch `+cu128` (sm_120), verified with a real
-   matmul rather than `is_available()`.
+1. ~~`--time-it` on FP8 across both GPUs~~ **done** — 8.64 s at 448×448, but on a
+   kernel path the two-GPU split penalises. Rerun `probe_qvla_latency.py` on
+   **NVFP4, GPU1 only** the moment it finishes downloading; that is the number that
+   decides 27B vs the 9B distill, and nothing downstream is worth writing until it exists.
+   Set `--gpu0-gib 0` so `device_map` cannot spill back onto two cards and silently
+   reintroduce the penalty the run is trying to measure.
+2. `~/envs/qvla` **done** — python 3.12.13, torch 2.11.0+cu128, transformers 5.16.1,
+   torchvision 0.26.0+cu128, kernels 0.16.0. CUDA verified with a real bf16 matmul on
+   both sm_120 cards, not `is_available()`.
 3. Reproduce stage 2 against InternVL. This is the control.
 4. `nav/qvla/` — the four surgery points, as subclasses over the read-only vendor tree.
 5. Stage 2 with the frozen 4-bit Qwen.

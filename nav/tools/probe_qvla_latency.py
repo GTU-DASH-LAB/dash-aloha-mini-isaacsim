@@ -45,8 +45,16 @@ from pathlib import Path
 # 30 waypoints at 10 Hz. A generation slower than this hands the controller a plan that
 # expired before it was consumed.
 ACTION_HORIZON_S = 3.0
-# ticvla/models/ticvla.py:579 -- generation_config = dict(max_new_tokens=200, ...)
-TICVLA_MAX_NEW_TOKENS = 200
+# ticvla/models/ticvla.py:579 caps generation at 200, but the cap is not the cost: the
+# model emits an EOS long before it. Measured against the LIVE policy server on real nav
+# frames -- six generations, 131/133/134/135/135/135 tokens by Qwen's tokenizer, mean
+# 134. The distribution is tight because the output is a fixed shape: a <think> paragraph
+# then one <answer> line of three (x, y, theta) triples.
+#
+# This matters more than any other constant here. Decode is ~97% of a 27B call and scales
+# linearly in tokens, so budgeting the 200-token cap instead of the 134-token reality
+# overstates the whole call by 1.5x.
+TICVLA_MAX_NEW_TOKENS = 134
 # DynaNav samples [-9, -6, -3, 0] s, oldest first.
 N_FRAMES = 4
 

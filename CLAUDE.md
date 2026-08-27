@@ -762,6 +762,31 @@ affect the *rest* of this repo:
     0.5 GB on a 31.35 GiB card and cannot be the closed-loop build; NVFP4 at 23.44 GB
     can. FP8 across both cards is fine for offline work (pipeline-parallel inference
     moves activations over PCIe and needs no P2P) — just not while the sim is running.
+- **On a 27B, DECODE is the whole cost — prefill and resolution are not the lever, and
+  the 200-token cap is not the token count.** Both halves of this were predicted wrong in
+  `qvla_design.md` before being measured, so the numbers are worth keeping.
+  `probe_qvla_latency.py` on Qwen3.8-27B-FP8, four real nav frames:
+
+  | resolution | prompt tokens | prefill | decode | TOTAL |
+  |---|---|---|---|---|
+  | 448×448 (196 tok/frame, InternVL parity) | 796 | 0.47 s | 8.17 s | 8.64 s |
+  | 1920×1080 native (2059 tok/frame) | 8236 | 4.57 s | 8.21 s | 12.78 s |
+
+  Decode is **flat across a 10× change in prompt size** and is 95% of the call at the low
+  resolution. Prefill scales exactly linearly (~0.55 ms/token), so cutting resolution is a
+  real 9.7× on prefill and nearly nothing on the total — driving prefill to *zero* still
+  leaves 8.2 s. And `ticvla.py:579`'s `max_new_tokens=200` is a cap, not a cost: sampled
+  off the **live** policy server on real frames, generations are 131–135 tokens, mean
+  **134**, tight because the output shape is fixed (`<think>` paragraph + one `<answer>`
+  line of three triples). Budgeting 200 overstates a 27B call by 1.5×.
+- **A multi-GPU split silently changes which FP8 kernels run, so a two-card timing is not
+  a one-card timing.** transformers logs it plainly: spanning devices routes FP8 linear
+  layers off DeepGEMM onto Triton/`grouped_mm`, because DeepGEMM's cached kernels are
+  bound to a single CUDA context. FP8 at 30.89 GB *had* to be split here (no card has that
+  free while Isaac Sim holds GPU0), so its 16 tok/s is a property of the forced placement,
+  not the checkpoint — quote it as provisional. Also check the load report: this
+  checkpoint flags `layers.{0..63}.mlp.gate_proj.weight_scale_inv` as **UNEXPECTED**,
+  which leaves timing valid (same shapes, same FLOPs) and output quality untrustworthy.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

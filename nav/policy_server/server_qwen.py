@@ -53,6 +53,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -215,7 +216,7 @@ The four images are consecutive frames from your forward camera, oldest first, a
 
 Your camera: mounted {cam_h:.2f} m above the floor, pointing straight ahead and level, horizontal field of view {cam_fov:.0f} degrees. The horizontal centre of the image is straight ahead; the left edge is about {half_fov:.0f} degrees to your left, the right edge {half_fov:.0f} degrees to your right.
 
-Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed is normally about 0.7 m/s and never above 1.5 m/s, so over the next 3 seconds you will cover roughly 2 metres unless you are slowing down or stopping.
+Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed never exceeds 1.5 m/s, so no distance below can be more than 4.5.
 
 Describe the path you should drive over the next 3 seconds, as a turn plus a distance profile.
 
@@ -223,12 +224,16 @@ First the turn, as one word and one number:
 - LEFT, RIGHT, or STRAIGHT.
 - Then how many degrees you will have turned by the end of the 3 seconds, as a POSITIVE number from 0 to 90. Never write a minus sign. The word carries the direction; the number is only the size. A gentle course correction is 5 to 15 degrees; a corridor turn is 45 to 90. Write STRAIGHT 0 if you are not turning.
 
-Then the distance, as {n} numbers: how far you will have travelled ALONG THE PATH at {times} seconds from now, in metres, cumulative from where you are right now. These must never decrease. Slow down by making the gaps between them shrink.
+Then the distance, as {n} numbers: how far you will have travelled ALONG THE PATH at {times} from now, in metres, cumulative from where you are right now. These must never decrease. Slow down by making the gaps between them shrink; hold a steady pace by keeping the gaps equal.
+- These {n} numbers describe THIS scene at THIS moment. Read them off what you can see: how much clear floor is ahead of you, and how far away the target is. Do not fall back on a stock profile.
 - Do not drive into walls, furniture, people or shelving. Turn away from obstacles and leave clearance.
-- If you have arrived at the target the instruction names, STOP: write STRAIGHT 0 and distances that barely change, for example 0.05 repeated. Stopping at the right place is part of the task, not the end of it. Do not drive past the target.
+- If you have arrived at the target the instruction names, STOP: write STRAIGHT 0 and distances that barely change. Stopping at the right place is part of the task, not the end of it. Do not drive past the target.
 
-Reply with the turn and the distances only, inside answer tags, and nothing else:
-<answer>LEFT 30 | 0.35, 0.70, 1.05, 1.40, 1.75, 2.10</answer>
+Reply with the turn and the distances only, inside answer tags, and nothing else. The shape is one word, one number, a vertical bar, then {n} numbers separated by commas:
+
+<answer>DIRECTION DEGREES | {dslots}</answer>
+
+DIRECTION, DEGREES and d1 to d{n} are placeholders. Replace every one of them with your own value. Do not copy them, and do not copy any number that appears anywhere in these instructions.
 """
 
 _THINK_TASK = (
@@ -258,7 +263,18 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
     if _ARC_FORMAT == "arc":
         task = _TASK_ARC.format(
             cam_h=0.346, cam_fov=90.1, half_fov=45.0,
-            times=", ".join(f"{t:.1f}" for t in CTRL_TIMES), n=len(CTRL_TIMES),
+            # Units on every entry, and "and" before the last, so the timestamps do not
+            # read as a bare six-number list. `pairs` prints them plain; here that would
+            # sit in the prompt looking exactly like the answer being asked for, and a
+            # steady 1.0 m/s plan has those same six cumulative distances -- so a parser
+            # guard could not tell a copy from a correct answer. Fix it upstream instead.
+            times=", ".join(f"{t:.1f} s" for t in CTRL_TIMES[:-1]) + f" and {CTRL_TIMES[-1]:.1f} s",
+            n=len(CTRL_TIMES),
+            # Generated, not typed: the answer template used to carry a real six-number
+            # profile, and the model copied it verbatim in 2 of 8 calls. Placeholders
+            # leave nothing to copy -- and generating them means a change to CTRL_TIMES
+            # cannot leave the example showing a different count than the text asks for.
+            dslots=", ".join(f"d{i}" for i in range(1, len(CTRL_TIMES) + 1)),
         )
     else:
         task = _TASK.format(
@@ -502,6 +518,11 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
         # the model writing something unusable, this is the stack being broken. Merging
         # them once read as "the prompt is bad" when the real answer was HF_HUB_OFFLINE=1
         # blocking an FP8 kernel download at the first forward pass.
+        # /health carries one line, which is right for a status endpoint and useless for a
+        # diagnosis -- a bare `KeyError: 'weight_packed'` says nothing about which layer or
+        # which call path raised it. Print the traceback to stderr as well: the server still
+        # does not die, and the log has the one thing the summary cannot carry.
+        traceback.print_exc()
         with _lock:
             _state["gen_errors"] += 1
             _state["reasoning"] = f"[generation failed] {type(exc).__name__}: {exc}"

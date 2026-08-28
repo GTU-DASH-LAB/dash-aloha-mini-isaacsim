@@ -81,8 +81,12 @@ def fixed_config(model_path: str, verbose: bool = True):
     if qc is None:
         return None
     is_dict = isinstance(qc, dict)
-    skip = list(qc["modules_to_not_convert"] if is_dict
-                else getattr(qc, "modules_to_not_convert", None) or [])
+    # `.get`, not `[...]`: the key is FP8's. NVFP4 quantises the same dense checkpoint
+    # and ships no skip-list at all, so subscripting raised KeyError and the server died
+    # in startup before it ever reached the weights. The object branch below was already
+    # tolerant; only the dict branch was not.
+    skip = list((qc.get("modules_to_not_convert") if is_dict
+                 else getattr(qc, "modules_to_not_convert", None)) or [])
     if not skip:
         return None
 
@@ -130,7 +134,14 @@ def load_qwen(model_path: str, max_memory: dict | None = None,
     model = AutoModelForImageTextToText.from_pretrained(model_path, **kwargs)
     model.eval()
 
-    devs = sorted({str(d) for d in model.hf_device_map.values()})
+    # Read the placement off the parameters, not off `hf_device_map`. The map is
+    # accelerate's PLAN and it is only attached when accelerate actually dispatches --
+    # with one visible GPU the whole model can load straight onto it and the attribute
+    # never appears, which crashed this line. Parameter devices are the ground truth the
+    # DeepGEMM/Triton warning below actually depends on, so prefer them outright and keep
+    # the map only as a fallback for a model with no parameters of its own.
+    devs = sorted({str(p.device) for p in model.parameters()}) or sorted(
+        {str(d) for d in getattr(model, "hf_device_map", {}).values()})
     if verbose:
         print(f"[qwen-load] placement={devs}"
               + ("  [single GPU -- DeepGEMM path]" if len(devs) == 1 else ""), flush=True)

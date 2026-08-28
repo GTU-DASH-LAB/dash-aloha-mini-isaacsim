@@ -879,6 +879,24 @@ that affect the *rest* of this repo:
   an unsigned magnitude, with the arc built our side. Note what this does *not* say: the
   slow/fast split is still worth having on speed alone, and Q-VLA's braking was as good as
   the action expert's.
+- **`QVLA_FORMAT=arc` collapses to a permanent stop in CLOSED loop, which eight open-loop
+  frames could never have shown.** First closed-loop arc run, `hospital_vending_machine`:
+  109 plans, **102 of them speed `0.000`**, last non-zero at t=9.0 s, 1.07 m of path in 54 s,
+  timed out 12.5 m short. Not a stack failure — 45 generations, **0 parse failures, 0 gen
+  errors**; the model generates cleanly and generates zeros: `STRAIGHT 0 | 0.0, 0.0, 0.0,
+  0.0, 0.0, 0.0`. Two consequences worth separating from the cause. First, an all-zero
+  distance list makes the logged heading **meaningless**, not merely wrong: the waypoints
+  collapse onto the origin and `atan2` returns whatever noise survives — hence `head=180.00`
+  with `reach=0.550` in the trace. Don't read steering columns from a stopped plan. Second,
+  the likely mechanism (hypothesis, not measured): both prompts carry the same "if you have
+  arrived, STOP" bullet, but `pairs` illustrates it with `(0.05, 0.00)` repeated, which
+  still advances, while `arc` says "write STRAIGHT 0 and distances that barely change" —
+  and `STRAIGHT 0 | 0.0 ×6` is simultaneously the lowest-effort string that satisfies every
+  format rule in the prompt AND explicitly blessed by it. `arc` has a zero-attractor that
+  `pairs` does not. **The stop clause is load-bearing and its example is a target** — the
+  same anchoring lesson as the worked numeric example, in a verbal disguise. `pairs` stays
+  the format to benchmark until arc's stop condition is expressed as something other than
+  the easiest answer available.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

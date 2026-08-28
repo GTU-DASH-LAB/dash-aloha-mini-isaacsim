@@ -288,6 +288,21 @@ _THINK_TASK = (
 ANSWER_PREFIX = "<answer>" if _ARC_FORMAT == "arc" else "<answer>("
 
 
+def _answer_tokens() -> int:
+    """Decode budget for the coordinate list alone, derived from the control-point count.
+
+    `pairs` writes about 14 tokens per point -- "(0.35, 0.00), " -- so a flat 110 was sized
+    for six of them and would have truncated ten mid-list, turning a horizon change into a
+    parse failure with no visible connection to its cause. `arc` is cheaper per point (one
+    bare number) but sizing both off the same count costs nothing and cannot drift apart.
+
+    A function rather than a constant because the budget-forcing second pass in `_generate`
+    needs exactly this number too, and a second copy of it is the bug class this file has
+    already paid for three times over. See CLAUDE.md.
+    """
+    return 20 * len(CTRL_TIMES) + 30
+
+
 def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> list[dict]:
     prev = req.previous_waypoints_text.strip()
     if not prev:
@@ -296,6 +311,19 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
         # nav/README.md -- defaulting this away is what made every plan a fresh straight
         # line back when the TIC-VLA server did it.
         prev = "From 0.0s to current timestamp time is 0.0s. No waypoints available."
+
+    # A bootstrap sentence was added here and REMOVED, because it was measured and did
+    # nothing. The theory was that "No waypoints available." reads as prose to this model
+    # (TIC-VLA's action expert never reads it -- it consumes a KV cache), so being handed
+    # no "ruler" right after being told to use one made it write zeros. Telling it plainly
+    # that standing still at t=0 is expected and the task begins now left the standstill
+    # case at 0.000 m/s in 3 of 3, unchanged.
+    #
+    # It failed because the premise was too small. With thinking off, the plan is not a
+    # response to the history OR the image -- it is a number copied out of the prompt; see
+    # the perception probe in CLAUDE.md. Zeros at the start are one face of that, not a
+    # missing-ruler problem, and no wording fixes it. Left as a comment so the next reader
+    # does not re-derive an attractive theory the evidence has already closed.
 
     if _ARC_FORMAT == "arc":
         task = _TASK_ARC.format(
@@ -538,7 +566,34 @@ def _generate(messages: list[dict], image_paths: list[str], max_new: int) -> str
         out = model.generate(**inputs, max_new_tokens=max_new, do_sample=False)
     gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
                             skip_special_tokens=True)[0]
-    return prefix + gen
+    if not _state["think"]:
+        return prefix + gen
+
+    # BUDGET FORCING. Asking this model to think and then answer gets the thinking and not
+    # the answer: at a 1024-token cap it ran to the cap and emitted no `</think>` in 5 of 6
+    # generations, so the parser saw nothing and the robot stopped. The reasoning itself
+    # was good -- correct scene ("a black console table on the right, windows with vertical
+    # blinds"), correct geometry off the stated 90 degree FOV, and a correct decision
+    # ("move forward at ~1.0 m/s and slightly left to align with the vending machine").
+    # It simply never converted the decision into coordinates, because nothing made it.
+    #
+    # So make it. Close the block ourselves and re-enter with the same `<answer>(` prefill
+    # the no-think path relies on, then decode only the answer. The model is not asked to
+    # decide anything at this point -- it has already decided, in text that is now in its
+    # own context -- it is asked to write down what it just concluded.
+    #
+    # Why this is not the same as raising the cap: the failure is not that the budget is
+    # too small, it is that the model does not stop on its own. A bigger budget buys longer
+    # deliberation and the same missing answer, at 54 s a call instead of 8 s.
+    if ANSWER_PREFIX in gen:
+        return prefix + gen                        # it closed by itself; nothing to force
+    closed = text + prefix + gen + "</think>\n" + ANSWER_PREFIX
+    inputs = proc(text=[closed], images=imgs, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=_answer_tokens(), do_sample=False)
+    answer = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
+                               skip_special_tokens=True)[0]
+    return prefix + gen + "</think>\n" + ANSWER_PREFIX + answer
 
 
 def _generation_worker(messages: list[dict], image_paths: list[str],
@@ -622,14 +677,13 @@ def predict(req: PredictRequest) -> PredictResponse:
 
     t0 = time.perf_counter()
     think = _state["think"]
-    # Derived from the control-point count, not typed. `pairs` writes about 14 tokens per
-    # point -- "(0.35, 0.00), " -- so the old flat 110 was sized for six of them and would
-    # have truncated ten mid-list, turning a horizon change into a parse failure with no
-    # obvious connection to its cause. `arc` is cheaper per point (one bare number) but
-    # sizing both off the same count costs nothing and cannot drift apart.
-    _answer_budget = 20 * len(CTRL_TIMES) + 30
+    # With thinking on this is the budget for the THINKING pass only; `_generate` then
+    # spends `_answer_tokens()` more on the forced answer. 300 is where the reasoning is
+    # still going somewhere useful -- the scene description and the steering decision are
+    # both settled well inside it, and what comes after is the model relitigating its own
+    # distance estimate for another 700 tokens without changing the answer.
     max_new = int(os.environ.get(
-        "QVLA_MAX_NEW_TOKENS", _answer_budget + (110 if think else 0)))
+        "QVLA_MAX_NEW_TOKENS", 300 if think else _answer_tokens()))
     messages = build_messages(req, req.image_paths, think)
 
     started_step = None

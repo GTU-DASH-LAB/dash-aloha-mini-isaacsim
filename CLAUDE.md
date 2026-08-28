@@ -879,6 +879,13 @@ that affect the *rest* of this repo:
   an unsigned magnitude, with the arc built our side. Note what this does *not* say: the
   slow/fast split is still worth having on speed alone, and Q-VLA's braking was as good as
   the action expert's.
+
+  **Amended by the perception probe below.** Two claims here are wrong and one is right for
+  the wrong reason. "Speed varies with the image" is not established: those 8 moments each
+  carried their OWN history text, so image and history varied together; holding history
+  fixed across 5 unrelated scenes gives ONE plan. "Not comprehension" is backwards — the
+  model comprehends completely, and the probes that concluded otherwise could not see it
+  because thinking was off. What survives is the headline, and now with a mechanism.
 - **`QVLA_FORMAT=arc` collapses to a permanent stop in CLOSED loop, which eight open-loop
   frames could never have shown.** First closed-loop arc run, `hospital_vending_machine`:
   109 plans, **102 of them speed `0.000`**, last non-zero at t=9.0 s, 1.07 m of path in 54 s,
@@ -941,6 +948,63 @@ that affect the *rest* of this repo:
   "3 seconds" in both prompts and the 3.0 s budget in `check_vlm_swap.py` /
   `probe_qvla_latency.py`, which would now fail a working configuration. **After changing a
   constant, grep for its value, not its name** — a copy has the number, not the identifier.
+- **`/predict` re-serves a CACHED plan, so a probe loop over it measures one generation N
+  times and prints N identical lines.** It only blocks on a generation when it has no plan;
+  otherwise it returns the cached one instantly and regenerates in the background. A tight
+  loop therefore produces a perfect-looking N-of-N result out of a single sample. This
+  invalidated three conclusions stated as measurements: that history makes no difference
+  (twice), that frame count makes no difference, and the "nine times out of nine" anchor
+  reading behind commit `4ac6655` — that was 1–2 real generations re-served. **Every probe
+  must POST `/reset` before every call**, which sets `plan=None` and forces a real
+  generation. Redone that way the history answer inverted outright. Same class as the
+  second-copy constants above: no error, no warning, a plausible number.
+- **Q-VLA-direct with thinking OFF is not navigating — it copies a number out of the
+  prompt and draws a straight line.** The single most important measurement on this branch,
+  and it took a `/reset`-per-call probe to see. Five visually unrelated 4-frame windows from
+  across an 881-frame capture, identical instruction and identical history, produced **one
+  plan**: `(0.70, 0.00) … (7.00, 0.00)`, with `max|y| = 0.000` in every scene. Two of those
+  scenes have a wall or a pillar a few metres ahead. Vary instead the *number in the prompt*,
+  holding the scene fixed, and the plan tracks it: stated cap 0.8 → `0.70` m/s, 1.5 → `1.50`,
+  2.5 → `0.05` — and `0.70`, `1.50`, `0.05` and `0.00` all appear verbatim in the prompt
+  (`0.05` is the "for example (0.05, 0.00) repeated" bullet). This also explains the earlier
+  0.7 m/s readings, which looked like agreement with reality and were agreement with the
+  prompt's own "about 0.7 m/s" — removing that sentence moved the output to the new number.
+  **A plan that matches a number you put in the prompt is not evidence the model agrees
+  with you.**
+- **The cause is that the model gets ZERO tokens to think, and turning thinking on shows it
+  perceives and reasons correctly.** `QVLA_THINK` defaults to 0, and the no-think path
+  prefills `<answer>(` — so the first token the model is free to choose is already inside a
+  coordinate. With `QVLA_THINK=1` the same FP8 checkpoint describes the scenes accurately
+  ("a large open room with a hexagonal tile floor, a black console table on the right, and
+  windows with vertical blinds" — correct), does the trigonometry off the stated 90° FOV,
+  and reaches the right decision. **Vision is not broken and the FP8 quantization is fine;
+  neither was ever tested before, and both were quietly assumed.** Three regimes, each
+  failing differently:
+
+  | | parse OK | cost/plan | plan |
+  |---|---|---|---|
+  | think off | 5/5 | ~2.7 s | one straight line for all scenes, speed copied from prompt |
+  | think on, unforced | **1/6** | 8–54 s | correct reasoning, never emits `</think>` or an answer |
+  | think on, budget-forced | **5/5** | ~22 s | writes an answer, still the same straight line |
+
+  Budget forcing is now in `_generate`: cap the thinking, then close the block ourselves
+  with `</think>\n<answer>(` and decode only the answer. It fixes the structural failure
+  completely (parse failures 5→0) and changes nothing about quality, which is the finding.
+  Because the decisive artifact is this — the model's own reasoning, sitting in its context,
+  saying **"To stop at it, I need to head toward it, i.e., move forward and left"** — and
+  the very next tokens it writes are `y = 0.00`, ten times. **The lateral channel is dead at
+  emission, not at perception and not at reasoning.** Greedy decoding into a heavily
+  templated answer collapses onto a clean arithmetic sequence, and the reasoning does not
+  reach the coordinates.
+
+  So the answer to "do we still need the action expert?" is **yes**, now for a reason worth
+  having: not that the 27B cannot see or cannot think about navigation — it demonstrably
+  does both — but that it cannot convert a decision into coordinates, and cannot do it
+  inside a control period even when it does. 22 s/plan against a 10 s horizon is 2.2× over
+  budget, and raising the horizon to cover it means planning further ahead than the scene
+  stays valid. Untested and the obvious next step: `do_sample=False` is the suspect for the
+  mode collapse, and the code comment asserting "sampling buys nothing when the output is a
+  list of coordinates" was never measured. TIC-VLA itself samples at 0.7.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

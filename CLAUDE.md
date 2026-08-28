@@ -87,6 +87,7 @@ third_party/lerobot_alohamini git submodule -- official LeRobot integration (cam
                                specs + kinematics source of truth)
 docs/                         verification screenshots ; ARCHITECTURE.md ; plan.md ;
                                CLAUDE.md (this file)
+docs/ticvla-architecture/     TIC-VLA block diagrams, EN + TR, read off the source
 ```
 
 ## Gotchas hit so far
@@ -392,8 +393,11 @@ environment → joint drives applied → wheel collision fixed → terminal cont
 ## Language-driven navigation (`nav/`)
 
 TIC-VLA + the DynaNav benchmark drive the base from a typed sentence. Full detail in
-[`nav/README.md`](nav/README.md) and [`nav/plan.md`](nav/plan.md); the facts that
-affect the *rest* of this repo:
+[`nav/README.md`](nav/README.md) and [`nav/plan.md`](nav/plan.md); the model itself —
+every layer, dimension and both loss functions, read off the source and checked against
+the checkpoint — is drawn in
+[`docs/ticvla-architecture/`](docs/ticvla-architecture/README.md) (EN + TR). The facts
+that affect the *rest* of this repo:
 
 - **Two processes, and the split is forced.** TIC-VLA needs Python 3.11 (Isaac Sim
   5.0's NumPy 1.x ABI), AlohaMini needs 3.12; separately, a DynaNav scene alone was

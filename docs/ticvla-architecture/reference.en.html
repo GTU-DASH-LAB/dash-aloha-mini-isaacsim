@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIC-VLA — Full Architecture Reference</title>
+<style>
+
+  :root {
+    --ink:        #12181B;
+    --ink-2:      #3D4A50;
+    --ink-3:      #6E7D84;
+    --paper:      #F6F7F7;
+    --paper-2:    #FFFFFF;
+    --rule:       #D3DADC;
+    --rule-2:     #E6EAEB;
+
+    /* Semantic channels. Each of these means one thing and is used for nothing else. */
+    --slow:       #3B5B8C;   /* the VLM rate domain, ~1.5-2.0 s */
+    --slow-bg:    #EAEFF6;
+    --fast:       #A8641A;   /* the action-expert rate domain, 10 Hz */
+    --fast-bg:    #F8EFE2;
+    --frozen:     #61757A;   /* no gradient flows through this block */
+    --frozen-bg:  #EBEEEE;
+    --loss:       #96323F;   /* a supervision tap */
+    --loss-bg:    #F7EAEC;
+
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:       #E4EAEC;
+      --ink-2:     #A6B4BA;
+      --ink-3:     #77878E;
+      --paper:     #0F1417;
+      --paper-2:   #161D21;
+      --rule:      #2C363B;
+      --rule-2:    #222A2E;
+      --slow:      #8FB3E4;
+      --slow-bg:   #1A2534;
+      --fast:      #E0A45C;
+      --fast-bg:   #2A2015;
+      --frozen:    #8FA1A7;
+      --frozen-bg: #1D2427;
+      --loss:      #E08792;
+      --loss-bg:   #2C1A1E;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#E4EAEC; --ink-2:#A6B4BA; --ink-3:#77878E;
+    --paper:#0F1417; --paper-2:#161D21; --rule:#2C363B; --rule-2:#222A2E;
+    --slow:#8FB3E4; --slow-bg:#1A2534; --fast:#E0A45C; --fast-bg:#2A2015;
+    --frozen:#8FA1A7; --frozen-bg:#1D2427; --loss:#E08792; --loss-bg:#2C1A1E;
+  }
+  :root[data-theme="light"] {
+    --ink:#12181B; --ink-2:#3D4A50; --ink-3:#6E7D84;
+    --paper:#F6F7F7; --paper-2:#FFFFFF; --rule:#D3DADC; --rule-2:#E6EAEB;
+    --slow:#3B5B8C; --slow-bg:#EAEFF6; --fast:#A8641A; --fast-bg:#F8EFE2;
+    --frozen:#61757A; --frozen-bg:#EBEEEE; --loss:#96323F; --loss-bg:#F7EAEC;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 clamp(16px, 4vw, 48px) 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; }
+
+  /* ---- masthead ---------------------------------------------------- */
+  header { padding: clamp(40px, 7vw, 80px) 0 32px; border-bottom: 2px solid var(--ink); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--ink-3); margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.4vw, 50px); line-height: 1.02; letter-spacing: -0.025em;
+    font-weight: 700; margin: 0 0 14px; text-wrap: balance;
+  }
+  .standfirst {
+    font-size: clamp(15px, 1.7vw, 18px); color: var(--ink-2); max-width: 62ch;
+    margin: 0; text-wrap: pretty;
+  }
+  .provenance {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+    margin-top: 26px; display: flex; flex-wrap: wrap; gap: 6px 22px;
+  }
+  .provenance b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---- legend ------------------------------------------------------ */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin: 28px 0 0; padding: 0; list-style: none;
+  }
+  .legend li {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+    padding: 5px 11px; border-radius: 2px; border: 1px solid;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .legend .sw { width: 9px; height: 9px; border-radius: 1px; }
+  .lg-slow   { color: var(--slow);   border-color: var(--slow);   background: var(--slow-bg); }
+  .lg-slow   .sw { background: var(--slow); }
+  .lg-fast   { color: var(--fast);   border-color: var(--fast);   background: var(--fast-bg); }
+  .lg-fast   .sw { background: var(--fast); }
+  .lg-frozen { color: var(--frozen); border-color: var(--frozen); background: var(--frozen-bg); }
+  .lg-frozen .sw { background: var(--frozen); }
+  .lg-loss   { color: var(--loss);   border-color: var(--loss);   background: var(--loss-bg); }
+  .lg-loss   .sw { background: var(--loss); }
+
+  /* ---- sections ---------------------------------------------------- */
+  section { margin-top: clamp(48px, 7vw, 76px); }
+  h2 {
+    font-size: 12px; font-family: var(--mono); letter-spacing: 0.15em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 500;
+    margin: 0 0 6px; padding-bottom: 10px; border-bottom: 1px solid var(--rule);
+  }
+  h2 .n { color: var(--ink); margin-right: 12px; }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 18px 0 0; }
+  h3 {
+    font-size: 17px; letter-spacing: -0.012em; margin: 34px 0 10px; font-weight: 650;
+  }
+
+  /* ---- the diagram spine ------------------------------------------- */
+  .flow { margin-top: 30px; }
+
+  .blk {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink-3);
+    border-radius: 3px;
+    padding: 15px 18px;
+    position: relative;
+  }
+  .blk.slow   { border-left-color: var(--slow); }
+  .blk.fast   { border-left-color: var(--fast); }
+  .blk.frozen { border-left-color: var(--frozen); background: var(--frozen-bg); }
+  .blk.lossblk{ border-left-color: var(--loss);  background: var(--loss-bg); }
+
+  .blk-head {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: 8px 12px; margin-bottom: 4px;
+  }
+  .blk-name { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+  .tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.09em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 2px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .t-frozen { color: var(--frozen); }
+  .t-train  { color: var(--fast); }
+  .t-slow   { color: var(--slow); }
+  .t-params { color: var(--ink-3); border-color: var(--rule); font-variant-numeric: tabular-nums; }
+
+  .blk ul { margin: 8px 0 0; padding-left: 0; list-style: none; }
+  .blk ul li {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-2); padding-left: 15px; position: relative;
+  }
+  .blk ul li::before {
+    content: "\2013"; position: absolute; left: 0; color: var(--ink-3);
+  }
+  .blk ul li b { color: var(--ink); font-weight: 600; }
+  .note { font-size: 13.5px; color: var(--ink-2); margin: 9px 0 0; font-family: var(--sans); }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* edge annotation between blocks: the tensor on the wire */
+  .edge {
+    display: flex; align-items: center; gap: 11px;
+    padding: 7px 0 7px 22px; position: relative;
+  }
+  .edge::before {
+    content: ""; position: absolute; left: 6px; top: 0; bottom: 0;
+    width: 1px; background: var(--rule);
+  }
+  .edge .arw { color: var(--ink-3); font-size: 12px; line-height: 1; }
+  .edge code {
+    font-family: var(--mono); font-size: 12px; color: var(--ink);
+    background: var(--rule-2); padding: 2.5px 8px; border-radius: 2px;
+    white-space: nowrap;
+  }
+  .edge span.lbl { font-size: 12.5px; color: var(--ink-3); }
+
+  /* rate-domain banner */
+  .domain {
+    display: flex; align-items: center; gap: 12px;
+    margin: 30px 0 14px; padding: 9px 14px; border-radius: 3px;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; font-weight: 500;
+  }
+  .domain.slow { background: var(--slow-bg); color: var(--slow); }
+  .domain.fast { background: var(--fast-bg); color: var(--fast); }
+  .domain .rate { margin-left: auto; letter-spacing: 0.04em; text-transform: none; opacity: 0.85; }
+
+  /* two blocks side by side merging into one */
+  .merge { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .merge { grid-template-columns: 1fr; } }
+
+  /* ---- tables ------------------------------------------------------ */
+  .tbl-wrap { overflow-x: auto; margin-top: 18px; border: 1px solid var(--rule); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 560px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule-2); }
+  th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 500;
+    background: var(--rule-2); border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+  td code { font-family: var(--mono); font-size: 12px; }
+  tr.total td { border-top: 1px solid var(--rule); font-weight: 650; color: var(--ink); }
+
+  /* ---- formula ----------------------------------------------------- */
+  .formula {
+    font-family: var(--mono); font-size: 13px; line-height: 1.85;
+    background: var(--paper-2); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 16px 18px; margin-top: 14px;
+    overflow-x: auto; white-space: pre;
+    color: var(--ink);
+  }
+  .formula .cm { color: var(--ink-3); }
+
+  /* ---- callout ----------------------------------------------------- */
+  .callout {
+    border: 1px solid var(--rule); border-left: 3px solid var(--loss);
+    background: var(--paper-2); border-radius: 3px;
+    padding: 15px 18px; margin-top: 20px;
+  }
+  .callout .ct {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--loss); margin: 0 0 7px; font-weight: 600;
+  }
+  .callout p { margin: 0; color: var(--ink-2); font-size: 14px; }
+  .callout p + p { margin-top: 9px; }
+  .callout b { color: var(--ink); font-weight: 600; }
+
+  code.inl {
+    font-family: var(--mono); font-size: 0.875em;
+    background: var(--rule-2); padding: 1.5px 5px; border-radius: 2px;
+  }
+
+  footer {
+    margin-top: 76px; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  }
+  a { color: var(--slow); }
+  :focus-visible { outline: 2px solid var(--slow); outline-offset: 2px; }
+
+  .pagenav{display:flex;gap:10px;align-items:center;margin:0 0 20px;flex-wrap:wrap}
+  .pagenav a,.pagenav button{font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+      text-transform:uppercase;padding:5px 12px;border-radius:2px;border:1px solid var(--rule);
+      background:var(--paper-2);color:var(--ink-2);text-decoration:none;cursor:pointer;
+      line-height:1.6}
+  .pagenav a:hover,.pagenav button:hover{border-color:var(--ink-3);color:var(--ink)}
+  .pagenav a[aria-current="page"]{border-color:var(--ink);color:var(--ink);font-weight:600}
+  .pagenav .sep{color:var(--rule);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="pagenav">
+  <a href="visual.en.html">Diagrams</a>
+  <a href="reference.en.html" aria-current="page">Full reference</a>
+  <span class="sep">|</span>
+  <a href="reference.en.html" aria-current="page">EN</a>
+  <a href="reference.tr.html">TR</a>
+  <span class="sep">|</span>
+  <button id="themebtn" type="button">Theme</button>
+</nav>
+
+<header>
+  <p class="eyebrow">Architecture reference · read from source</p>
+  <h1>TIC-VLA</h1>
+  <p class="standfirst">
+    A two-rate navigation policy: a 1.9 B vision-language model thinks slowly about
+    delayed frames and leaves its attention state behind; a 10.3 M cross-attention head
+    reads that state and emits 30 waypoints at 10 Hz. Every dimension below was read out
+    of the code and checked against the shipped checkpoint.
+  </p>
+  <div class="provenance">
+    <span><b>source</b> robotics/TIC-VLA</span>
+    <span><b>backbone</b> InternVL3-1B</span>
+    <span><b>ckpt</b> TIC-VLA-model.ckpt</span>
+    <span><b>epoch</b> 9 · step 39 310</span>
+  </div>
+  <ul class="legend">
+    <li class="lg-slow"><span class="sw"></span>slow path — VLM</li>
+    <li class="lg-fast"><span class="sw"></span>fast path — action expert</li>
+    <li class="lg-frozen"><span class="sw"></span>frozen · no gradient</li>
+    <li class="lg-loss"><span class="sw"></span>supervision tap</li>
+  </ul>
+</header>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">01</span> Signal path</h2>
+  <p class="lede">
+    Top to bottom is the actual order of tensor operations. The colour of each block's left
+    rail is its rate domain; boxes on the grey rail carry no gradient in either stage.
+    Text between blocks is the tensor on the wire.
+  </p>
+
+  <div class="flow">
+
+    <div class="domain slow">
+      Slow branch · VLM over delayed frames
+      <span class="rate">runs once per plan · ~1.5–2.0 s wall</span>
+    </div>
+
+    <div class="blk slow">
+      <div class="blk-head"><span class="blk-name">Input — delayed frame stack</span></div>
+      <ul>
+        <li>N images from the <b>delayed</b> sample's history + its own current frame</li>
+        <li><b>load_image</b>(input_size=448, max_num=1) → exactly 1 tile per image, no thumbnail</li>
+        <li>Resize 448×448 bicubic · ToTensor · Normalize(ImageNet μ/σ)</li>
+        <li>Delay <b>τ ~ U(0, min(10 s, t))</b> resampled every training sample</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 3, 448, 448)</code><span class="lbl">pixel_values, bfloat16</span></div>
+
+    <div class="blk frozen">
+      <div class="blk-head">
+        <span class="blk-name">InternViT-300M</span>
+        <span class="tag t-frozen">frozen in both stages</span>
+        <span class="tag t-params">608 024 576 p</span>
+      </div>
+      <ul>
+        <li>patch 14 → <b>32 × 32 = 1024</b> patches + 1 CLS = 1025 tokens</li>
+        <li>hidden <b>1024</b> · 24 layers · 16 heads × 64 · FFN <b>4096</b></li>
+        <li>LayerNorm, eps 1e-6 · drop_path 0.1 · qk_norm off · flash-attn off</li>
+        <li><b>select_layer = −1</b> → last_hidden_state, then <code>[:, 1:, :]</code> drops CLS</li>
+      </ul>
+      <p class="note">Frozen by an explicit loop in <b>TICVLA_VLM.__init__</b>, and forced back to
+      <code class="inl">.eval()</code> on every <code class="inl">.train()</code> call — so dropout and
+      drop-path never activate, in either stage.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 1024, 1024)</code><span class="lbl">patch tokens, CLS removed</span></div>
+
+    <div class="blk frozen">
+      <div class="blk-head"><span class="blk-name">pixel_shuffle · scale 0.5 · ps_version v2</span></div>
+      <ul>
+        <li>(n, 32, 32, 1024) → fold 2×2 spatial into channels → (n, 16, 16, 4096)</li>
+        <li><b>4× fewer tokens, 4× wider</b> — 1024 → <b>256</b> tokens of dim 4096</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 256, 4096)</code></div>
+
+    <div class="blk slow">
+      <div class="blk-head">
+        <span class="blk-name">mlp1 — vision→language projector</span>
+        <span class="tag t-slow">stage 1 trainable</span>
+        <span class="tag t-params">8 965 632 p</span>
+      </div>
+      <ul>
+        <li>LayerNorm(4096)</li>
+        <li>Linear(4096 → <b>896</b>)</li>
+        <li>GELU</li>
+        <li>Linear(896 → 896)</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 256, 896)</code><span class="lbl">visual tokens in LM space</span></div>
+
+    <div class="blk slow">
+      <div class="blk-head"><span class="blk-name">Token splice</span></div>
+      <ul>
+        <li>Each <code>&lt;image&gt;</code> in the chat template is replaced by<br>
+            <code>&lt;img&gt;</code> + <code>&lt;IMG_CONTEXT&gt;</code> × <b>256</b> + <code>&lt;/img&gt;</code></li>
+        <li>InternVL's forward substitutes visual embeddings at those <b>256</b> positions</li>
+        <li>Tokenizer <b>padding_side = 'left'</b></li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>input_ids (B, N)</code><span class="lbl">+ attention_mask, image_flags</span></div>
+
+    <div class="blk slow">
+      <div class="blk-head">
+        <span class="blk-name">Qwen2-0.5B language model</span>
+        <span class="tag t-slow">stage 1 trainable</span>
+        <span class="tag t-frozen">stage 2 frozen</span>
+        <span class="tag t-params">1 259 395 840 p</span>
+      </div>
+      <ul>
+        <li>hidden <b>896</b> · 24 layers · FFN <b>4864</b> (SwiGLU) · RMSNorm eps 1e-6</li>
+        <li><b>14 query heads · 2 KV heads</b> (GQA) · head_dim <b>64</b></li>
+        <li>vocab 151 674 · max_pos 32 768 · RoPE θ = 1e6 · untied embeddings</li>
+        <li>called with <b>use_cache=True</b> — the cache is the product, not the text</li>
+      </ul>
+    </div>
+
+    <div class="merge">
+      <div>
+        <div class="edge"><span class="arw">▼</span><code>logits (B, N, 151674)</code></div>
+        <div class="blk lossblk">
+          <div class="blk-head"><span class="blk-name">→ Language loss · stage 1 only</span></div>
+          <p class="note">Detailed in §3.</p>
+        </div>
+      </div>
+      <div>
+        <div class="edge"><span class="arw">▼</span><code>past_key_values</code><span class="lbl">24 layers</span></div>
+        <div class="blk slow">
+          <div class="blk-head"><span class="blk-name">KV-cache extraction — the whole hand-off</span></div>
+          <ul>
+            <li><b>Last layer only</b>: <code>past_key_values[-1]</code></li>
+            <li><b>Values only</b> — the keys are discarded</li>
+            <li>(B, 2, L, 64) → permute → <b>(B, L, 128)</b></li>
+            <li>128 = 2 KV heads × 64, <b>hard-coded</b>, not read from config</li>
+            <li><code>.detach()</code> — hard gradient barrier</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(B, L_kv, 128)</code><span class="lbl">"model state" — 1/24th of the cache, half of that</span></div>
+
+    <div class="domain fast">
+      Fast branch · action expert over the current frame
+      <span class="rate">10 Hz · 30 steps = 3.0 s horizon</span>
+    </div>
+
+    <div class="merge">
+      <div class="blk fast">
+        <div class="blk-head"><span class="blk-name">Current-frame branch</span></div>
+        <ul>
+          <li>the single <b>closest</b> image, re-encoded ViT + mlp1</li>
+          <li>under <code>torch.no_grad()</code> → <b>(B, 256, 896)</b></li>
+          <li>shorter samples are <b>front-padded</b> with zeros</li>
+        </ul>
+      </div>
+      <div class="blk fast">
+        <div class="blk-head"><span class="blk-name">Robot state vector</span></div>
+        <ul>
+          <li>[v<sub>x</sub>, v<sub>y</sub>, yaw_rate, dx, dy] ⊕ [τ] → <b>(B, 6, 1)</b></li>
+          <li>v = first future offset ÷ 0.1 s</li>
+          <li>yaw_rate = wrap<sub>π</sub>(Δyaw) ÷ 0.1 s</li>
+          <li><b>dx, dy</b> = displacement delayed → now</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><span class="lbl">three streams enter the action expert</span></div>
+
+    <div class="blk fast">
+      <div class="blk-head">
+        <span class="blk-name">ActionExpert — input projections</span>
+        <span class="tag t-train">stage 2 trainable</span>
+      </div>
+      <ul>
+        <li><b>down_proj</b> Linear(896 → <b>512</b>) &nbsp;·&nbsp; image tokens</li>
+        <li><b>kv_cache_proj</b> Linear(128 → <b>512</b>) &nbsp;·&nbsp; model state<br>
+            &nbsp;&nbsp;+ token dropout 0.1, multiplicative, <b>train only</b></li>
+        <li><b>state_encoder</b> Linear(1 → 256) → ReLU → Linear(256 → <b>512</b>)</li>
+        <li><b>state_pos_embedding</b> Embedding(16, 512), then Dropout(<b>0.5</b>)</li>
+      </ul>
+      <p class="note">The state encoder maps <b>one scalar at a time</b> to 512 — each of the six
+      numbers becomes its own token, distinguished only by the positional embedding, which is
+      then dropped half the time.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>concat([kv, img, state], dim=1)</code><span class="lbl">→ (B, L_kv + 256 + 6, 512)</span></div>
+
+    <div class="blk fast">
+      <div class="blk-head"><span class="blk-name">Query construction</span></div>
+      <ul>
+        <li><b>action_chunk_embed</b> Embedding(<b>30</b>, 512) — one learned query per timestep</li>
+        <li>expanded to (B, 30, 512); <b>no</b> input from the observation</li>
+      </ul>
+      <p class="note">The 30 waypoints are decoded <b>in parallel</b>, not autoregressively.
+      Step 29 never sees step 28 — smoothness is whatever the shared context implies.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>Q (B, 30, 512)</code><span class="lbl">K, V ← context above</span></div>
+
+    <div class="blk fast">
+      <div class="blk-head">
+        <span class="blk-name">3 × CrossAttentionTransformer</span>
+        <span class="tag t-params">identical blocks</span>
+      </div>
+      <ul>
+        <li><b>MultiheadAttention</b>(embed 512, <b>8 heads</b> × 64, dropout 0.1, batch_first)</li>
+        <li>&nbsp;&nbsp;in_proj (1536, 512) — Q, K, V fused &nbsp;·&nbsp; out_proj (512, 512)</li>
+        <li><b>x = norm1(x + dropout(attn))</b> &nbsp;·&nbsp; LayerNorm(512)</li>
+        <li><b>FFN</b> Linear(512 → <b>2048</b>) → GELU → Dropout(0.1) → Linear(2048 → 512)</li>
+        <li><b>x = norm2(x + dropout(ffn))</b> &nbsp;·&nbsp; LayerNorm(512)</li>
+      </ul>
+      <p class="note"><b>Post-norm</b>, and cross-attention only — the queries never attend to
+      <i>each other</i>, only to the context. Context is re-read from scratch by all 3 layers.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(B, 30, 512)</code></div>
+
+    <div class="blk fast">
+      <div class="blk-head"><span class="blk-name">Output head</span></div>
+      <ul>
+        <li>Linear(512 → 256) → <b>ELU</b> → Linear(256 → <b>2</b>)</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>waypoints (B, 30, 2)</code><span class="lbl">[dx, dy] cumulative offsets, FLU, 0.1 s apart</span></div>
+
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">02</span> Parameter budget</h2>
+  <p class="lede">
+    Counted from the shipped checkpoint's <code class="inl">state_dict</code>, not estimated.
+    The action expert is <b>0.54 %</b> of the network and is the only thing stage 2 updates.
+  </p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Module</th><th class="num">Parameters</th><th class="num">Share</th>
+        <th>Stage 1</th><th>Stage 2</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>InternViT-300M vision tower</td><td class="num">608 024 576</td><td class="num">32.23 %</td><td>frozen</td><td>frozen</td></tr>
+      <tr><td>mlp1 projector</td><td class="num">8 965 632</td><td class="num">0.48 %</td><td><b>trained</b></td><td>frozen</td></tr>
+      <tr><td>Qwen2-0.5B language model</td><td class="num">1 259 395 840</td><td class="num">66.75 %</td><td><b>trained</b></td><td>frozen</td></tr>
+      <tr><td>ActionExpert</td><td class="num">10 269 954</td><td class="num">0.54 %</td><td>—</td><td><b>trained</b></td></tr>
+      <tr class="total"><td>Total</td><td class="num">1 886 656 002</td><td class="num">100 %</td>
+          <td class="num">1 268 361 472</td><td class="num">10 269 954</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>ActionExpert, tensor by tensor</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Tensor</th><th>Shape</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>down_proj</code></td><td><code>(512, 896) + (512,)</code></td><td>visual tokens → hidden</td></tr>
+      <tr><td><code>kv_cache_proj</code></td><td><code>(512, 128) + (512,)</code></td><td>VLM model state → hidden</td></tr>
+      <tr><td><code>action_chunk_embed</code></td><td><code>(30, 512)</code></td><td>one query per timestep</td></tr>
+      <tr><td><code>state_encoder.0 / .2</code></td><td><code>(256, 1) / (512, 256)</code></td><td>scalar → hidden</td></tr>
+      <tr><td><code>state_pos_embedding</code></td><td><code>(16, 512)</code></td><td>slot identity for the 6 scalars</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.cross_attn.in_proj</code></td><td><code>(1536, 512)</code></td><td>fused Q·K·V</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.cross_attn.out_proj</code></td><td><code>(512, 512)</code></td><td>attention output</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.ffn.0 / .3</code></td><td><code>(2048, 512) / (512, 2048)</code></td><td>feed-forward, ratio 4×</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.norm1 / norm2</code></td><td><code>(512,) ×2</code></td><td>post-norm</td></tr>
+      <tr><td><code>mlp.0 / mlp.2</code></td><td><code>(256, 512) / (2, 256)</code></td><td>head → (dx, dy)</td></tr>
+      <tr class="total"><td>50 tensors</td><td class="num">10 269 954</td><td></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">03</span> Losses</h2>
+  <p class="lede">
+    Two stages, two losses, and <b>they never meet</b>. There is no joint objective anywhere in
+    the codebase — no weighted sum, no alternating schedule.
+  </p>
+
+  <h3>Stage 1 — language loss</h3>
+  <div class="formula"><span class="cm"># ticvla/models/vlm.py — InternVL's own causal-LM head</span>
+language_loss = CrossEntropy(logits[..., :-1, :], labels[..., 1:])
+
+<span class="cm"># ticvla/data/vlm_data.py — mask everything before the answer turn</span>
+labels        = input_ids.clone()
+sep_id        = tokenizer.convert_tokens_to_ids('assistant')
+start_idx     = first position where labels[i] == sep_id
+labels[i, :start_idx] = -100        <span class="cm"># system + user + images ignored</span></div>
+
+  <p class="note" style="margin-top:14px">The supervised target string, built per sample:</p>
+  <div class="formula">&lt;think&gt;
+{Chain of Thought Reasoning}
+&lt;/think&gt;
+&lt;answer&gt;(x₃, y₃, θ₃), (x₆, y₆, θ₆), (x₉, y₉, θ₉)&lt;/answer&gt;
+
+<span class="cm"># from the DELAYED frame's future, in delayed-frame coordinates</span>
+<span class="cm"># indices 29 / 59 / 89 at 10 Hz  ->  3 s, 6 s, 9 s</span>
+θ = atan2(y, x + 1e-3)              <span class="cm"># redundant: it is just the pair's own bearing</span></div>
+
+  <h3>Stage 2 — action loss</h3>
+  <div class="formula"><span class="cm"># ticvla/training/train.py — this is the entire objective</span>
+action_loss = F.smooth_l1_loss(predicted_waypoints, target_waypoints)
+total_loss  = action_loss
+
+<span class="cm"># Huber, beta = 1.0, reduction = 'mean' over (B, 30, 2)</span>
+<span class="cm">#   0.5 (p - t)^2        if |p - t| &lt; 1</span>
+<span class="cm">#   |p - t| - 0.5        otherwise</span>
+
+<span class="cm"># reported, never optimised:</span>
+ADE = ‖p - t‖₂.mean()              <span class="cm"># average displacement, all 30 steps</span>
+FDE = ‖p - t‖₂[:, -1].mean()       <span class="cm"># final displacement, step 30 only</span></div>
+
+  <div class="callout">
+    <p class="ct">The gap this leaves</p>
+    <p><b>TICVLA.forward returns a language_loss that stage 2 never reads.</b> With
+    <code class="inl">train_vlm=False</code> the VLM's parameters have
+    <code class="inl">requires_grad=False</code>, the KV cache is <code class="inl">.detach()</code>ed,
+    and <code class="inl">extract_feature</code> runs under <code class="inl">no_grad</code>. Three
+    independent barriers, so the returned value is a zero tensor that is dropped on the floor.</p>
+    <p>The consequence is structural: <b>no action error ever reaches the VLM.</b> The language model
+    is optimised purely to write plausible waypoint <i>text</i> at 3/6/9 s, and the action expert
+    is optimised purely to fit trajectories given a state it cannot influence. Whatever steering
+    competence lives in the network as a whole was learned by 10.3 M parameters reading a
+    frozen 128-dimensional summary.</p>
+  </div>
+
+  <h3>Optimisation, both stages</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Setting</th><th>Stage 1 · VLM</th><th>Stage 2 · action</th></tr></thead>
+    <tbody>
+      <tr><td>Optimiser</td><td>AdamW</td><td>AdamW</td></tr>
+      <tr><td>Parameter group</td><td><code>requires_grad</code> params</td><td><code>model.action_expert</code> only</td></tr>
+      <tr><td>Learning rate</td><td class="num">1e-4</td><td class="num">2e-4 <span style="color:var(--ink-3)">(ckpt)</span></td></tr>
+      <tr><td>Weight decay</td><td class="num">1e-5</td><td class="num">1e-5</td></tr>
+      <tr><td>Schedule</td><td colspan="2">linear warmup 1000 steps → cosine decay → floor at 1 % of peak</td></tr>
+      <tr><td>Precision</td><td colspan="2">bf16-mixed · grad-clip 1.0 · accumulate 1</td></tr>
+      <tr><td>Checkpoint monitor</td><td><code>val_language_loss</code></td><td><code>val_total_loss</code></td></tr>
+      <tr><td>Shipped checkpoint</td><td>val_loss 0.3949 @ epoch 5</td><td>epoch 9 · step 39 310</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">04</span> Targets and the delay mechanism</h2>
+  <p class="lede">
+    The delay is not an artefact being tolerated — it is sampled on purpose, and it is what
+    the two branches are asked to reconcile.
+  </p>
+
+  <div class="formula"><span class="cm"># per training sample, ticvla/data/policy_data.py</span>
+max_delay  = min(10.0, current_time)
+τ          = max_delay * np.random.rand()      <span class="cm"># uniform, fresh every __getitem__</span>
+files_back = int(τ / 0.1)                      <span class="cm"># the corpus is 10 Hz</span>
+
+<span class="cm"># the VLM sees the frame stack ending at  t - τ</span>
+<span class="cm"># the action expert sees the frame at     t</span>
+<span class="cm"># and is told how far the robot moved in between:</span>
+dx, dy = delayed_frame.future[round(τ * 10)].offset[:2]</div>
+
+  <p class="note" style="margin-top:16px">
+    So <b>robot_state[3:5]</b> is a delay-compensation channel: it tells the head how stale
+    the thinking it is reading actually is. The action targets themselves are unconditional —
+    30 cumulative <code class="inl">(dx, dy)</code> offsets straight out of the current
+    frame's <code class="inl">future</code> list, zero-filled if the episode ends early.
+  </p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Signal</th><th>Frame of reference</th><th>Shape</th><th>Consumer</th></tr></thead>
+    <tbody>
+      <tr><td>delayed image stack</td><td><i>t − τ</i> and earlier</td><td><code>(ΣT,3,448,448)</code></td><td>VLM</td></tr>
+      <tr><td>guidance_waypoint</td><td>delayed-frame coords</td><td><code>(B, 9)</code></td><td>stage-1 text target</td></tr>
+      <tr><td>current image</td><td><i>t</i></td><td><code>(B, 256, 896)</code></td><td>action expert</td></tr>
+      <tr><td>robot_state</td><td><i>t</i>, FLU body frame</td><td><code>(B, 5)</code></td><td>action expert</td></tr>
+      <tr><td>time_delay τ</td><td>seconds</td><td><code>(B,)</code></td><td>action expert</td></tr>
+      <tr><td>waypoints</td><td><i>t</i>, cumulative, FLU</td><td><code>(B, 30, 2)</code></td><td>stage-2 target</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="note" style="margin-top:16px">
+    <b>previous_waypoints_text</b>, fed to the VLM as prose, is built by integrating history at
+    1 Hz with a running yaw: <code class="inl">Δθ = 2·atan2(dy, dx + 1e-6)</code> accumulated
+    and wrapped to ±π. It is the only place the network is told its own recent motion in words.
+  </p>
+</section>
+
+<footer>
+  All dimensions read from ticvla/models/{ticvla,vlm}.py · ticvla/utils/vision.py ·
+  ticvla/data/{policy_data,vlm_data}.py · ticvla/training/{train,config}.py ·
+  InternVL3-1B/config.json · verified against TIC-VLA-model.ckpt (50 action-expert tensors).
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn  = document.getElementById('themebtn');
+  var KEY  = 'ticvla-arch-theme';
+  try { var saved = localStorage.getItem(KEY); if (saved) root.setAttribute('data-theme', saved); }
+  catch (e) { /* file:// with storage blocked -- the media query still applies */ }
+  btn.addEventListener('click', function () {
+    var cur = root.getAttribute('data-theme');
+    if (!cur) {
+      cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    var next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

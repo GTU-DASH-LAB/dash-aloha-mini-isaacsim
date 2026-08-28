@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIC-VLA — Tam Mimari Referansı</title>
+<style>
+
+  :root {
+    --ink:        #12181B;
+    --ink-2:      #3D4A50;
+    --ink-3:      #6E7D84;
+    --paper:      #F6F7F7;
+    --paper-2:    #FFFFFF;
+    --rule:       #D3DADC;
+    --rule-2:     #E6EAEB;
+
+    /* Semantic channels. Each of these means one thing and is used for nothing else. */
+    --slow:       #3B5B8C;   /* the VLM rate domain, ~1.5-2.0 s */
+    --slow-bg:    #EAEFF6;
+    --fast:       #A8641A;   /* the action-expert rate domain, 10 Hz */
+    --fast-bg:    #F8EFE2;
+    --frozen:     #61757A;   /* no gradient flows through this block */
+    --frozen-bg:  #EBEEEE;
+    --loss:       #96323F;   /* a denetim noktası */
+    --loss-bg:    #F7EAEC;
+
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:       #E4EAEC;
+      --ink-2:     #A6B4BA;
+      --ink-3:     #77878E;
+      --paper:     #0F1417;
+      --paper-2:   #161D21;
+      --rule:      #2C363B;
+      --rule-2:    #222A2E;
+      --slow:      #8FB3E4;
+      --slow-bg:   #1A2534;
+      --fast:      #E0A45C;
+      --fast-bg:   #2A2015;
+      --frozen:    #8FA1A7;
+      --frozen-bg: #1D2427;
+      --loss:      #E08792;
+      --loss-bg:   #2C1A1E;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#E4EAEC; --ink-2:#A6B4BA; --ink-3:#77878E;
+    --paper:#0F1417; --paper-2:#161D21; --rule:#2C363B; --rule-2:#222A2E;
+    --slow:#8FB3E4; --slow-bg:#1A2534; --fast:#E0A45C; --fast-bg:#2A2015;
+    --frozen:#8FA1A7; --frozen-bg:#1D2427; --loss:#E08792; --loss-bg:#2C1A1E;
+  }
+  :root[data-theme="light"] {
+    --ink:#12181B; --ink-2:#3D4A50; --ink-3:#6E7D84;
+    --paper:#F6F7F7; --paper-2:#FFFFFF; --rule:#D3DADC; --rule-2:#E6EAEB;
+    --slow:#3B5B8C; --slow-bg:#EAEFF6; --fast:#A8641A; --fast-bg:#F8EFE2;
+    --frozen:#61757A; --frozen-bg:#EBEEEE; --loss:#96323F; --loss-bg:#F7EAEC;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 clamp(16px, 4vw, 48px) 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; }
+
+  /* ---- masthead ---------------------------------------------------- */
+  header { padding: clamp(40px, 7vw, 80px) 0 32px; border-bottom: 2px solid var(--ink); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--ink-3); margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.4vw, 50px); line-height: 1.02; letter-spacing: -0.025em;
+    font-weight: 700; margin: 0 0 14px; text-wrap: balance;
+  }
+  .standfirst {
+    font-size: clamp(15px, 1.7vw, 18px); color: var(--ink-2); max-width: 62ch;
+    margin: 0; text-wrap: pretty;
+  }
+  .provenance {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+    margin-top: 26px; display: flex; flex-wrap: wrap; gap: 6px 22px;
+  }
+  .provenance b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---- legend ------------------------------------------------------ */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin: 28px 0 0; padding: 0; list-style: none;
+  }
+  .legend li {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+    padding: 5px 11px; border-radius: 2px; border: 1px solid;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .legend .sw { width: 9px; height: 9px; border-radius: 1px; }
+  .lg-slow   { color: var(--slow);   border-color: var(--slow);   background: var(--slow-bg); }
+  .lg-slow   .sw { background: var(--slow); }
+  .lg-fast   { color: var(--fast);   border-color: var(--fast);   background: var(--fast-bg); }
+  .lg-fast   .sw { background: var(--fast); }
+  .lg-frozen { color: var(--frozen); border-color: var(--frozen); background: var(--frozen-bg); }
+  .lg-frozen .sw { background: var(--frozen); }
+  .lg-loss   { color: var(--loss);   border-color: var(--loss);   background: var(--loss-bg); }
+  .lg-loss   .sw { background: var(--loss); }
+
+  /* ---- sections ---------------------------------------------------- */
+  section { margin-top: clamp(48px, 7vw, 76px); }
+  h2 {
+    font-size: 12px; font-family: var(--mono); letter-spacing: 0.15em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 500;
+    margin: 0 0 6px; padding-bottom: 10px; border-bottom: 1px solid var(--rule);
+  }
+  h2 .n { color: var(--ink); margin-right: 12px; }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 18px 0 0; }
+  h3 {
+    font-size: 17px; letter-spacing: -0.012em; margin: 34px 0 10px; font-weight: 650;
+  }
+
+  /* ---- the diagram spine ------------------------------------------- */
+  .flow { margin-top: 30px; }
+
+  .blk {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink-3);
+    border-radius: 3px;
+    padding: 15px 18px;
+    position: relative;
+  }
+  .blk.slow   { border-left-color: var(--slow); }
+  .blk.fast   { border-left-color: var(--fast); }
+  .blk.frozen { border-left-color: var(--frozen); background: var(--frozen-bg); }
+  .blk.lossblk{ border-left-color: var(--loss);  background: var(--loss-bg); }
+
+  .blk-head {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: 8px 12px; margin-bottom: 4px;
+  }
+  .blk-name { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+  .tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.09em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 2px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .t-frozen { color: var(--frozen); }
+  .t-train  { color: var(--fast); }
+  .t-slow   { color: var(--slow); }
+  .t-params { color: var(--ink-3); border-color: var(--rule); font-variant-numeric: tabular-nums; }
+
+  .blk ul { margin: 8px 0 0; padding-left: 0; list-style: none; }
+  .blk ul li {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.75;
+    color: var(--ink-2); padding-left: 15px; position: relative;
+  }
+  .blk ul li::before {
+    content: "\2013"; position: absolute; left: 0; color: var(--ink-3);
+  }
+  .blk ul li b { color: var(--ink); font-weight: 600; }
+  .note { font-size: 13.5px; color: var(--ink-2); margin: 9px 0 0; font-family: var(--sans); }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* edge annotation between blocks: the tensor on the wire */
+  .edge {
+    display: flex; align-items: center; gap: 11px;
+    padding: 7px 0 7px 22px; position: relative;
+  }
+  .edge::before {
+    content: ""; position: absolute; left: 6px; top: 0; bottom: 0;
+    width: 1px; background: var(--rule);
+  }
+  .edge .arw { color: var(--ink-3); font-size: 12px; line-height: 1; }
+  .edge code {
+    font-family: var(--mono); font-size: 12px; color: var(--ink);
+    background: var(--rule-2); padding: 2.5px 8px; border-radius: 2px;
+    white-space: nowrap;
+  }
+  .edge span.lbl { font-size: 12.5px; color: var(--ink-3); }
+
+  /* rate-domain banner */
+  .domain {
+    display: flex; align-items: center; gap: 12px;
+    margin: 30px 0 14px; padding: 9px 14px; border-radius: 3px;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; font-weight: 500;
+  }
+  .domain.slow { background: var(--slow-bg); color: var(--slow); }
+  .domain.fast { background: var(--fast-bg); color: var(--fast); }
+  .domain .rate { margin-left: auto; letter-spacing: 0.04em; text-transform: none; opacity: 0.85; }
+
+  /* two blocks side by side merging into one */
+  .merge { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .merge { grid-template-columns: 1fr; } }
+
+  /* ---- tables ------------------------------------------------------ */
+  .tbl-wrap { overflow-x: auto; margin-top: 18px; border: 1px solid var(--rule); border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 560px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule-2); }
+  th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 500;
+    background: var(--rule-2); border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+  td code { font-family: var(--mono); font-size: 12px; }
+  tr.total td { border-top: 1px solid var(--rule); font-weight: 650; color: var(--ink); }
+
+  /* ---- formula ----------------------------------------------------- */
+  .formula {
+    font-family: var(--mono); font-size: 13px; line-height: 1.85;
+    background: var(--paper-2); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 16px 18px; margin-top: 14px;
+    overflow-x: auto; white-space: pre;
+    color: var(--ink);
+  }
+  .formula .cm { color: var(--ink-3); }
+
+  /* ---- callout ----------------------------------------------------- */
+  .callout {
+    border: 1px solid var(--rule); border-left: 3px solid var(--loss);
+    background: var(--paper-2); border-radius: 3px;
+    padding: 15px 18px; margin-top: 20px;
+  }
+  .callout .ct {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--loss); margin: 0 0 7px; font-weight: 600;
+  }
+  .callout p { margin: 0; color: var(--ink-2); font-size: 14px; }
+  .callout p + p { margin-top: 9px; }
+  .callout b { color: var(--ink); font-weight: 600; }
+
+  code.inl {
+    font-family: var(--mono); font-size: 0.875em;
+    background: var(--rule-2); padding: 1.5px 5px; border-radius: 2px;
+  }
+
+  footer {
+    margin-top: 76px; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  }
+  a { color: var(--slow); }
+  :focus-visible { outline: 2px solid var(--slow); outline-offset: 2px; }
+
+  .pagenav{display:flex;gap:10px;align-items:center;margin:0 0 20px;flex-wrap:wrap}
+  .pagenav a,.pagenav button{font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+      text-transform:uppercase;padding:5px 12px;border-radius:2px;border:1px solid var(--rule);
+      background:var(--paper-2);color:var(--ink-2);text-decoration:none;cursor:pointer;
+      line-height:1.6}
+  .pagenav a:hover,.pagenav button:hover{border-color:var(--ink-3);color:var(--ink)}
+  .pagenav a[aria-current="page"]{border-color:var(--ink);color:var(--ink);font-weight:600}
+  .pagenav .sep{color:var(--rule);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="pagenav">
+  <a href="visual.tr.html">Diyagramlar</a>
+  <a href="reference.tr.html" aria-current="page">Tam referans</a>
+  <span class="sep">|</span>
+  <a href="reference.tr.html" aria-current="page">TR</a>
+  <a href="reference.en.html">EN</a>
+  <span class="sep">|</span>
+  <button id="themebtn" type="button">Tema</button>
+</nav>
+
+<header>
+  <p class="eyebrow">Mimari referansı · koddan okundu</p>
+  <h1>TIC-VLA</h1>
+  <p class="standfirst">
+    İki hızlı bir navigasyon politikası: 1.9 milyar parametreli bir görsel-dil modeli gecikmiş
+    kareler üzerinde yavaşça düşünüp attention durumunu geride bırakır; 10.3 milyonluk bir
+    cross-attention head o durumu okuyup 10 Hz'de 30 waypoint üretir. Aşağıdaki her boyut
+    koddan okundu ve teslim edilen checkpoint'e karşı doğrulandı.
+  </p>
+  <div class="provenance">
+    <span><b>kaynak</b> robotics/TIC-VLA</span>
+    <span><b>omurga</b> InternVL3-1B</span>
+    <span><b>ckpt</b> TIC-VLA-model.ckpt</span>
+    <span><b>epoch</b> 9 · step 39 310</span>
+  </div>
+  <ul class="legend">
+    <li class="lg-slow"><span class="sw"></span>yavaş yol — VLM</li>
+    <li class="lg-fast"><span class="sw"></span>hızlı yol — action expert</li>
+    <li class="lg-frozen"><span class="sw"></span>donuk · gradyan yok</li>
+    <li class="lg-loss"><span class="sw"></span>denetim noktası</li>
+  </ul>
+</header>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">01</span> Sinyal yolu</h2>
+  <p class="lede">
+    Yukarıdan aşağıya, tensör işlemlerinin gerçek sırasıdır. Her bloğun sol şeridinin rengi
+    hız alanını gösterir; gri şeritteki kutular hiçbir aşamada gradyan taşımaz. Bloklar
+    arasındaki metin, kablodaki tensördür.
+  </p>
+
+  <div class="flow">
+
+    <div class="domain slow">
+      Yavaş kol · gecikmiş kareler üzerinde VLM
+      <span class="rate">plan başına bir kez · ~1.5–2.0 s duvar saati</span>
+    </div>
+
+    <div class="blk slow">
+      <div class="blk-head"><span class="blk-name">Girdi — gecikmiş kare yığını</span></div>
+      <ul>
+        <li><b>Gecikmiş</b> örneğin geçmişinden N görüntü + o örneğin kendi güncel karesi</li>
+        <li><b>load_image</b>(input_size=448, max_num=1) → görüntü başına tam olarak 1 tile, thumbnail yok</li>
+        <li>448×448 bicubic yeniden boyutlandırma · ToTensor · Normalize(ImageNet μ/σ)</li>
+        <li>Delay <b>τ ~ U(0, min(10 s, t))</b> her eğitim örneğinde yeniden örneklenir</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 3, 448, 448)</code><span class="lbl">pixel_values, bfloat16</span></div>
+
+    <div class="blk frozen">
+      <div class="blk-head">
+        <span class="blk-name">InternViT-300M</span>
+        <span class="tag t-frozen">her iki aşamada da donuk</span>
+        <span class="tag t-params">608 024 576 p</span>
+      </div>
+      <ul>
+        <li>patch 14 → <b>32 × 32 = 1024</b> patch + 1 CLS = 1025 token</li>
+        <li>hidden <b>1024</b> · 24 katman · 16 head × 64 · FFN <b>4096</b></li>
+        <li>LayerNorm, eps 1e-6 · drop_path 0.1 · qk_norm kapalı · flash-attn kapalı</li>
+        <li><b>select_layer = −1</b> → last_hidden_state, then <code>[:, 1:, :]</code> CLS'i atar</li>
+      </ul>
+      <p class="note"><b>TICVLA_VLM.__init__</b> içinde açık bir döngüyle donduruluyor ve her
+      <code class="inl">.eval()</code> <code class="inl">.train()</code> çağrısında tekrar buna zorlanıyor — yani dropout ve
+      drop-path hiçbir aşamada devreye girmiyor.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 1024, 1024)</code><span class="lbl">patch token'ları, CLS çıkarıldı</span></div>
+
+    <div class="blk frozen">
+      <div class="blk-head"><span class="blk-name">pixel_shuffle · scale 0.5 · ps_version v2</span></div>
+      <ul>
+        <li>(n, 32, 32, 1024) → 2×2 uzamsal bloğu kanallara katlar → (n, 16, 16, 4096)</li>
+        <li><b>4× daha az token, 4× daha geniş</b> — 1024 → <b>256</b> token, boyut 4096</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 256, 4096)</code></div>
+
+    <div class="blk slow">
+      <div class="blk-head">
+        <span class="blk-name">mlp1 — görüntü→dil projektörü</span>
+        <span class="tag t-slow">stage 1'de eğitilir</span>
+        <span class="tag t-params">8 965 632 p</span>
+      </div>
+      <ul>
+        <li>LayerNorm(4096)</li>
+        <li>Linear(4096 → <b>896</b>)</li>
+        <li>GELU</li>
+        <li>Linear(896 → 896)</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(ΣT, 256, 896)</code><span class="lbl">LM uzayındaki görsel token'lar</span></div>
+
+    <div class="blk slow">
+      <div class="blk-head"><span class="blk-name">Token yerleştirme</span></div>
+      <ul>
+        <li>Sohbet şablonundaki her <code>&lt;image&gt;</code>, şununla değiştirilir:<br>
+            <code>&lt;img&gt;</code> + <code>&lt;IMG_CONTEXT&gt;</code> × <b>256</b> + <code>&lt;/img&gt;</code></li>
+        <li>InternVL'in forward'ı bu <b>256</b> pozisyona görsel embedding'leri yerleştirir</li>
+        <li>Tokenizer <b>padding_side = 'left'</b></li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>input_ids (B, N)</code><span class="lbl">+ attention_mask, image_flags</span></div>
+
+    <div class="blk slow">
+      <div class="blk-head">
+        <span class="blk-name">Qwen2-0.5B dil modeli</span>
+        <span class="tag t-slow">stage 1'de eğitilir</span>
+        <span class="tag t-frozen">stage 2'de donuk</span>
+        <span class="tag t-params">1 259 395 840 p</span>
+      </div>
+      <ul>
+        <li>hidden <b>896</b> · 24 katman · FFN <b>4864</b> (SwiGLU) · RMSNorm eps 1e-6</li>
+        <li><b>14 query heads · 2 KV heads</b> (GQA) · head_dim <b>64</b></li>
+        <li>vocab 151 674 · max_pos 32 768 · RoPE θ = 1e6 · bağlanmamış embedding'ler</li>
+        <li><b>use_cache=True</b> ile çağrılır — ürün cache'tir, metin değil</li>
+      </ul>
+    </div>
+
+    <div class="merge">
+      <div>
+        <div class="edge"><span class="arw">▼</span><code>logits (B, N, 151674)</code></div>
+        <div class="blk lossblk">
+          <div class="blk-head"><span class="blk-name">→ Dil loss'u · sadece stage 1</span></div>
+          <p class="note">Ayrıntısı §3'te.</p>
+        </div>
+      </div>
+      <div>
+        <div class="edge"><span class="arw">▼</span><code>past_key_values</code><span class="lbl">24 katman</span></div>
+        <div class="blk slow">
+          <div class="blk-head"><span class="blk-name">KV-cache çıkarımı — devir teslimin tamamı</span></div>
+          <ul>
+            <li><b>Sadece son katman</b>: <code>past_key_values[-1]</code></li>
+            <li><b>Sadece value'lar</b> — key'ler atılır</li>
+            <li>(B, 2, L, 64) → permute → <b>(B, L, 128)</b></li>
+            <li>128 = 2 KV head × 64, <b>koda gömülü</b>, config'den okunmaz</li>
+            <li><code>.detach()</code> — sert gradyan bariyeri</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(B, L_kv, 128)</code><span class="lbl">"model state" — cache'in 1/24'ü, onun da yarısı</span></div>
+
+    <div class="domain fast">
+      Hızlı kol · güncel kare üzerinde action expert
+      <span class="rate">10 Hz · 30 steps = 3.0 s horizon</span>
+    </div>
+
+    <div class="merge">
+      <div class="blk fast">
+        <div class="blk-head"><span class="blk-name">Güncel kare kolu</span></div>
+        <ul>
+          <li>en <b>yakın</b> tek görüntü, ViT + mlp1 ile yeniden kodlanır</li>
+          <li><code>torch.no_grad()</code> altında → <b>(B, 256, 896)</b></li>
+          <li>kısa örnekler <b>baştan</b> sıfırla doldurulur</li>
+        </ul>
+      </div>
+      <div class="blk fast">
+        <div class="blk-head"><span class="blk-name">Robot durum vektörü</span></div>
+        <ul>
+          <li>[v<sub>x</sub>, v<sub>y</sub>, yaw_rate, dx, dy] ⊕ [τ] → <b>(B, 6, 1)</b></li>
+          <li>v = ilk gelecek offset ÷ 0.1 s</li>
+          <li>yaw_rate = wrap<sub>π</sub>(Δyaw) ÷ 0.1 s</li>
+          <li><b>dx, dy</b> = gecikmiş → şimdi yer değiştirmesi</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><span class="lbl">action expert'e üç akış girer</span></div>
+
+    <div class="blk fast">
+      <div class="blk-head">
+        <span class="blk-name">ActionExpert — girdi projeksiyonları</span>
+        <span class="tag t-train">stage 2'de eğitilir</span>
+      </div>
+      <ul>
+        <li><b>down_proj</b> Linear(896 → <b>512</b>) &nbsp;·&nbsp; görüntü token'ları</li>
+        <li><b>kv_cache_proj</b> Linear(128 → <b>512</b>) &nbsp;·&nbsp; model state<br>
+            &nbsp;&nbsp;+ token dropout 0.1, çarpımsal, <b>sadece eğitimde</b></li>
+        <li><b>state_encoder</b> Linear(1 → 256) → ReLU → Linear(256 → <b>512</b>)</li>
+        <li><b>state_pos_embedding</b> Embedding(16, 512), then Dropout(<b>0.5</b>)</li>
+      </ul>
+      <p class="note">State encoder <b>her seferinde tek bir skaleri</b> 512'ye eşler — altı sayının her biri kendi
+      token'ı olur ve birbirlerinden yalnızca pozisyon embedding'i ile ayrılırlar; o da
+      zamanın yarısında düşürülür.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>concat([kv, img, state], dim=1)</code><span class="lbl">→ (B, L_kv + 256 + 6, 512)</span></div>
+
+    <div class="blk fast">
+      <div class="blk-head"><span class="blk-name">Sorgu kurulumu</span></div>
+      <ul>
+        <li><b>action_chunk_embed</b> Embedding(<b>30</b>, 512) — zaman adımı başına bir öğrenilmiş sorgu</li>
+        <li>expanded to (B, 30, 512); <b>no</b> gözlemden gelen girdi</li>
+      </ul>
+      <p class="note">30 waypoint <b>paralel</b> çözülür, otoregresif değil. Adım 29, adım 28'i hiç görmez —
+      yumuşaklık ne ise ortak bağlamın ima ettiği şeydir.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>Q (B, 30, 512)</code><span class="lbl">K, V ← context above</span></div>
+
+    <div class="blk fast">
+      <div class="blk-head">
+        <span class="blk-name">3 × CrossAttentionTransformer</span>
+        <span class="tag t-params">identical blocks</span>
+      </div>
+      <ul>
+        <li><b>MultiheadAttention</b>(embed 512, <b>8 heads</b> × 64, dropout 0.1, batch_first)</li>
+        <li>&nbsp;&nbsp;in_proj (1536, 512) — Q, K, V birleşik &nbsp;·&nbsp; out_proj (512, 512)</li>
+        <li><b>x = norm1(x + dropout(attn))</b> &nbsp;·&nbsp; LayerNorm(512)</li>
+        <li><b>FFN</b> Linear(512 → <b>2048</b>) → GELU → Dropout(0.1) → Linear(2048 → 512)</li>
+        <li><b>x = norm2(x + dropout(ffn))</b> &nbsp;·&nbsp; LayerNorm(512)</li>
+      </ul>
+      <p class="note"><b>Post-norm</b> ve sadece cross-attention — sorgular <i>birbirlerine</i> hiç bakmaz, yalnızca
+      bağlama bakar. Bağlam, 3 katmanın her biri tarafından sıfırdan yeniden okunur.</p>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>(B, 30, 512)</code></div>
+
+    <div class="blk fast">
+      <div class="blk-head"><span class="blk-name">Çıkış head'i</span></div>
+      <ul>
+        <li>Linear(512 → 256) → <b>ELU</b> → Linear(256 → <b>2</b>)</li>
+      </ul>
+    </div>
+
+    <div class="edge"><span class="arw">▼</span><code>waypoints (B, 30, 2)</code><span class="lbl">[dx, dy] kümülatif offset'ler, FLU, 0.1 s aralıklı</span></div>
+
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">02</span> Parametre bütçesi</h2>
+  <p class="lede">
+    Teslim edilen checkpoint'in <code class="inl">state_dict</code>'inden sayıldı, tahmin değil.
+    Action expert ağın <b>%0.54</b>'ü ve stage 2'nin güncellediği tek şey.
+  </p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Modül</th><th class="num">Parametre</th><th class="num">Pay</th>
+        <th>Stage 1</th><th>Stage 2</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>InternViT-300M görüntü kulesi</td><td class="num">608 024 576</td><td class="num">32.23 %</td><td>donuk</td><td>donuk</td></tr>
+      <tr><td>mlp1 projektörü</td><td class="num">8 965 632</td><td class="num">0.48 %</td><td><b>eğitilir</b></td><td>donuk</td></tr>
+      <tr><td>Qwen2-0.5B dil modeli</td><td class="num">1 259 395 840</td><td class="num">66.75 %</td><td><b>eğitilir</b></td><td>donuk</td></tr>
+      <tr><td>ActionExpert</td><td class="num">10 269 954</td><td class="num">0.54 %</td><td>—</td><td><b>eğitilir</b></td></tr>
+      <tr class="total"><td>Toplam</td><td class="num">1 886 656 002</td><td class="num">100 %</td>
+          <td class="num">1 268 361 472</td><td class="num">10 269 954</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>ActionExpert, tensör tensör</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Tensör</th><th>Şekil</th><th>Rol</th></tr></thead>
+    <tbody>
+      <tr><td><code>down_proj</code></td><td><code>(512, 896) + (512,)</code></td><td>görsel token'lar → hidden</td></tr>
+      <tr><td><code>kv_cache_proj</code></td><td><code>(512, 128) + (512,)</code></td><td>VLM model state → hidden</td></tr>
+      <tr><td><code>action_chunk_embed</code></td><td><code>(30, 512)</code></td><td>zaman adımı başına bir sorgu</td></tr>
+      <tr><td><code>state_encoder.0 / .2</code></td><td><code>(256, 1) / (512, 256)</code></td><td>skaler → hidden</td></tr>
+      <tr><td><code>state_pos_embedding</code></td><td><code>(16, 512)</code></td><td>6 skaler için slot kimliği</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.cross_attn.in_proj</code></td><td><code>(1536, 512)</code></td><td>birleşik Q·K·V</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.cross_attn.out_proj</code></td><td><code>(512, 512)</code></td><td>attention çıktısı</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.ffn.0 / .3</code></td><td><code>(2048, 512) / (512, 2048)</code></td><td>feed-forward, oran 4×</td></tr>
+      <tr><td><code>attention_layers.{0,1,2}.norm1 / norm2</code></td><td><code>(512,) ×2</code></td><td>post-norm</td></tr>
+      <tr><td><code>mlp.0 / mlp.2</code></td><td><code>(256, 512) / (2, 256)</code></td><td>head → (dx, dy)</td></tr>
+      <tr class="total"><td>50 tensör</td><td class="num">10 269 954</td><td></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">03</span> Loss fonksiyonları</h2>
+  <p class="lede">
+    İki aşama, iki loss ve <b>hiç buluşmuyorlar</b>. Kod tabanının hiçbir yerinde ortak bir amaç
+    fonksiyonu yok — ağırlıklı toplam yok, dönüşümlü şema yok.
+  </p>
+
+  <h3>Stage 1 — dil loss'u</h3>
+  <div class="formula"><span class="cm"># ticvla/models/vlm.py — InternVL'in kendi causal-LM head'i</span>
+language_loss = CrossEntropy(logits[..., :-1, :], labels[..., 1:])
+
+<span class="cm"># ticvla/data/vlm_data.py — cevap turundan öncesini maskele</span>
+labels        = input_ids.clone()
+sep_id        = tokenizer.convert_tokens_to_ids('assistant')
+start_idx     = labels[i] == sep_id olan ilk konum
+labels[i, :start_idx] = -100        <span class="cm"># system + user + görüntüler yok sayılır</span></div>
+
+  <p class="note" style="margin-top:14px">Örnek başına kurulan denetimli hedef metni:</p>
+  <div class="formula">&lt;think&gt;
+{Chain of Thought Reasoning}
+&lt;/think&gt;
+&lt;answer&gt;(x₃, y₃, θ₃), (x₆, y₆, θ₆), (x₉, y₉, θ₉)&lt;/answer&gt;
+
+<span class="cm"># GECİKMİŞ karenin geleceğinden, gecikmiş kare koordinatlarında</span>
+<span class="cm"># 10 Hz'de indeks 29 / 59 / 89  ->  3 s, 6 s, 9 s</span>
+θ = atan2(y, x + 1e-3)              <span class="cm"># gereksiz: sadece çiftin kendi açısı</span></div>
+
+  <h3>Stage 2 — aksiyon loss'u</h3>
+  <div class="formula"><span class="cm"># ticvla/training/train.py — amaç fonksiyonunun tamamı budur</span>
+action_loss = F.smooth_l1_loss(predicted_waypoints, target_waypoints)
+total_loss  = action_loss
+
+<span class="cm"># Huber, beta = 1.0, reduction = 'mean', (B, 30, 2) üzerinde</span>
+<span class="cm">#   0.5 (p - t)^2        if |p - t| &lt; 1</span>
+<span class="cm">#   |p - t| - 0.5        otherwise</span>
+
+<span class="cm"># raporlanır, hiç optimize edilmez:</span>
+ADE = ‖p - t‖₂.mean()              <span class="cm"># ortalama yer değiştirme, 30 adımın hepsi</span>
+FDE = ‖p - t‖₂[:, -1].mean()       <span class="cm"># son yer değiştirme, sadece adım 30</span></div>
+
+  <div class="callout">
+    <p class="ct">Bunun bıraktığı boşluk</p>
+    <p><b>TICVLA.forward, stage 2'nin hiç okumadığı bir language_loss döndürür.</b>
+    <code class="inl">train_vlm=False</code> ile VLM'in parametreleri
+    <code class="inl">requires_grad=False</code>, olur, KV cache <code class="inl">.detach()</code> edilir ve
+    <code class="inl">extract_feature</code> <code class="inl">no_grad</code> altında çalışır. Üç
+    bağımsız bariyer; dolayısıyla dönen değer, yere bırakılan bir sıfır tensörüdür.</p>
+    <p>Sonuç yapısaldır: <b>hiçbir aksiyon hatası VLM'e ulaşmaz.</b> Dil modeli yalnızca 3/6/9 s için
+    makul waypoint <i>metni</i> yazmak üzere optimize edilir; action expert ise yalnızca
+    etkileyemediği bir durumdan trajektori uydurmak üzere. Ağın bütününde bulunan direksiyon
+    yeteneği ne varsa, donuk 128 boyutlu bir özeti okuyan 10.3 M parametre tarafından
+    öğrenilmiştir.</p>
+  </div>
+
+  <h3>Optimizasyon, her iki aşama</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Ayar</th><th>Stage 1 · VLM</th><th>Stage 2 · action</th></tr></thead>
+    <tbody>
+      <tr><td>Optimize edici</td><td>AdamW</td><td>AdamW</td></tr>
+      <tr><td>Parametre grubu</td><td><code>requires_grad</code> olanlar</td><td>sadece <code>model.action_expert</code></td></tr>
+      <tr><td>Öğrenme oranı</td><td class="num">1e-4</td><td class="num">2e-4 <span style="color:var(--ink-3)">(ckpt)</span></td></tr>
+      <tr><td>Weight decay</td><td class="num">1e-5</td><td class="num">1e-5</td></tr>
+      <tr><td>Şema</td><td colspan="2">1000 adım doğrusal warmup → cosine azalma → tepe değerin %1'inde taban</td></tr>
+      <tr><td>Hassasiyet</td><td colspan="2">bf16-mixed · grad-clip 1.0 · accumulate 1</td></tr>
+      <tr><td>Checkpoint izleyici</td><td><code>val_language_loss</code></td><td><code>val_total_loss</code></td></tr>
+      <tr><td>Teslim edilen checkpoint</td><td>val_loss 0.3949 @ epoch 5</td><td>epoch 9 · step 39 310</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ================================================================= -->
+<section>
+  <h2><span class="n">04</span> Hedefler ve gecikme mekanizması</h2>
+  <p class="lede">
+    Gecikme, katlanılan bir kusur değil — bilerek örnekleniyor ve iki kolun uzlaştırması istenen
+    şeyin ta kendisi.
+  </p>
+
+  <div class="formula"><span class="cm"># eğitim örneği başına, ticvla/data/policy_data.py</span>
+max_delay  = min(10.0, current_time)
+τ          = max_delay * np.random.rand()      <span class="cm"># tekdüze, her __getitem__'de yeniden</span>
+files_back = int(τ / 0.1)                      <span class="cm"># korpus 10 Hz</span>
+
+<span class="cm"># VLM,  t - τ  anında biten kare yığınını görür</span>
+<span class="cm"># action expert ise      t  anındaki kareyi görür</span>
+<span class="cm"># ve arada robotun ne kadar hareket ettiği kendisine söylenir:</span>
+dx, dy = delayed_frame.future[round(τ * 10)].offset[:2]</div>
+
+  <p class="note" style="margin-top:16px">
+    So <b>robot_state[3:5]</b> bir gecikme telafi kanalıdır: okuduğu düşüncenin ne kadar bayat olduğunu head'e söyler.
+    Aksiyon hedeflerinin kendisi ise koşulsuzdur — güncel karenin
+    <code class="inl">future</code> listesinden doğrudan gelen 30 kümülatif
+    <code class="inl">(dx, dy)</code> offset'i, bölüm erken biterse sıfırla doldurulur.
+  </p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Sinyal</th><th>Referans çerçevesi</th><th>Şekil</th><th>Tüketen</th></tr></thead>
+    <tbody>
+      <tr><td>gecikmiş görüntü yığını</td><td><i>t − τ</i> ve öncesi</td><td><code>(ΣT,3,448,448)</code></td><td>VLM</td></tr>
+      <tr><td>guidance_waypoint</td><td>gecikmiş kare koordinatları</td><td><code>(B, 9)</code></td><td>stage 1 metin hedefi</td></tr>
+      <tr><td>güncel görüntü</td><td><i>t</i></td><td><code>(B, 256, 896)</code></td><td>action expert</td></tr>
+      <tr><td>robot_state</td><td><i>t</i>, FLU gövde çerçevesi</td><td><code>(B, 5)</code></td><td>action expert</td></tr>
+      <tr><td>time_delay τ</td><td>saniye</td><td><code>(B,)</code></td><td>action expert</td></tr>
+      <tr><td>waypoint'ler</td><td><i>t</i>, kümülatif, FLU</td><td><code>(B, 30, 2)</code></td><td>stage 2 hedefi</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="note" style="margin-top:16px">
+    <b>previous_waypoints_text</b>, VLM'e düz metin olarak verilir ve geçmişin 1 Hz'de,
+    yürüyen bir yaw ile integre edilmesiyle kurulur: <code class="inl">Δθ = 2·atan2(dy, dx + 1e-6)</code> biriktirilir ve ±π'ye sarılır. Ağa kendi son hareketinin kelimelerle söylendiği tek yer burasıdır.
+  </p>
+</section>
+
+<footer>
+  Tüm boyutlar şu dosyalardan okundu: ticvla/models/{ticvla,vlm}.py · ticvla/utils/vision.py ·
+  ticvla/data/{policy_data,vlm_data}.py · ticvla/training/{train,config}.py ·
+  InternVL3-1B/config.json · TIC-VLA-model.ckpt'ye karşı doğrulandı (50 action-expert tensörü).
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn  = document.getElementById('themebtn');
+  var KEY  = 'ticvla-arch-theme';
+  try { var saved = localStorage.getItem(KEY); if (saved) root.setAttribute('data-theme', saved); }
+  catch (e) { /* file:// with storage blocked -- the media query still applies */ }
+  btn.addEventListener('click', function () {
+    var cur = root.getAttribute('data-theme');
+    if (!cur) {
+      cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    var next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

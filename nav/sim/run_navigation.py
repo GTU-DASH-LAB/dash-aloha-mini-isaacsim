@@ -76,6 +76,36 @@ PHYSICS_DT = 1.0 / 60.0
 GUIDANCE_HORIZON_S = 6.0
 
 
+def ready_message(info: dict) -> str:
+    """Describe whichever policy server answered, without assuming which one it is.
+
+    This line used to subscript the health payload directly for `num_action_chunks`
+    and `device`. Those are `server.py`'s keys. `server_qwen.py` serves the same three
+    ROUTES with a different payload, so pointing the runner at it raised KeyError
+    inside `setup()` -- before a single step had been driven.
+
+    That crash cost more than its size, because of how it was reported. An uncaught
+    exception exits Python with status 1, and `bench.sh` reads 1 as "the episode
+    failed", not "the process died". So the 13-episode ladder ran to completion in
+    four minutes, scored every episode off the PREVIOUS run's result file, and printed
+    a perfectly plausible 6/13 -- the exact "plausible number" failure the one-process-
+    per-episode design exists to prevent. `bench.sh` now also requires a NEW result
+    file per run, so the two guards are independent.
+
+    Rule for anything reached over HTTP: match on routes AND payload, or use `.get`.
+    """
+    bits = []
+    if info.get("num_action_chunks") is not None:
+        bits.append(f"{info['num_action_chunks']} chunks")
+    if info.get("mode"):        # the qvla-direct server names itself here
+        bits.append(str(info["mode"]))
+    if info.get("format"):
+        bits.append(f"format={info['format']}")
+    if info.get("device"):
+        bits.append(f"on {info['device']}")
+    return "policy ready" + (f" ({', '.join(bits)})" if bits else "")
+
+
 class NavigationRunner:
     """Owns the Isaac Sim stage and executes one episode at a time.
 
@@ -372,10 +402,7 @@ class NavigationRunner:
 
         self._set(state="ready", message="waiting for policy server")
         info = self.policy.wait_until_ready()
-        self._set(
-            state="idle",
-            message=f"policy ready ({info['num_action_chunks']} chunks on {info['device']})",
-        )
+        self._set(state="idle", message=ready_message(info))
 
     # --------------------------------------------------------------- execution
     def run_episode(

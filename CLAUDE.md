@@ -672,6 +672,22 @@ that affect the *rest* of this repo:
   Episodes elsewhere are shown but locked, because Isaac Sim cannot swap stages
   in-process at this version and a half-swapped stage fails as a *navigation* error, not
   a crash — a benchmark's worst failure mode, since it yields a plausible number.
+- **The ladder once scored 13 episodes without driving a single metre, and the number it
+  printed was 6/13.** Three ordinary decisions lined up into a silent lie, so all three are
+  worth naming. (1) `run_navigation.py` read `info['num_action_chunks']` out of `/health`
+  to build a *log message*; those are `server.py`'s keys, and `server_qwen.py` serves the
+  same three ROUTES with a different payload, so pointing the runner at it raised KeyError
+  inside `setup()`. (2) An uncaught exception exits Python with status 1, and `bench.sh`
+  deliberately reads 1 as "the episode failed" rather than "the process died" — a good
+  rule that here made a crash indistinguishable from a result. (3) `summarize_runs.py
+  --latest` answers with the newest matching file and cannot know whether that file came
+  from the run you just did; the newest were up to two weeks old. The tell was the policy
+  server's own counter: `predictions` sat at 8 across a "completed" 13-episode ladder.
+  Fixed on two independent axes — `ready_message()` never subscripts a payload it does not
+  own, and `bench.sh` counts `nav/results/*_${EP}_${CONTROLLER}.json` before and after each
+  run and calls it an ERROR when the count did not move. **Two servers matching on routes
+  is not two servers matching on schema**, and after any benchmark run, read a counter that
+  lives on the far side of the thing being measured.
 - **6/13 on the benchmark ladder (Phase 18), from 0/13.** Two episodes beat DynaNav's own
   spl. The remaining failures are not one thing: some arrive and brake correctly ~2 m off
   the scored goal (`hospital_down_hallway` — plan reach collapses to 0.05 m at 2.11 m
@@ -762,10 +778,25 @@ that affect the *rest* of this repo:
   - **A candidate worth swapping to is usually too new for the installed transformers.**
     4.57.6 cannot even read `qwen3_5` — but the shapes that decide the swap are plain
     JSON, so the checker falls back to fetching `config.json` off the hub.
-  - **The weights have to fit GPU1 *while Isaac Sim holds GPU0*.** FP8 at 30.89 GB leaves
-    0.5 GB on a 31.35 GiB card and cannot be the closed-loop build; NVFP4 at 23.44 GB
-    can. FP8 across both cards is fine for offline work (pipeline-parallel inference
-    moves activations over PCIe and needs no P2P) — just not while the sim is running.
+  - **The weights have to fit GPU1 *while Isaac Sim holds GPU0*, and this line was wrong
+    for weeks because of a unit error.** Measured off the safetensors headers without
+    loading: FP8 is **28.75 GiB** (23.00 F8_E4M3 + 5.74 BF16) and fits a 31.36 GiB card
+    with **2.61 GiB** spare. The note that used to stand here — "FP8 at 30.89 GB leaves
+    0.5 GB on a 31.35 GiB card and cannot be the closed-loop build" — compared a **GB**
+    figure against a **GiB** one. FP8 *is* the closed-loop build, single-card. The KV
+    cache fits the headroom comfortably: only 16 of 64 layers are `full_attention`, so it
+    is a few hundred MB.
+  - **NVFP4 is smaller on disk and larger in memory, and is unusable on this stack.**
+    21.81 GiB packed (6.97 GiB of nvfp4 over 14.97 B params, plus 14.84 GiB of F8_E4M3 and
+    BF16 that were never 4-bit) — but compressed-tensors registers a forward pre-hook that
+    decompresses on the FIRST forward, not at load. Hence a suspiciously fast "ready in
+    6.5 s" followed by a death mid-generation. Decompressed to bf16 it is **42.73 GiB**,
+    11 GiB over the card even with the card empty, and transformers 5.16.1 hardcodes
+    `run_compressed=False` in `quantizer_compressed_tensors.py`, so there is no packed-
+    inference path to fall back to. **On-disk size is not the inference footprint for
+    4-bit.** The symptom to recognise is a `KeyError: 'weight_packed'` that is really a
+    `torch.OutOfMemoryError` against a half-decompressed model — visible only after
+    printing the traceback, since the one-line error named neither.
 - **On a 27B, DECODE is the whole cost — prefill and resolution are not the lever, and
   the 200-token cap is not the token count.** Both halves of this were predicted wrong in
   `qvla_design.md` before being measured, so the numbers are worth keeping.
@@ -786,9 +817,13 @@ that affect the *rest* of this repo:
 - **A multi-GPU split silently changes which FP8 kernels run, so a two-card timing is not
   a one-card timing.** transformers logs it plainly: spanning devices routes FP8 linear
   layers off DeepGEMM onto Triton/`grouped_mm`, because DeepGEMM's cached kernels are
-  bound to a single CUDA context. FP8 at 30.89 GB *had* to be split here (no card has that
-  free while Isaac Sim holds GPU0), so its 16 tok/s is a property of the forced placement,
-  not the checkpoint — quote it as provisional.
+  bound to a single CUDA context. **The provisional 16 tok/s was indeed the split talking.**
+  It was quoted here on the belief that FP8 *had* to span both cards; that belief was the
+  GB/GiB error above. Loaded onto one card (`CUDA_VISIBLE_DEVICES=1`, `QVLA_MAX_MEMORY=0:30`),
+  DeepGEMM comes back and the same 8-call probe runs at **~2.7 s/call steady-state**
+  (4.5 s mean including the first), 8 calls in 36 s wall. `qwen_load.py` drops zero entries
+  from `max_memory` rather than capping them, because a device left in the map at 0 can
+  still be spilled onto, and one spilled layer costs the whole DeepGEMM path.
 - **`modules_to_not_convert` is PREFIX-matched, so an entry naming a module that does not
   exist can still disable one that does.** This produced a model that loaded, ran at full
   speed, raised nothing, and emitted pure gibberish. Qwen3.8-27B-FP8's skip list has 882
@@ -806,7 +841,7 @@ that affect the *rest* of this repo:
   Qwen through — at runtime, never in site-packages. Note it does not affect timing (same
   shapes, same FLOPs), so latency measured before the fix stands and quality did not.
 - **Q-VLA-direct (VLM writes the waypoints, no action expert): the plan is well-formed,
-  the SPEED is real, and the STEERING is one-sided and unfixable by prompting.** Measured
+  the SPEED is a single scalar per plan, and the STEERING is one-sided.** Measured
   against TIC-VLA on 8 moments of `office_hallway_turn`, identical frames/history/state,
   every call its own generation (`compare_qvla_ticvla.py`):
 
@@ -816,8 +851,13 @@ that affect the *rest* of this repo:
   | Q-VLA-direct | **+0.00° in 8 of 8** | 0.56 m/s (0.01–0.70) | 29.1° mean |
 
   Format and parsing are not the problem: 36 generations, **0 parse failures, 0 errors**.
-  Speed is genuinely read off the image — Q-VLA braked to 0.01 m/s at the same call where
-  TIC-VLA braked to 0.18. What is flat is the lateral channel, and the shape of that
+  Speed *varies with the image* — 7 distinct profiles across 8 frames — but this line used
+  to say it was "genuinely read off the image", and that overstates what the numbers do.
+  Every `pairs` plan is one scalar × `[1..6]`: perfectly linear, so there is **no
+  within-plan braking at all**. The "braked to 0.01 m/s" event is `0.02` written six
+  times — a stop, not a brake. The model picks a speed for the next 3 s and holds it.
+  (`arc` is worse in a different way: non-linear profiles, but only 3 distinct ones across
+  8 frames, byte-identical repeats.) What is flat outright is the lateral channel, and the
   failure is specific: told "Turn right." the model writes a textbook arc —
   `(0.32, -0.01), (0.64, -0.03), (0.96, -0.06), (1.28, -0.10), (1.60, -0.15), (1.92, -0.21)`,
   a proper parabola — and told "Turn left." it writes literal `0.00` six times. **It never

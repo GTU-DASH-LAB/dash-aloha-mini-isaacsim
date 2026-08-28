@@ -92,9 +92,31 @@ for EP in "${EPISODES[@]}"; do
   fi
 
   echo "-- running (this blocks until the episode ends or times out)"
+  # Count the results this episode already has. `summarize_runs.py --latest` returns
+  # the NEWEST matching run, and it has no idea whether that run is the one we just
+  # asked for. When `run_navigation.py` died in setup(), the ladder scored all 13
+  # episodes off files up to two weeks old and printed a plausible 6/13. The trailing
+  # `_${CONTROLLER}.json` anchors the glob, so `hospital_down_hallway` does not match
+  # `hospital_down_hallway2`.
+  BEFORE=$(ls -1 nav/results/*_"${EP}_${CONTROLLER}".json 2>/dev/null | wc -l)
+
   nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
       > "$LOGDIR/run_${EP}_${CONTROLLER}.log" 2>&1
   RC=$?
+
+  AFTER=$(ls -1 nav/results/*_"${EP}_${CONTROLLER}".json 2>/dev/null | wc -l)
+  if [ "$AFTER" -eq "$BEFORE" ]; then
+    # No new file. Whatever rc says, this run produced no measurement -- do not let
+    # summarize_runs.py answer with somebody else's.
+    echo "!! NO RESULT WRITTEN (rc=$RC) -- run produced no new file in nav/results/;"
+    echo "   refusing to score it off an older run. See $LOGDIR/run_${EP}_${CONTROLLER}.log"
+    grep -m1 -B2 -A6 "Traceback (most recent call last)" \
+        "$LOGDIR/run_${EP}_${CONTROLLER}.log" | sed 's/^/   /'
+    ERR=$((ERR+1))
+    [ $KEEP_GOING -eq 0 ] && exit 1
+    echo
+    continue
+  fi
 
   # Headless run_navigation.py returns 0 on a completed episode and 1 on a failed
   # one -- a failed EPISODE, not a failed process. Anything else is a real crash.

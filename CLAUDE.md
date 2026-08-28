@@ -887,16 +887,60 @@ that affect the *rest* of this repo:
   0.0, 0.0, 0.0`. Two consequences worth separating from the cause. First, an all-zero
   distance list makes the logged heading **meaningless**, not merely wrong: the waypoints
   collapse onto the origin and `atan2` returns whatever noise survives — hence `head=180.00`
-  with `reach=0.550` in the trace. Don't read steering columns from a stopped plan. Second,
-  the likely mechanism (hypothesis, not measured): both prompts carry the same "if you have
-  arrived, STOP" bullet, but `pairs` illustrates it with `(0.05, 0.00)` repeated, which
-  still advances, while `arc` says "write STRAIGHT 0 and distances that barely change" —
-  and `STRAIGHT 0 | 0.0 ×6` is simultaneously the lowest-effort string that satisfies every
-  format rule in the prompt AND explicitly blessed by it. `arc` has a zero-attractor that
-  `pairs` does not. **The stop clause is load-bearing and its example is a target** — the
-  same anchoring lesson as the worked numeric example, in a verbal disguise. `pairs` stays
-  the format to benchmark until arc's stop condition is expressed as something other than
-  the easiest answer available.
+  with `reach=0.550` in the trace. Don't read steering columns from a stopped plan.
+
+  **Second: the prompt hypothesis written here first was WRONG, and it is left in place
+  because of how convincing it was.** It said `arc` had a zero-attractor `pairs` lacked —
+  both carry the same "if you have arrived, STOP" bullet, but `pairs` illustrates it with
+  `(0.05, 0.00)` repeated (which still advances) while `arc` says "write STRAIGHT 0", so
+  `STRAIGHT 0 | 0.0 ×6` is both the cheapest legal string and one the prompt blesses. It
+  fit every observation available at the time. It was falsified by the very next run:
+  `pairs` collapses identically, `(0.00, 0.00) ×6`, 136 of 141 plans at zero. The cause was
+  never the prompt — see the horizon entry below. **A mechanism that explains the evidence
+  is not thereby the mechanism**, and the tell was available: the same-frame probe that
+  would have distinguished them costs one minute and was skipped in favour of a story.
+- **The plan horizon has to outlast a generation, and copying the action expert's 3.0 s
+  was the whole bug.** This is the real cause of both zero-collapses above, and the model
+  was never involved. Feeding ONE frame seven different `time_delay` values returns the
+  SAME cached plan, reported as:
+
+  | `time_delay` | waypoints left | `plan_speed` |
+  |---|---|---|
+  | 0.0 | 30 | 1.353 |
+  | 1.0 | 20 | 0.887 |
+  | 2.0 | 10 | 0.420 |
+  | **2.9** | **1** | **0.000** |
+
+  The chain: generation takes 2.7–5 s against a 3.0 s horizon → the server slices the
+  cached plan by staleness (`full[ceil(time_delay/DT):]`) → at 2.9 s one point survives →
+  `plan_speed` returns 0.0 below two points → `braking` does
+  `v_cap = min(v_cap, plan_speed(...))` → **full stop**. And staleness is *generation
+  latency*, so standing still never clears it. 129 of 141 calls ran at staleness ≥ 3.0 s.
+  **Why 3.0 s was the wrong number to inherit:** TIC-VLA's action expert re-runs on the
+  current frame every control tick, so its waypoints are never stale — only the KV cache
+  is, and 3.0 s is a *cache-freshness* budget. Remove the expert and the waypoints
+  themselves become the thing that ages. The horizon is set by inference latency, not by
+  parity with a head that no longer exists. Now `HORIZON_S = 10.0`, `N_WAYPOINTS = 100`,
+  10 control points; `DT` stays 0.1 s so the control rate is the same 10 Hz. Verified:
+  ~0.69 m/s held from staleness 0.0 through 9.0 s. **This is also the honest answer to
+  "do we still need the action expert?" — yes, and not for steering quality. Its job is
+  keeping a valid trajectory available at control rate, which a 27 B writing waypoints at
+  ~0.3 Hz cannot do for a horizon that real time consumes at 1 s/s.**
+- **Three separate constants were second copies of the horizon, and every one failed
+  silently.** Worth naming as a class, because all three produced a plausible wrong number
+  rather than an error, and two of them mimicked the bug being fixed. (1) `plan_speed`
+  divided by a fixed `ACTION_HORIZON_S`, understating commanded speed in proportion to
+  staleness — and via `obey_plan_speed` that is a brake that tightens the longer the model
+  thinks. Now divides by the plan's own duration; identical for any untruncated plan, so
+  recorded TIC-VLA numbers stand. (2) The parser's flat `6.0 m` plausibility cap. After the
+  horizon change the model wrote a *correct* `(0.70, 0.00) … (7.00, 0.00)` and the parser
+  discarded it — presenting as `has_plan: false`, all zeros, robot stopped, i.e. **exactly
+  the symptom of the bug just fixed**. Only `parse_failures: 1` distinguished them. Now
+  `MAX_REACH_M = 2.0 * HORIZON_S`, reproducing `6.0` exactly at 3 s. (3) The flat 110-token
+  cap, sized for six pairs, which would have truncated ten mid-list. Plus the literal
+  "3 seconds" in both prompts and the 3.0 s budget in `check_vlm_swap.py` /
+  `probe_qvla_latency.py`, which would now fail a working configuration. **After changing a
+  constant, grep for its value, not its name** — a copy has the number, not the identifier.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

@@ -96,7 +96,11 @@ _EPS = 1e-3
 # The action head emits exactly `action_horizon_steps: int = 30` waypoints
 # (ticvla/training/config.py:37) at 10 Hz. So every plan is 3.0 s of motion, always,
 # and the arc length of one is therefore a SPEED the policy is requesting.
-ACTION_HORIZON_S = 3.0
+# Spacing between densified waypoints, matching the policy servers' own `DT`. Both
+# servers emit 10 Hz plans; only their LENGTH differs (TIC-VLA 30 points over 3.0 s,
+# Q-VLA-direct 100 over 10.0 s), which is exactly why the plan's duration has to be read
+# off the plan rather than assumed. See `plan_speed`.
+PLAN_DT = 0.1
 
 
 def plan_speed(waypoints: np.ndarray) -> float:
@@ -125,11 +129,25 @@ def plan_speed(waypoints: np.ndarray) -> float:
     on the same rule -- but only if it gets inside 1.5 m, and at 2.80 m it never
     did. Parity with DynaNav's controller is not the same as parity with DynaNav's
     scoring harness.
+
+    THE DIVISOR IS THE PLAN'S OWN DURATION, NOT A CONSTANT. It used to be a fixed
+    `ACTION_HORIZON_S`, which is right only while the plan is a full one. The Q-VLA
+    server hands back a plan already sliced by staleness, so a 3.0 s horizon that is
+    2.0 s old arrives as 10 points covering 1.0 s -- and dividing that 1.3 m of arc by
+    3.0 reported 0.42 m/s for a plan asking for 1.35. The understatement scales with
+    staleness, and since `obey_plan_speed` feeds this straight into `v_cap`, it is a
+    brake that tightens the longer the model takes to think. At the limit exactly one
+    point survives, the guard below returns 0.0, and the robot is commanded to a dead
+    stop it never recovers from -- 129 of 141 calls on `office_nearest_elevator`.
+
+    This is identical to the old formula for any UNTRUNCATED plan (30 points x 0.1 s =
+    3.0 s), so every TIC-VLA number ever recorded with it is unchanged: the action
+    expert re-runs each tick and its plans are never sliced.
     """
     if len(waypoints) < 2:
         return 0.0
     inc = np.diff(waypoints, axis=0)
-    return float(np.sum(np.hypot(inc[:, 0], inc[:, 1])) / ACTION_HORIZON_S)
+    return float(np.sum(np.hypot(inc[:, 0], inc[:, 1])) / (len(waypoints) * PLAN_DT))
 
 
 @dataclass

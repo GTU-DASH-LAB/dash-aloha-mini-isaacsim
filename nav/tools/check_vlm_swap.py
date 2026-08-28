@@ -49,9 +49,16 @@ from pathlib import Path
 CKPT = Path("/home/gtu-dsa/robotics/models/TIC-VLA-model.ckpt")
 BASELINE = Path("/home/gtu-dsa/robotics/models/InternVL3-1B")
 
-# The action head's own horizon: 30 waypoints at 10 Hz. A generation slower than this is
-# producing plans that expire before the controller finishes consuming them.
-ACTION_HORIZON_S = 3.0
+# The budget a generation has to beat: a plan that outlives its own replacement.
+#
+# This was 3.0 s, TIC-VLA's action-head horizon, and copying that number here was wrong
+# once the action head was removed. With the expert in place the waypoints are refreshed
+# every control tick and only the KV cache ages, so 3.0 s is a cache-freshness target.
+# Without it the waypoints ARE what ages, and a generation slower than the horizon leaves
+# the controller nothing to follow -- measured as a permanent stop, 129 of 141 calls.
+# `server_qwen.py` now plans 10.0 s ahead for exactly this reason; the check has to move
+# with it or it reports EXCEEDS for a configuration that is fine.
+ACTION_HORIZON_S = 10.0
 
 
 def kv_feat_dim(cfg: dict) -> tuple[int, str]:

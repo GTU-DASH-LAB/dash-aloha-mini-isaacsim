@@ -70,14 +70,51 @@ MODEL_PATH = os.environ.get(
 # tokens per frame -- the same budget InternVL3-1B feeds today. Native 1920x1080 would
 # be 2059 tokens per frame and 4.1 s more prefill for no measured benefit.
 MAX_PIXELS = int(os.environ.get("QVLA_MAX_PIXELS", 200704))
-# Wall-clock cap on one generation. Past this the plan is older than the horizon it
-# describes and driving on it is driving on fiction.
-GEN_TIMEOUT_S = float(os.environ.get("QVLA_GEN_TIMEOUT_S", 20.0))
+# Wall-clock cap on one generation: a safety net against a hung decode, NOT a freshness
+# gate. Freshness is enforced downstream by slicing the plan by `time_delay`, which is
+# exact where a timeout is a guess. Deliberately loose, because the FIRST call pays
+# DeepGEMM's JIT warmup -- measured at 20.0 s against 2.7 s steady-state -- and a timeout
+# tight enough to be a quality gate would reject that one and start the episode with no
+# plan at all.
+GEN_TIMEOUT_S = float(os.environ.get("QVLA_GEN_TIMEOUT_S", 45.0))
 
-HORIZON_S = 3.0                       # the action head's own horizon: 30 pts at 10 Hz
-N_WAYPOINTS = 30
-CTRL_TIMES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)     # what the model is asked to write
-DT = HORIZON_S / N_WAYPOINTS
+# THE HORIZON MUST OUTLAST A GENERATION, and 3.0 s did not.
+#
+# This started as 30 points over 3.0 s to match the action head exactly. That parity is
+# wrong here, and measurably so. TIC-VLA's action expert re-runs on the CURRENT frame
+# every control tick, so its waypoints are never stale -- only the KV cache behind them
+# is. Take the expert away and the waypoints themselves become the thing that ages, and
+# they age against a 27B generation that takes 2.7-5 s.
+#
+# What that cost, measured on `office_nearest_elevator`: the server slices the cached plan
+# by staleness (`full[ceil(time_delay/DT):]`), so at 2.9 s exactly ONE point survives;
+# `plan_speed` returns 0.0 for a plan shorter than two points; and `braking` does
+# `v_cap = min(v_cap, plan_speed(...))`. The robot is commanded to a full stop. 129 of 141
+# calls ran at staleness >= 3.0 s. The robot moved 0.27 m in 70 s and timed out. The model
+# was never at fault -- feeding one frame seven different `time_delay` values returns the
+# SAME plan reported as 1.353, 0.887, 0.420, then 0.000 m/s.
+#
+# So the horizon is set by inference latency, not by parity: 10.0 s leaves 5 s of usable
+# plan even at the worst staleness observed. This is what the original instruction asked
+# for -- "the next 100 actions, so the control loop is fast" -- and 100 points at 10 Hz is
+# exactly that. DT is unchanged at 0.1 s, so the control rate is the same 10 Hz.
+HORIZON_S = 10.0
+N_WAYPOINTS = 100
+# Ten control points, one per second. The model writes these; PCHIP densifies to
+# N_WAYPOINTS. Spacing them 1.0 s apart rather than packing more in keeps the count the
+# model has to hold in its head roughly where it was at 6.
+CTRL_TIMES = tuple(float(i) for i in range(1, 11))
+DT = HORIZON_S / N_WAYPOINTS          # 0.1 s -- 10 Hz, unchanged
+
+# Reject a hallucinated scale, but DERIVE the threshold, because a hardcoded one is a
+# second copy of the horizon hiding in the parser. This was a flat 6.0 m -- 3 s at the
+# 1.5 m/s cap is 4.5 m, plus a third for slack -- and lengthening the horizon without it
+# cost a whole restart: the model wrote a perfectly good `(0.70, 0.00) ... (7.00, 0.00)`,
+# 0.7 m/s held for 10 s, and the parser threw it away for exceeding 6.0. The result was
+# indistinguishable from the failure being fixed -- `has_plan: false`, every waypoint
+# zero, robot stopped -- and only `parse_failures: 1` told the two apart. 2.0 m per second
+# of horizon reproduces the original 6.0 exactly at 3 s.
+MAX_REACH_M = 2.0 * HORIZON_S
 
 app = FastAPI(title="Q-VLA direct policy server")
 
@@ -180,7 +217,7 @@ The four images are consecutive frames from your forward camera, oldest first, a
 
 Your camera: mounted {cam_h:.2f} m above the floor, pointing straight ahead and level, horizontal field of view {cam_fov:.0f} degrees. The horizontal centre of the image is straight ahead; the left edge is about {half_fov:.0f} degrees to your left, the right edge {half_fov:.0f} degrees to your right.
 
-Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed is normally about 0.7 m/s and never above 1.5 m/s, so over the next 3 seconds you will cover roughly 2 metres unless you are slowing down or stopping.
+Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed never exceeds 1.5 m/s.
 
 Predict where you should be at {times} seconds from now, as {n} waypoints (x, y):
 - x is metres FORWARD, positive; y is metres {pos_side}, positive.
@@ -189,8 +226,8 @@ Predict where you should be at {times} seconds from now, as {n} waypoints (x, y)
 - Do not drive into walls, furniture, people or shelving. Steer around obstacles and leave clearance.
 - If you have arrived at the target the instruction names, STOP: return waypoints that barely change, for example (0.05, 0.00) repeated. Stopping at the right place is part of the task, not the end of it. Do not drive past the target.
 
-Reply with the waypoints only, inside answer tags, and nothing else:
-<answer>(x, y), (x, y), (x, y), (x, y), (x, y), (x, y)</answer>
+Reply with the waypoints only, inside answer tags, and nothing else. Write exactly {n} of them:
+<answer>{slots}</answer>
 """
 
 # The output format the FLIP_Y measurement points at. Under `pairs` the model must write a
@@ -216,9 +253,9 @@ The four images are consecutive frames from your forward camera, oldest first, a
 
 Your camera: mounted {cam_h:.2f} m above the floor, pointing straight ahead and level, horizontal field of view {cam_fov:.0f} degrees. The horizontal centre of the image is straight ahead; the left edge is about {half_fov:.0f} degrees to your left, the right edge {half_fov:.0f} degrees to your right.
 
-Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed never exceeds 1.5 m/s, so no distance below can be more than 4.5.
+Scale: use the waypoint list above as your ruler. Those numbers are how far you actually moved, in metres, over the last seconds. Your speed never exceeds 1.5 m/s, so no distance below can be more than {max_dist:.1f}.
 
-Describe the path you should drive over the next 3 seconds, as a turn plus a distance profile.
+Describe the path you should drive over the next {horizon:.0f} seconds, as a turn plus a distance profile.
 
 First the turn, as one word and one number:
 - LEFT, RIGHT, or STRAIGHT.
@@ -275,6 +312,11 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
             # leave nothing to copy -- and generating them means a change to CTRL_TIMES
             # cannot leave the example showing a different count than the text asks for.
             dslots=", ".join(f"d{i}" for i in range(1, len(CTRL_TIMES) + 1)),
+            # Both derived, for the reason MAX_REACH_M is: a horizon written as a literal
+            # in the prompt is a copy of the constant that will not be updated with it,
+            # and here it would tell the model a ceiling the parser no longer enforces.
+            horizon=HORIZON_S,
+            max_dist=1.5 * HORIZON_S,
         )
     else:
         task = _TASK.format(
@@ -282,6 +324,13 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
             times=", ".join(f"{t:.1f}" for t in CTRL_TIMES), n=len(CTRL_TIMES),
             pos_side="RIGHT" if FLIP_Y else "LEFT",
             neg_side="left" if FLIP_Y else "right",
+            # Generated for the same reason the arc template is, and it turned out to
+            # matter just as much here. The template used to be six literal `(x, y)`
+            # pairs next to a sentence naming 0.7 m/s over 3 s, and probing ONE frame
+            # with three different histories returned `(0.35, 0.00) ... (2.10, 0.00)`
+            # nine times out of nine -- 0.7 x [1..6], the prompt's own arithmetic read
+            # back. Both the number and the pair-count now come from CTRL_TIMES.
+            slots=", ".join("(x, y)" for _ in CTRL_TIMES),
         )
     if think:
         task += _THINK_TASK
@@ -339,7 +388,7 @@ def parse_arc(text: str) -> np.ndarray | None:
     if len(dists) < 2:
         return None
     s = np.maximum.accumulate(np.clip(np.array(dists[:len(CTRL_TIMES)]), 0.0, None))
-    if s[-1] > 6.0:                       # 3 s at the 1.5 m/s cap is 4.5 m
+    if s[-1] > MAX_REACH_M:
         return None
 
     total = float(s[-1])
@@ -376,14 +425,13 @@ def parse_control_points(text: str) -> np.ndarray | None:
     # reverse and no training trajectory does either. Clamp rather than reject, so one
     # bad component does not throw away an otherwise usable plan.
     pts[:, 0] = np.maximum.accumulate(np.clip(pts[:, 0], 0.0, None))
-    # 3 s at the 1.5 m/s cap is 4.5 m. Anything past that is a hallucinated scale.
-    if pts[-1, 0] > 6.0 or np.abs(pts[:, 1]).max() > 6.0:
+    if pts[-1, 0] > MAX_REACH_M or np.abs(pts[:, 1]).max() > MAX_REACH_M:
         return None
     return pts
 
 
 def densify(ctrl: np.ndarray) -> np.ndarray:
-    """(K, 2) control points -> (30, 2) at 10 Hz.
+    """(K, 2) control points -> (N_WAYPOINTS, 2) at 10 Hz.
 
     PCHIP rather than a natural cubic because it cannot overshoot: a cubic through six
     points can curl outside their convex hull and invent a swerve the model did not
@@ -574,7 +622,14 @@ def predict(req: PredictRequest) -> PredictResponse:
 
     t0 = time.perf_counter()
     think = _state["think"]
-    max_new = int(os.environ.get("QVLA_MAX_NEW_TOKENS", 220 if think else 110))
+    # Derived from the control-point count, not typed. `pairs` writes about 14 tokens per
+    # point -- "(0.35, 0.00), " -- so the old flat 110 was sized for six of them and would
+    # have truncated ten mid-list, turning a horizon change into a parse failure with no
+    # obvious connection to its cause. `arc` is cheaper per point (one bare number) but
+    # sizing both off the same count costs nothing and cannot drift apart.
+    _answer_budget = 20 * len(CTRL_TIMES) + 30
+    max_new = int(os.environ.get(
+        "QVLA_MAX_NEW_TOKENS", _answer_budget + (110 if think else 0)))
     messages = build_messages(req, req.image_paths, think)
 
     started_step = None

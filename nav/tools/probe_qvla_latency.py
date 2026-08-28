@@ -42,9 +42,12 @@ import sys
 import time
 from pathlib import Path
 
-# 30 waypoints at 10 Hz. A generation slower than this hands the controller a plan that
-# expired before it was consumed.
-ACTION_HORIZON_S = 3.0
+# The horizon a generation has to outlive. Was 3.0 s, copied from the action head; that
+# is a CACHE-freshness budget and only correct while the expert is refreshing waypoints
+# every tick. With the expert removed the waypoints themselves expire, so `server_qwen.py`
+# plans 10.0 s ahead and this budget moves with it. Keeping 3.0 here would fail a
+# configuration that works.
+ACTION_HORIZON_S = 10.0
 # ticvla/models/ticvla.py:579 caps generation at 200, but the cap is not the cost: the
 # model emits an EOS long before it. Measured against the LIVE policy server on real nav
 # frames -- six generations, 131/133/134/135/135/135 tokens by Qwen's tokenizer, mean

@@ -103,8 +103,15 @@ def draw_frame(rec: dict, menu_path: Path, arcs, index: int, total: int):
     v, tgt = rec.get("speed_mps"), rec.get("target_m")
     speed = "" if v is None else (f"   {v:.2f} m/s" + (f"  target {tgt:.1f} m" if tgt
                                                       is not None else "  target unseen"))
-    d.text((16, 27), f"decision {index + 1}/{total}   step {rec.get('step')}{speed}",
-           fill=(190, 190, 200), font=_font(FONT, 26), anchor="lm")
+    # Decisions taken right after a reverse were asked a DIFFERENT question -- the menu
+    # they saw had no STOP on it and the description was told the way ahead is the way
+    # that just failed. Without a mark, those frames look like ordinary ones that happen
+    # never to stop, which is the wrong conclusion to let a viewer draw from a video.
+    after = "   [after reversing out]" if rec.get("recovered") else ""
+    d.text((16, 27),
+           f"decision {index + 1}/{total}   step {rec.get('step')}{speed}{after}",
+           fill=(255, 200, 80) if after else (190, 190, 200),
+           font=_font(FONT, 26), anchor="lm")
     d.text((W - 16, 27), tag, fill=colour, font=_font(FONT_B, 28), anchor="rm")
 
     out = Image.new("RGB", (W, H + CAPTION_H), (15, 15, 18))

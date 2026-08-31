@@ -240,6 +240,51 @@ DESCRIBE_TARGET = (
     "the form 'TARGET: <number> m' saying roughly how far away the place or object that "
     "instruction names is, or exactly 'TARGET: not visible' if you cannot see it.")
 
+# --------------------------------------------------------------------------------------
+# What to ask right after the robot has reversed out of a wedge
+# --------------------------------------------------------------------------------------
+# `stuck_recovery.py` gets the robot out of a dead end and hands control straight back to
+# a policy that has no idea any of it happened. The camera is looking at the same desk it
+# was looking at before, only from further away, so the natural answer is the answer that
+# wedged it -- and if it answers STOP instead, the robot stands at 1.4 m and the recovery
+# will not fire again, because at 1.4 m nothing is close enough to be a wedge. The
+# manoeuvre alone turns a permanent stall into a permanent stall one metre back.
+#
+# So the retreat has to be told to the model, and these two sentences are how. They are
+# additions, not rewrites: the measured questions are still asked in the words they were
+# measured in, with this in front of them.
+#
+# This is worth spending prompt on HERE and was not worth spending on TIC-VLA, and the
+# difference is measured rather than stylistic. Language moves TIC-VLA's action expert by
+# about 9 degrees and its `<answer>` by 0.6; it moves this menu by 103 degrees, and "which
+# side is open" is the exact question the SIDED chain already scores 90% on. Telling the
+# describe call that straight ahead is the direction already known to be blocked feeds the
+# channel with the authority, not the one without it.
+#
+# Inserted BETWEEN the sided question and the target question, not appended to the end.
+# It bears on the first two sentences -- what is ahead, and which side is open -- and
+# `DESCRIBE_TARGET` ends with "Finish your answer with a line of the form 'TARGET: <n> m'".
+# Put anything after that and the last thing the model reads is no longer the instruction
+# about how to finish, which is the one part of this answer that is PARSED. Losing the
+# TARGET line does not fail: `parse_target_distance` returns None, the speed ramp falls
+# back to cruise, and the robot simply stops slowing down near its goal -- a silent
+# regression in the exact channel that stopped it overshooting.
+DESCRIBE_AFTER_RECOVERY = (
+    " One thing you cannot see in this image: a moment ago the robot could not go on, "
+    "because something was directly in front of it, and it has just reversed away from "
+    "that thing. It is still facing it. So straight ahead is the one direction already "
+    "known to be blocked -- say which side of it the robot can drive along instead.")
+
+# The menu call gets the same fact in its own words. It is not redundant with the sentence
+# above: call 2 sees only the description text, so anything call 1 declines to pass on is
+# gone by the time a path is actually chosen -- which is the whole reason CHAIN scored 72%
+# and SIDED 100% on the same frames.
+SELECT_AFTER_RECOVERY = (
+    "The robot has just reversed away from something that was blocking it, and it is "
+    "still facing that thing. Do not choose a path that carries straight on into it. "
+    "Choose a path that leads around it, toward whichever side the description above "
+    "says is open.")
+
 CRUISE_MPS = 0.7      # what the trained policy asks for on these episodes
 CREEP_MPS = 0.2       # slow enough that one replan period advances well under a metre
 SLOW_FROM_M = 4.0     # where the approach starts easing off
@@ -288,8 +333,31 @@ def speed_for(target_m: float | None, cruise: float = CRUISE_MPS) -> float:
     return float(min(cruise, max(CREEP_MPS, target_m / SLOW_FROM_M * cruise)))
 
 
-def select_system(stop_label: int) -> str:
-    """The arc-selection system prompt, with `stop_label` reserved for stopping."""
+def select_system(stop_label: int, stop_allowed: bool = True) -> str:
+    """The arc-selection system prompt, with `stop_label` reserved for stopping.
+
+    `stop_allowed=False` takes that choice away for one decision, and it is used in
+    exactly one place: the call immediately after the robot has reversed out of a wedge.
+    The justification is that BOTH reasons this prompt gives for answering `stop_label`
+    are known to be false at that instant. The robot cannot have arrived -- the control
+    loop in `run_navigation.py` breaks the moment it is inside the success threshold, so a
+    robot still being driven has not got there. And "every drawn path runs into something"
+    was the situation the reverse just undid; there is a metre more room now than there
+    was when that was last true.
+
+    Note this removes an ANSWER, not a capability: the next decision, one generation
+    later, has the full menu back. A robot that genuinely should stop will stop then, a
+    couple of metres of driving later, which is the price of not having it stand in front
+    of a desk for the rest of the episode.
+    """
+    stop_rule = f"""There is one extra choice, {stop_label}, which is not drawn on the \
+image. Answer {stop_label} to stop and stay still, and only for one of two reasons: the \
+robot has arrived at the place the instruction names, or every drawn path runs into \
+something. Stopping at the right place is part of the task. Do not answer {stop_label} \
+merely because the way ahead is tight.""" if stop_allowed else """Stopping is not one of \
+your choices here. The robot has not arrived anywhere, and it has just had to reverse out \
+of a dead end, so standing still is the one thing already known not to work. Pick the \
+drawn path with the most open floor along it, even if none of them is good."""
     return f"""You are the navigation system of a small wheeled robot, looking through its \
 forward camera. The camera is {CAM_HEIGHT_M:.2f} m above the floor, level, with a \
 {CAM_FOV_DEG:.0f} degree horizontal field of view.
@@ -303,11 +371,7 @@ Your job is to choose the one path that best carries out the navigation instruct
 Judge each path by where it actually goes on the floor in the image. Prefer a path that \
 stays on open, walkable floor and does not run into a wall, a door frame or an object.
 
-There is one extra choice, {stop_label}, which is not drawn on the image. Answer \
-{stop_label} to stop and stay still, and only for one of two reasons: the robot has \
-arrived at the place the instruction names, or every drawn path runs into something. \
-Stopping at the right place is part of the task. Do not answer {stop_label} merely \
-because the way ahead is tight.
+{stop_rule}
 
 Answer with the number of the chosen path and nothing else."""
 

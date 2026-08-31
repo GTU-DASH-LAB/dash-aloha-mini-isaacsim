@@ -498,6 +498,12 @@ class NavigationRunner:
         plans: list[tuple[float, float, float, float, float | None, float, float]] = []
         path_length = 0.0
         policy_calls = 0
+        # Forced re-decisions after a reverse, and the ones the server refused. Counted
+        # apart because they mean different things: the first is the recovery working,
+        # the second is a server that has no /replan route and a robot still being handed
+        # the plan that wedged it.
+        replans = 0
+        replans_failed = 0
         prev_pos = start_pos
         step = 0
         t0 = time.time()
@@ -604,6 +610,13 @@ class NavigationRunner:
                         # DynaNav treats an empty value here as a hard error.
                         previous_waypoints_text=history.prompt_text(sim_time),
                         robot_type=ep.robot_type,
+                        # The one thing about the last few seconds the camera cannot
+                        # show. After a reverse the view is the same obstacle from a
+                        # metre further back, which looks like an ordinary approach and
+                        # is not -- it is the approach that already failed. True for a
+                        # few seconds after the manoeuvre, and it stops the moment the
+                        # robot has driven clear of where it was released.
+                        recovered=self.recovery.memory_live(sim_time, position),
                     )
                 except PolicyServerError as exc:
                     self._set(state="error", message=str(exc))
@@ -668,6 +681,28 @@ class NavigationRunner:
             # that protects driving forward.
             drive, recovering = self.recovery.update(
                 sim_time, position, self.base.yaw, command)
+            if self.recovery.take_release():
+                # The manoeuvre just ended. The plan the server is holding was generated
+                # from INSIDE the wedge and, on every wedge worth recovering from, says
+                # STOP -- so re-serving it drives the robot straight back into the desk
+                # it just backed out of, and the reverse bought nothing. Dropping it
+                # forces the next call to generate on the backed-off view. It also
+                # invalidates any generation already in flight, which was started on the
+                # old view too.
+                #
+                # `/replan` and not `/reset`: reset rebuilds the recording directory, and
+                # with no run name that means None, which would silently stop recording
+                # the decisions for the rest of the episode -- including the ones this
+                # whole mechanism exists to produce.
+                try:
+                    self.policy.replan()
+                    replans += 1
+                except PolicyServerError as exc:
+                    # Not fatal and not silent. A server without the route (server.py)
+                    # holds no cached plan to clear, so there is nothing to fail at; the
+                    # robot keeps driving either way and the count says what happened.
+                    replans_failed += 1
+                    print(f"[nav] replan after recovery failed: {exc}", flush=True)
             guard = self.guard.check(position, self.base.yaw, drive.vx, drive.vy)
             self.base.apply(
                 # Already guarded, and directionally: what survives is the part of the
@@ -721,6 +756,13 @@ class NavigationRunner:
                     message=(
                         f"backing out of a wedge ({self.recovery.engagements})"
                         if recovering else
+                        # Checked before the guard line on purpose: right after a reverse
+                        # the obstacle is usually still inside the slow band, so "blocked
+                        # by desk" is true and is not the interesting half of what is
+                        # happening. This is the half a watcher cannot infer from the
+                        # picture.
+                        "backed off -- asking where to go now"
+                        if self.recovery.memory_live(sim_time, new_pos) else
                         f"blocked by {guard.hit_prim.split('/')[-1]} at {guard.distance_m:.2f} m"
                         if guard.blocked else ""
                     ),
@@ -745,6 +787,8 @@ class NavigationRunner:
             guard_interventions=self.guard.interventions,
             recoveries=self.recovery.engagements,
             recoveries_blocked_behind=self.recovery.blocked_behind,
+            recovery_replans=replans,
+            recovery_replans_failed=replans_failed,
             timed_out=timed_out,
             controller=self.controller_name,
             policy=self.policy_label(),

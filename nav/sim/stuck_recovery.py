@@ -33,6 +33,28 @@ the guard cancels forward motion, which is the same as saying every forward arc 
 menu is unusable. Inventing a separate number here would let the two disagree, and then
 the robot would either back off while it could still drive forward, or sit inside a
 wedge the recovery did not recognise.
+
+**Reversing is only half of it, and the first version shipped only that half.** Backing
+away and handing control back silently is not a recovery, because nothing about the
+decision has changed: the policy is looking at the same desk from a metre further away,
+holding a cached plan that says STOP, and the frame that made it say STOP is the frame it
+is still being shown. What that buys is a stall one metre further back -- and a WORSE
+one, because at 1.4 m nothing is inside `stop_distance_m` any more, so the trigger above
+will never fire again and the robot stands there for the rest of the episode.
+
+So the manoeuvre ends in a re-decision, which is `release_pending` and `memory_live`
+below. On release the runner throws the cached plan away (`PolicyClient.replan`), forcing
+a generation on the backed-off view rather than re-serving the one taken from inside the
+wedge; and for a few seconds afterwards it marks its `/predict` calls `recovered=True`,
+which is how the model gets told the one thing the picture cannot show it -- that the
+obstacle in front of it is the obstacle it just backed out of. See
+`arc_menu.DESCRIBE_AFTER_RECOVERY`.
+
+The memory ends on either of two conditions, and both are meaningful rather than tuned:
+the robot has driven `RECOVERY_CLEARED_M` from where it was released, which is the
+deadlock actually broken; or `RECOVERY_MEMORY_S` has passed, which is long enough for a
+couple of generations to have been asked the question and is the cap on how long a fact
+about the past is allowed to shape the present.
 """
 
 from __future__ import annotations
@@ -46,6 +68,8 @@ STALL_PROGRESS_M = 0.10   # moved less than this in the window = not making prog
 CLEAR_MARGIN_M = 0.4      # extra room past the guard's stop distance before releasing
 COOLDOWN_S = 2.0          # let the policy see and act on the new view before re-arming
 MAX_CONSECUTIVE = 4       # a wedge this deep is a result, not something to keep poking
+RECOVERY_MEMORY_S = 6.0   # ~3 generations: long enough to be asked, short enough to end
+RECOVERY_CLEARED_M = 0.5  # driven this far from the release point = the deadlock is over
 
 
 class StuckRecovery:
@@ -63,17 +87,26 @@ class StuckRecovery:
         self.back_limit_m = back_limit_m
         self.engagements = 0          # how many times it fired, for the result record
         self.blocked_behind = 0       # fired, and could not reverse either
+        # Set on the step the manoeuvre ends, cleared by whoever acts on it. A flag
+        # rather than a third return value from `update`: the release is a one-off event
+        # and every other step would have to carry a False for it, which is how a caller
+        # ends up throwing the plan away on the wrong step.
+        self.release_pending = False
         self._history: list[tuple[float, float, float]] = []   # (t, x, y)
         self._active = False
         self._backed_m = 0.0
         self._consecutive = 0
         self._release_t = -1e9
+        self._release_pos = (0.0, 0.0)
         self._start = (0.0, 0.0)
         self._engage_t = 0.0
         # Twice the time the manoeuvre should need, so a rear obstacle shows up as
         # "reversing and not moving" instead of as a robot shoving at a wall for the
         # rest of the episode. The guard cancels the motion; nothing else would notice.
         self._give_up_s = 2.0 * back_limit_m / max(back_speed_mps, 1e-6) + 1.0
+        # Twice the back limit, for the reason spelled out in `update`: a robot that has
+        # only gone as far as one reverse could carry it has not escaped anything.
+        self._escape_m = 2.0 * back_limit_m
 
     def reset(self) -> None:
         self._history.clear()
@@ -81,6 +114,32 @@ class StuckRecovery:
         self._backed_m = 0.0
         self._consecutive = 0
         self._release_t = -1e9
+        self.release_pending = False
+
+    def take_release(self) -> bool:
+        """True once per manoeuvre, on the step it ended. Clears itself.
+
+        Read every step by the runner, which answers it by dropping the policy's cached
+        plan. Consuming it here rather than letting the caller reset it keeps "acted on"
+        and "happened" the same event -- a caller that forgets would otherwise replan on
+        every step for the rest of the run.
+        """
+        fired, self.release_pending = self.release_pending, False
+        return fired
+
+    def memory_live(self, sim_time: float, position) -> bool:
+        """Should the next decision be told the robot has just backed out of something?
+
+        Two ways out, and the first is the one that matters: once the robot has actually
+        driven `RECOVERY_CLEARED_M` away from where it was released, the wedge is behind
+        it and describing it as "the thing directly in front of you" is no longer true.
+        The timeout is the backstop for the case where it never moves -- a fact about the
+        last few seconds should not be steering the policy a minute later.
+        """
+        if sim_time - self._release_t > RECOVERY_MEMORY_S:
+            return False
+        return math.dist(
+            self._release_pos, (position[0], position[1])) < RECOVERY_CLEARED_M
 
     def front_clearance_m(self, position, yaw: float) -> float:
         """Distance to the nearest thing ahead, or inf.
@@ -101,7 +160,21 @@ class StuckRecovery:
             return self._continue(sim_time, position, yaw, command)
 
         self._history.append((sim_time, position[0], position[1]))
-        while self._history and sim_time - self._history[0][0] > STALL_WINDOW_S:
+        # Drop a sample only while the NEXT one is still old enough to span the window,
+        # so `_history[0]` is the newest sample that is at least STALL_WINDOW_S old.
+        #
+        # The obvious version -- pop while `sim_time - _history[0][0] > STALL_WINDOW_S`
+        # -- is wrong, and wrong in a way that leaves the feature looking like it works.
+        # It pops until the span is <= 3.0 and the arming test below then requires the
+        # span to be >= 3.0, so the two are complementary on a strict inequality and only
+        # a span of EXACTLY 3.0 arms anything. At a 1/60 s step that is a float
+        # coincidence: instrumented over 5 s of a robot that never moved with a wall
+        # 0.4 m off its nose, the span sat at 2.9999999999999996 and the recovery never
+        # fired once. It fired at all in longer runs only because clearing the history on
+        # release reshuffles which samples exist -- i.e. the 3 s trigger was really a
+        # random one.
+        while (len(self._history) > 1
+               and sim_time - self._history[1][0] >= STALL_WINDOW_S):
             self._history.pop(0)
 
         if sim_time - self._release_t < COOLDOWN_S:
@@ -114,7 +187,16 @@ class StuckRecovery:
             return command, False
         t0, x0, y0 = self._history[0]
         if math.dist((x0, y0), (position[0], position[1])) > STALL_PROGRESS_M:
-            self._consecutive = 0
+            # Moving, so leave it alone -- but only clear the consecutive count once the
+            # robot is far enough from the last wedge to have actually left it, not
+            # merely moving. The escape radius has to be bigger than the manoeuvre's own
+            # amplitude or the manoeuvre counts as its own escape: reverse 0.8 m, drive
+            # 0.8 m back into the same desk, and every step of that is "progress" by
+            # displacement. A counter that resets on it can never reach MAX_CONSECUTIVE,
+            # so the cap meant to stop the robot rocking in and out of one obstacle for a
+            # whole episode would never once apply.
+            if math.dist(self._start, (position[0], position[1])) > self._escape_m:
+                self._consecutive = 0
             return command, False
         if self.front_clearance_m(position, yaw) > self.guard.stop_distance_m:
             # Standing still with room ahead. That is the policy choosing to hold, and
@@ -143,7 +225,16 @@ class StuckRecovery:
                 or clear > self.guard.stop_distance_m + CLEAR_MARGIN_M):
             self._active = False
             self._release_t = sim_time
+            self._release_pos = (position[0], position[1])
+            # Raised on every release, including the give-up one. A robot wedged front
+            # AND back needs the re-decision more than the others, not less: reversing
+            # got it nothing, so the only thing left that can change is the answer.
+            self.release_pending = True
             self._history.clear()
+            # `command` is handed back for this one step and it is stale by definition --
+            # it is the plan from inside the wedge. That is fine and it is not what the
+            # robot ends up driving: the runner reads `take_release()` on this same step
+            # and drops the cached plan, so the next call generates on the new view.
             return command, False
         return self._reverse(), True
 

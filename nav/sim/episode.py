@@ -184,6 +184,11 @@ class EpisodeResult:
     # existed still load; 0 on those means "not measured", not "never happened".
     recoveries: int = 0
     recoveries_blocked_behind: int = 0
+    # How many of those ended in a forced re-decision, and how many could not. A run with
+    # `recoveries > 0` and `recovery_replans == 0` is a robot that reversed and was then
+    # handed the same plan back -- the manoeuvre without the point of it.
+    recovery_replans: int = 0
+    recovery_replans_failed: int = 0
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)

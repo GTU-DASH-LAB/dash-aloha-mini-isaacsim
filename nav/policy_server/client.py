@@ -86,6 +86,22 @@ class PolicyClient:
         """
         return self._post("/reset", {"run": run} if run else {})
 
+    def replan(self) -> dict[str, Any]:
+        """Throw away the cached plan MID-episode and leave everything else alone.
+
+        Deliberately not `reset()`. The arc-menu server rebuilds its recording directory
+        on every /reset, so a bare reset in the middle of a run sets `run_dir` to None and
+        silently stops recording the menus and decisions -- losing the evidence for the
+        very manoeuvre that prompted the call.
+
+        Only the arc-menu server implements this. `server.py` does not, so a 404 comes
+        back as `PolicyServerError`; callers that may talk to either should treat that as
+        "nothing to clear" rather than as a failure, because for TIC-VLA it is true --
+        its action expert re-runs on the current frame every tick and holds no plan to
+        throw away.
+        """
+        return self._post("/replan")
+
     def predict(
         self,
         image_paths: list[str],
@@ -96,6 +112,7 @@ class PolicyClient:
         previous_waypoints_text: str = "",
         delayed_image_paths: list[str] | None = None,
         robot_type: str = "wheeled robot",
+        recovered: bool = False,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -112,6 +129,11 @@ class PolicyClient:
         `vlm_generation_start_step` is non-None only on calls that started a new
         background generation; the caller is expected to keep those and reference the
         second-to-last one. See run_navigation.py's `gen_starts`.
+
+        `recovered` says the robot has just reversed out of a wedge. The arc-menu server
+        uses it to tell the model something the picture cannot: that the obstacle filling
+        the frame is the one that stopped it, seen from a metre further back. `server.py`
+        ignores the field, so it is safe to send either way.
         """
         return self._post(
             "/predict",
@@ -124,5 +146,6 @@ class PolicyClient:
                 "previous_waypoints_text": previous_waypoints_text,
                 "delayed_image_paths": delayed_image_paths,
                 "robot_type": robot_type,
+                "recovered": recovered,
             },
         )

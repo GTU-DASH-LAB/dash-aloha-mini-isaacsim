@@ -67,7 +67,8 @@ from scipy.interpolate import PchipInterpolator
 # but not `nav/`, where the shared code lives. The `menu` format needs it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
-    CREEP_MPS, DESCRIBE_SIDED, DESCRIBE_TARGET, FREE_SPACE_SYSTEM, make_arcs,
+    CREEP_MPS, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED, DESCRIBE_TARGET,
+    FREE_SPACE_SYSTEM, SELECT_AFTER_RECOVERY, make_arcs,
     parse_target_distance, plan_from_kappa, render_menu, speed_for,
     select_system,
 )
@@ -138,6 +139,14 @@ _state: dict = {
     # Where this episode's menus and decisions are being written; set by /reset, None
     # until a caller names a run.
     "run_dir": None,
+    # Bumped by /reset and /replan. A worker captures it when it starts and drops its
+    # plan if it no longer matches, which is what makes "throw the cached plan away"
+    # mean anything: a generation in flight was started on the OLD view, so without
+    # this it finishes a second later and installs exactly the plan that was discarded.
+    # Between episodes it is the same bug wearing a different hat -- the last plan of
+    # one run landing in the first step of the next.
+    "epoch": 0,
+    "stale_discards": 0,
 }
 _lock = threading.Lock()
 # Serialises GPU decode for `/raw` alone. `_lock` cannot do this job: it is held for
@@ -166,6 +175,13 @@ class PredictRequest(BaseModel):
     delayed_image_paths: list[str] | None = None
     robot_type: str = "wheeled robot"
     yaw_delta_rad: float = 0.0
+    # True for the handful of decisions taken just after the robot reversed out of a
+    # wedge. It is a fact about the last few seconds that the camera cannot show -- the
+    # view is the same obstacle from a metre further back -- so it has to be told. See
+    # `DESCRIBE_AFTER_RECOVERY` in arc_menu.py for why it is spent on the prompt here
+    # when the same idea was worth nothing on TIC-VLA. Defaults False, so every existing
+    # caller keeps its exact behaviour.
+    recovered: bool = False
 
 
 class PredictResponse(BaseModel):
@@ -696,6 +712,10 @@ def free_generate(image_paths: list[str], system: str, user: str, max_new: int,
 _MENU_ARCS = make_arcs()
 _STOP_LABEL = len(_MENU_ARCS) + 1
 _MENU_SYSTEM = select_system(_STOP_LABEL)
+# Same menu, same labels, minus the one answer that cannot be right immediately after a
+# reverse. Built once at import next to its sibling rather than per call, so the two can
+# only ever differ in the way `select_system` says they differ.
+_MENU_SYSTEM_MOVE = select_system(_STOP_LABEL, stop_allowed=False)
 # Seeded, so a benchmark run is reproducible, and shuffled per call rather than fixed,
 # because a stable numbering is the one confound that makes this whole approach look like
 # it works when it does not: number the arcs left to right and a model can answer "1" for
@@ -705,7 +725,8 @@ _menu_rng = np.random.default_rng(int(os.environ.get("QVLA_MENU_SEED", "0")))
 
 
 def menu_plan(image_paths: list[str], instruction: str,
-              step: int | None) -> tuple[np.ndarray | None, str]:
+              step: int | None,
+              recovered: bool = False) -> tuple[np.ndarray | None, str]:
     """The `menu` format's whole pipeline: two generations, one curvature, one plan.
 
     Returns (plan or None, a reasoning string for the run log). None means the reply named
@@ -741,20 +762,38 @@ def menu_plan(image_paths: list[str], instruction: str,
     # without the instruction in front of the model. The two measured sentences are asked
     # in the same words, but the question they sit in is no longer the question that was
     # scored, and the arc choices below could move. The re-run is the check.
-    describe = DESCRIBE_SIDED + DESCRIBE_TARGET.format(instruction=instruction)
+    # Order matters and the reason is in `DESCRIBE_AFTER_RECOVERY`: the recovery note goes
+    # between the two questions, so the TARGET line stays the last thing asked for.
+    describe = (DESCRIBE_SIDED
+                + (DESCRIBE_AFTER_RECOVERY if recovered else "")
+                + DESCRIBE_TARGET.format(instruction=instruction))
+    # 110 tokens was sized for two sentences plus the TARGET line. The recovery note asks
+    # for no extra output -- it changes what the model looks at, not what it writes -- so
+    # the budget is deliberately not raised with it.
     seen, _ = free_generate([newest], FREE_SPACE_SYSTEM, describe, 110)
     seen = seen.strip().replace("\n", " ")
     target_m = parse_target_distance(seen)
     speed = speed_for(target_m, MENU_SPEED_MPS)
 
     user = (f"What the robot can see ahead of it: {seen}\n\n"
-            f"Navigation instruction: {instruction}\n\n"
-            f"Which numbered path do you take?")
-    reply, _ = free_generate([menu], _MENU_SYSTEM, user, 8)
+            + (f"{SELECT_AFTER_RECOVERY}\n\n" if recovered else "")
+            + f"Navigation instruction: {instruction}\n\n"
+            + f"Which numbered path do you take?")
+    reply, _ = free_generate(
+        [menu], _MENU_SYSTEM_MOVE if recovered else _MENU_SYSTEM, user, 8)
 
     m = re.search(r"\d+", reply)
     choice = int(m.group()) if m else None
-    note = f"[free space] {seen}\n[menu] {labels} -> {reply.strip()[:20]!r}"
+    note = (("[after reverse] " if recovered else "")
+            + f"[free space] {seen}\n[menu] {labels} -> {reply.strip()[:20]!r}")
+    if recovered and choice == _STOP_LABEL:
+        # Answered the one label the system prompt just took away. Honoured anyway, and
+        # flagged instead: the alternative is to overrule the model with a direction we
+        # invented, and the off-menu branch below would reuse the previous plan, which on
+        # this path IS the stop. So both roads end here; only one of them says so in the
+        # log. If this line shows up often the prompt is not landing and that is the
+        # finding, not something to paper over in the parser.
+        note = note + " [STOP despite the no-stop prompt]"
 
     if choice == _STOP_LABEL:
         # Cumulative positions all at the origin. `_lookahead_point` returns a distance
@@ -773,13 +812,14 @@ def menu_plan(image_paths: list[str], instruction: str,
                        + (f" (target {target_m:.1f} m)" if target_m is not None else ""))
 
     _record(step, menu, instruction, labels, choice, kappa, seen, reply.strip(),
-            target_m, speed)
+            target_m, speed, recovered)
     return plan, note
 
 
 def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             choice: int | None, kappa: float | None, seen: str, reply: str,
-            target_m: float | None = None, speed: float | None = None) -> None:
+            target_m: float | None = None, speed: float | None = None,
+            recovered: bool = False) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -808,13 +848,20 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 # in the driving, which is the hardest kind to notice later.
                 "target_m": target_m,
                 "speed_mps": MENU_SPEED_MPS if speed is None else speed,
+                # Which prompt this decision was actually taken under. Without it the
+                # recovery decisions are indistinguishable from the rest in the record,
+                # and they are the ones worth reading -- they are taken under a menu with
+                # no STOP on it, so counting stops across a run would otherwise mix two
+                # different question sets and report the average of them.
+                "recovered": recovered,
             }) + "\n")
     except Exception as exc:
         print(f"[qvla-server] could not record decision: {exc}", flush=True)
 
 
 def _generation_worker(messages: list[dict], image_paths: list[str],
-                       step: int | None, max_new: int, instruction: str = "") -> None:
+                       step: int | None, max_new: int, instruction: str = "",
+                       recovered: bool = False, epoch: int = 0) -> None:
     """Runs on a background thread so the control loop never waits on decode.
 
     This is the same two-rate idea as TIC-VLA's `predict_async`, one level up: there the
@@ -828,7 +875,7 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
     """
     try:
         if _ARC_FORMAT == "menu":
-            plan, text = menu_plan(image_paths, instruction, step)
+            plan, text = menu_plan(image_paths, instruction, step, recovered)
         else:
             text = _generate(messages, image_paths, max_new)
             ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
@@ -836,7 +883,16 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
         with _lock:
             _state["generations"] += 1
             _state["reasoning"] = text
-            if plan is None:
+            if _state["epoch"] != epoch:
+                # The plan was thrown away while this was decoding -- a new episode, or a
+                # reverse manoeuvre that made the view this was built on wrong. Dropping
+                # it is the point of the discard; installing it now would be the same
+                # stale plan arriving two seconds late, which is worse than none at all
+                # because the caller cannot tell it apart from a fresh one.
+                # NOT counted as a parse failure: nothing failed, and that counter is read
+                # as "how much of this run scored the fallback instead of the model".
+                _state["stale_discards"] += 1
+            elif plan is None:
                 _state["parse_failures"] += 1
             else:
                 _state["plan"] = plan
@@ -883,6 +939,10 @@ def health() -> dict:
             "parse_failures": _state["parse_failures"],
             # Not the same thing: this one means the stack broke, not the model.
             "gen_errors": _state["gen_errors"],
+            # Plans that finished decoding after a /replan or /reset threw their view
+            # away. A few per run is the recovery working; a lot means the loop is
+            # discarding faster than the model can generate and is driving on nothing.
+            "stale_discards": _state["stale_discards"],
             "empty_plans": _state["empty_plans"],
             "last_reasoning": _state["reasoning"],
             "has_plan": _state["plan"] is not None,
@@ -945,8 +1005,32 @@ def reset(req: ResetRequest = ResetRequest()) -> dict:
         run_dir.mkdir(parents=True, exist_ok=True)
     with _lock:
         _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None,
-                      run_dir=run_dir)
+                      run_dir=run_dir, epoch=_state["epoch"] + 1)
     return {"ok": True, "run_dir": str(run_dir) if run_dir else None}
+
+
+@app.post("/replan")
+def replan() -> dict:
+    """Drop the cached plan and nothing else. Mid-episode; `/reset` is between episodes.
+
+    They look interchangeable and are not, which is the reason this exists as its own
+    route rather than as a bare `POST /reset` from the runner. `/reset` also rebuilds
+    `run_dir`, and with no `run` name that means setting it to None -- so calling it in
+    the middle of an episode would silently stop recording the menus and decisions for
+    the rest of the run, and the trace would be missing exactly the decisions worth
+    reading. Same call, same three lines of shared effect, one field of difference that
+    costs the evidence.
+
+    Used by `stuck_recovery.py` the instant the robot finishes reversing out of a wedge.
+    The cached plan at that moment was generated on the view from INSIDE the wedge and
+    almost always says STOP; re-serving it hands the robot straight back into the thing
+    it just backed out of. Bumping the epoch also invalidates any generation already in
+    flight, which is what makes this different from waiting for the next one -- that
+    generation was started on the old view too.
+    """
+    with _lock:
+        _state.update(plan=None, plan_gen_step=None, epoch=_state["epoch"] + 1)
+        return {"ok": True, "epoch": _state["epoch"]}
 
 
 class RawRequest(BaseModel):
@@ -1020,10 +1104,12 @@ def predict(req: PredictRequest) -> PredictResponse:
         have_plan = _state["plan"] is not None
 
     if not busy:
+        with _lock:
+            epoch = _state["epoch"]
         th = threading.Thread(
             target=_generation_worker,
             args=(messages, list(req.image_paths), req.current_step, max_new,
-                  req.instruction), daemon=True)
+                  req.instruction, req.recovered, epoch), daemon=True)
         with _lock:
             _state["gen_thread"] = th
         started_step = req.current_step

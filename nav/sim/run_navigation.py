@@ -446,7 +446,9 @@ class NavigationRunner:
             self.controller_name, ep.max_speed_mps, ep.max_yaw_rate_radps
         )
         controller.reset()
-        self.policy.reset()  # clear the KV cache between episodes
+        # Clears the KV cache between episodes, and names the episode so the arc-menu
+        # server files this run's menus and decisions under it.
+        self.policy.reset(run=ep.name)
 
         # Put the robot on the start line. This is now REQUIRED, not a convenience:
         # nav stages are built per environment, so the stage opens at whatever pose it

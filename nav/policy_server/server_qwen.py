@@ -134,6 +134,9 @@ _state: dict = {
     "plan": None, "plan_gen_step": None, "reasoning": None,
     "gen_thread": None, "gen_step": None,
     "think": os.environ.get("QVLA_THINK", "0") == "1",
+    # Where this episode's menus and decisions are being written; set by /reset, None
+    # until a caller names a run.
+    "run_dir": None,
 }
 _lock = threading.Lock()
 # Serialises GPU decode for `/raw` alone. `_lock` cannot do this job: it is held for
@@ -280,6 +283,12 @@ if _ARC_FORMAT not in ("pairs", "arc", "menu"):
 # this policy can slow down is to stop outright. That is what the STOP label is for.
 MENU_SPEED_MPS = float(os.environ.get("QVLA_MENU_SPEED", "0.7"))
 MENU_DIR = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
+# Menus are keyed by the control step, and the step counter restarts with every episode, so
+# a flat directory has the second episode overwriting the first at the same numbers. With
+# a run label from /reset each episode gets its own folder plus a JSONL of what the model
+# saw and chose -- which together are a complete, replayable record of the policy's side of
+# the run. `nav/tools/make_run_video.py` turns one into a video.
+RECORD = os.environ.get("QVLA_RECORD", "1") not in ("0", "", "false", "no")
 
 _TASK_ARC = """
 The four images are consecutive frames from your forward camera, oldest first, about 3 seconds apart. The last one is NOW.
@@ -706,11 +715,12 @@ def menu_plan(image_paths: list[str], instruction: str,
     spacing because they have to infer their own motion; here the question is about where
     the floor is open right now, and the arcs are drawn on one image.
     """
-    MENU_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = _state["run_dir"] or MENU_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     newest = image_paths[-1]
 
     labels = (_menu_rng.permutation(len(_MENU_ARCS)) + 1).tolist()
-    menu = str(MENU_DIR / f"menu_{step if step is not None else 0:08d}.jpg")
+    menu = str(out_dir / f"menu_{step if step is not None else 0:08d}.jpg")
     render_menu(newest, menu, _MENU_ARCS, labels)
     by_label = {int(lab): _MENU_ARCS[i].kappa for i, lab in enumerate(labels)}
 
@@ -730,16 +740,46 @@ def menu_plan(image_paths: list[str], instruction: str,
     m = re.search(r"\d+", reply)
     choice = int(m.group()) if m else None
     note = f"[free space] {seen}\n[menu] {labels} -> {reply.strip()[:20]!r}"
+
     if choice == _STOP_LABEL:
         # Cumulative positions all at the origin. `_lookahead_point` returns a distance
         # below `_EPS` for this and every controller answers Command(0, 0, 0) -- the same
         # path a "Stop. Do not move." plan already takes, not a special case bolted on.
-        return np.zeros((N_WAYPOINTS, 2)), note + " -> STOP"
-    if choice not in by_label:
-        return None, note + " -> unparsed"
-    k = by_label[choice]
-    return (plan_from_kappa(k, MENU_SPEED_MPS, N_WAYPOINTS, DT),
-            note + f" -> kappa {k:+.2f}")
+        plan, kappa, note = np.zeros((N_WAYPOINTS, 2)), None, note + " -> STOP"
+    elif choice not in by_label:
+        plan, kappa, note = None, None, note + " -> unparsed"
+    else:
+        kappa = by_label[choice]
+        plan = plan_from_kappa(kappa, MENU_SPEED_MPS, N_WAYPOINTS, DT)
+        note = note + f" -> kappa {kappa:+.2f}"
+
+    _record(step, menu, instruction, labels, choice, kappa, seen, reply.strip())
+    return plan, note
+
+
+def _record(step: int | None, menu: str, instruction: str, labels: list[int],
+            choice: int | None, kappa: float | None, seen: str, reply: str) -> None:
+    """Append one decision to the run's JSONL, next to the menu image it was made on.
+
+    Everything needed to redraw the decision later and nothing that has to be recomputed
+    to do it: the shuffle is stored, so the video can show which curve carried which
+    number without re-deriving a permutation that was random. Best-effort by design --
+    losing a video frame is not worth failing a benchmark episode over, so any error here
+    is swallowed after being printed.
+    """
+    run_dir = _state["run_dir"]
+    if not RECORD or run_dir is None:
+        return
+    try:
+        import json
+        with open(run_dir / "decisions.jsonl", "a") as fh:
+            fh.write(json.dumps({
+                "step": step, "menu": Path(menu).name, "instruction": instruction,
+                "labels": labels, "choice": choice, "kappa": kappa,
+                "stop": choice == _STOP_LABEL, "free_space": seen, "reply": reply,
+            }) + "\n")
+    except Exception as exc:
+        print(f"[qvla-server] could not record decision: {exc}", flush=True)
 
 
 def _generation_worker(messages: list[dict], image_paths: list[str],
@@ -817,11 +857,26 @@ def health() -> dict:
         }
 
 
+class ResetRequest(BaseModel):
+    """`run` names the episode about to start. Optional, and every field defaults, so the
+    older callers that post a bare `{}` keep working unchanged."""
+
+    run: str = ""
+
+
 @app.post("/reset")
-def reset() -> dict:
+def reset(req: ResetRequest = ResetRequest()) -> dict:
+    run_dir = None
+    if RECORD and req.run:
+        from datetime import datetime
+        # Timestamped, so re-running an episode adds a recording rather than silently
+        # overwriting the one you were about to compare against.
+        run_dir = MENU_DIR / f"{datetime.now():%Y%m%d-%H%M%S}_{req.run}"
+        run_dir.mkdir(parents=True, exist_ok=True)
     with _lock:
-        _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None)
-    return {"ok": True}
+        _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None,
+                      run_dir=run_dir)
+    return {"ok": True, "run_dir": str(run_dir) if run_dir else None}
 
 
 class RawRequest(BaseModel):

@@ -76,8 +76,15 @@ class PolicyClient:
             time.sleep(poll_s)
         raise PolicyServerError(f"policy server not ready after {timeout_s}s; last={last}")
 
-    def reset(self) -> dict[str, Any]:
-        return self._post("/reset")
+    def reset(self, run: str = "") -> dict[str, Any]:
+        """Clear the policy's state between episodes.
+
+        `run` names the episode that is about to start. `server.py` ignores it; the
+        arc-menu server uses it to open a per-episode recording directory, and without a
+        name it does not record at all -- the step counter restarts every episode, so a
+        shared directory has the second one overwriting the first.
+        """
+        return self._post("/reset", {"run": run} if run else {})
 
     def predict(
         self,

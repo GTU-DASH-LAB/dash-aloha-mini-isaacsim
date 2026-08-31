@@ -1,9 +1,19 @@
-"""Does the wedge recovery fire when it should, and stay out of the way when it should not?
+"""Does the recovery fire when it should, and stay out of the way when it should not?
 
-The expensive mistake for this feature is not failing to recover -- that just leaves the
-robot where it already was. It is firing on a robot that is deliberately holding still,
-which turns a correct decision into a reversing manoeuvre. So the cases that matter most
-here are the ones where nothing should happen.
+Two triggers now, and they are tested as two different things because they ARE two
+different things. A WEDGE is "I drove into something": stalled, with an obstacle in front.
+A BALK is "I stopped and I should not have": stalled, with clear floor in front.
+
+The expensive mistake for the wedge is firing on a robot that is deliberately holding
+still, so its cases are mostly cases where nothing should happen. The balk deliberately
+overrides that hold, so its risk runs the other way -- it must not fire on a robot that is
+merely SLOW, or on one taking a couple of seconds to think. Hence a longer window than the
+wedge, and hence the "short hold is left alone" case below.
+
+The justification for overriding a hold at all is structural rather than a judgement call:
+`run_navigation.py` breaks its loop the instant the robot is inside the success threshold,
+so a robot still being driven has not arrived, and a stop that has lasted BALK_WINDOW_S has
+already been proven wrong by the fact that it is still being asked.
 
 Run against a stub guard rather than Isaac Sim, because the logic under test is a state
 machine over time and clearance, and booting Kit to exercise it costs five minutes and
@@ -23,8 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sim"))
 from collision_guard import GuardResult  # noqa: E402
 from controllers import Command  # noqa: E402
 from stuck_recovery import (  # noqa: E402
-    BACK_LIMIT_M, MAX_CONSECUTIVE, RECOVERY_CLEARED_M, RECOVERY_MEMORY_S,
-    STALL_WINDOW_S, StuckRecovery,
+    BACK_LIMIT_M, BALK_BACK_M, BALK_WINDOW_S, MAX_CONSECUTIVE, RECOVERY_CLEARED_M,
+    RECOVERY_MEMORY_S, STALL_WINDOW_S, StuckRecovery,
 )
 
 DT = 1.0 / 60.0
@@ -59,19 +69,27 @@ def simulate(clearance_m: float, command: Command, seconds: float,
     # plan. How long the memory then LASTS is measured by `simulate_memory` instead --
     # this robot is stationary by construction, so here it can only ever run to the clock.
     releases, memory_steps = 0, 0
+    # Which trigger engaged, and which one the memory afterwards claims to be. They are
+    # recorded separately because they are answered by different methods at different
+    # times -- `mode` while reversing, `memory_kind` after -- and the bug worth catching is
+    # the two disagreeing, which would tell the model about a wedge that was a balk.
+    kinds, memory_kinds, max_stalled = set(), set(), 0.0
     for _ in range(int(seconds / DT)):
         if open_up_after_s is not None and t >= open_up_after_s:
             guard.clearance_m = 5.0
+        max_stalled = max(max_stalled, rec.stalled_s(t, (x, 0.0, 0.0)))
         drive, recovering = rec.update(t, (x, 0.0, 0.0), 0.0, command)
         if rec.take_release():
             releases += 1
         if rec.memory_live(t, (x, 0.0, 0.0)):
             memory_steps += 1
+            memory_kinds.add(rec.memory_kind(t, (x, 0.0, 0.0)))
         if recovering and not was_active:
             fired += 1
             start_x = x
         if recovering:
             reverse_steps += 1
+            kinds.add(rec.mode)
             omega_seen.add(round(drive.omega, 6))
             max_reverse_x = max(max_reverse_x, abs(x - start_x))
         was_active = recovering
@@ -84,7 +102,9 @@ def simulate(clearance_m: float, command: Command, seconds: float,
     return {"fired": fired, "reverse_steps": reverse_steps, "backed_m": max_reverse_x,
             "omega": omega_seen, "engagements": rec.engagements,
             "blocked_behind": rec.blocked_behind, "interventions": guard.interventions,
-            "releases": releases, "memory_steps": memory_steps}
+            "releases": releases, "memory_steps": memory_steps, "balks": rec.balks,
+            "kinds": kinds, "memory_kinds": memory_kinds, "max_stalled_s": max_stalled,
+            "rec": rec}
 
 
 def simulate_memory(after_release_mps: float, seconds: float = 20.0):
@@ -96,17 +116,28 @@ def simulate_memory(after_release_mps: float, seconds: float = 20.0):
     entire distinction. The front is opened at the moment of release, which is what a
     successful reverse looks like from the guard's side and also stops a second wedge
     from restarting the clock mid-measurement.
+
+    ONLY THE FIRST CONTIGUOUS WINDOW IS MEASURED, and that is not a detail. With
+    `after_release_mps = 0` the robot stands still in the open, which is now a BALK -- so
+    five seconds after the release it reverses again, refreshes `_release_t`, and the
+    memory goes live a second time. Summing every live step across the run therefore
+    measures "how much memory did this robot have in twenty seconds", which is a different
+    question, and one whose answer legitimately exceeds the cap. What is under test is
+    whether ONE memory expires, so the accumulation stops the first time it does.
     """
     guard = StubGuard(0.4)
     rec = StuckRecovery(guard)
-    x, t, live_s, released = 0.0, 0.0, 0.0, False
+    x, t, live_s, released, done = 0.0, 0.0, 0.0, False, False
     for _ in range(int(seconds / DT)):
         drive, recovering = rec.update(t, (x, 0.0, 0.0), 0.0, HOLDING)
         if rec.take_release():
             released = True
             guard.clearance_m = 5.0
-        if released:
-            live_s += DT if rec.memory_live(t, (x, 0.0, 0.0)) else 0.0
+        if released and not done:
+            if rec.memory_live(t, (x, 0.0, 0.0)):
+                live_s += DT
+            elif live_s > 0.0:
+                done = True          # this memory has ended; anything later is a new one
             x += after_release_mps * DT
         elif recovering:
             x += drive.vx * DT
@@ -146,24 +177,59 @@ def main() -> int:
         if not ok:
             fails.append(f"{name}: {detail}")
 
-    print(f"stall window {STALL_WINDOW_S}s, back limit {BACK_LIMIT_M} m\n")
+    print(f"wedge window {STALL_WINDOW_S}s / back {BACK_LIMIT_M} m,  "
+          f"balk window {BALK_WINDOW_S}s / back {BALK_BACK_M} m\n")
 
     # --- the cases where nothing must happen ---------------------------------
     r = simulate(0.4, DRIVING, 20.0, speed_mps=0.45)
     check("driving past a close wall", r["fired"] == 0,
           f"{r['fired']} engagements while still making progress")
 
-    r = simulate(5.0, HOLDING, 20.0)
-    check("holding still in open space", r["fired"] == 0,
-          f"{r['fired']} engagements -- a deliberate stop must be left alone")
+    r = simulate(5.0, DRIVING, 20.0, speed_mps=0.45)
+    check("driving through open space", r["fired"] == 0,
+          f"{r['fired']} engagements on a robot doing nothing wrong")
 
     r = simulate(0.4, HOLDING, STALL_WINDOW_S - 0.5)
-    check("stopped, window not yet full", r["fired"] == 0,
+    check("stopped at a wall, window not yet full", r["fired"] == 0,
           f"{r['fired']} engagements before {STALL_WINDOW_S}s of evidence")
+
+    # The balk's own version of the same guard, and the more important one: this window is
+    # the ONLY thing standing between "the policy is deliberately pausing" and a reversing
+    # manoeuvre. A wedge has an obstacle corroborating it; a balk has nothing but time.
+    r = simulate(5.0, HOLDING, BALK_WINDOW_S - 0.5)
+    check("brief hold in open space is left alone", r["fired"] == 0,
+          f"{r['fired']} engagements before {BALK_WINDOW_S}s of standing still")
+
+    # --- the balk, which is the new one --------------------------------------
+    # This case USED to assert `fired == 0`, on the grounds that a deliberate stop must be
+    # respected. It was wrong, and the first full ladder is what proved it: 42 of 65
+    # decisions on `office_nearest_elevator` answered STOP from 5.5 m away, with the model's
+    # own description of those same frames naming an open side and saying the target was not
+    # visible. The robot was not stopping because it had arrived -- arrival ends the episode
+    # -- it was stopping because it could not see where to go, and standing there could not
+    # fix that. Backing up changes the view; waiting does not.
+    r = simulate(5.0, HOLDING, 25.0)
+    check("balked: fires on a long stop in the open", r["balks"] >= 1,
+          f"{r['balks']} balks, {r['fired']} manoeuvres in total")
+    check("balked: is recorded as a balk, not a wedge", r["kinds"] == {"balk"},
+          f"modes seen while reversing: {sorted(r['kinds'])}")
+    check("balked: the next decision is told which kind",
+          r["memory_kinds"] == {"balk"},
+          f"memory kinds reported: {sorted(k or 'None' for k in r['memory_kinds'])}")
+    check("balked: backs off a look, not an escape",
+          r["backed_m"] <= BALK_BACK_M + 0.05,
+          f"backed {r['backed_m']:.2f} m against the {BALK_BACK_M} m balk limit "
+          f"(the {BACK_LIMIT_M} m wedge limit would be a retreat, not a wider view)")
+    check("balked: asks for a fresh decision", r["releases"] >= 1,
+          f"{r['releases']} replans requested -- without one the robot backs up and is "
+          f"handed the same STOP it just backed away from")
 
     # --- the case it exists for ----------------------------------------------
     r = simulate(0.4, HOLDING, 20.0)
     check("wedged: fires", r["fired"] >= 1, f"{r['fired']} engagements")
+    check("wedged: is not counted as a balk", r["balks"] == 0 and r["kinds"] == {"wedge"},
+          f"{r['balks']} balks, modes {sorted(r['kinds'])} -- summing the two would hide "
+          f"which failure the episode actually hit")
     check("wedged: reverses", r["reverse_steps"] > 0,
           f"{r['reverse_steps']} steps of reverse")
     check("wedged: never turns", r["omega"] == {0.0},
@@ -195,9 +261,10 @@ def main() -> int:
     check("release fires once per manoeuvre", r["releases"] <= r["fired"],
           f"{r['releases']} releases for {r['fired']} manoeuvres (take_release must "
           f"clear itself, or the runner replans every step forever)")
-    r = simulate(5.0, HOLDING, 20.0)
-    check("no wedge, nothing to remember", r["memory_steps"] == 0 and r["releases"] == 0,
-          f"{r['memory_steps']} steps of recovery memory on a robot that never wedged")
+    r = simulate(5.0, DRIVING, 20.0, speed_mps=0.45)
+    check("nothing happened, nothing to remember",
+          r["memory_steps"] == 0 and r["releases"] == 0,
+          f"{r['memory_steps']} steps of recovery memory on a robot that never stalled")
 
     # Standing still after the reverse: only the clock can end it.
     m = simulate_memory(0.0)
@@ -223,17 +290,44 @@ def main() -> int:
           f"{r['engagements']} manoeuvres against a {MAX_CONSECUTIVE} cap "
           f"(displacement alone reads every cycle as progress)")
 
+    # --- the stall clock, which is what the model is actually told ---------------
+    # `stalled_s` is the one piece of this that reaches the VLM as a number rather than as
+    # a manoeuvre, and it is the answer to "add some history": one frame of a stationary
+    # robot is the same picture as one frame of a moving one, so nothing the camera
+    # provides can distinguish "I am approaching" from "I have been here for ten seconds".
+    r = simulate(0.4, DRIVING, 20.0, speed_mps=0.45)
+    check("a moving robot reports no stall", r["max_stalled_s"] < 1.0,
+          f"peak stall reading {r['max_stalled_s']:.1f}s while driving at 0.45 m/s")
+
+    r = simulate(5.0, HOLDING, BALK_WINDOW_S - 0.5)
+    check("a stopped robot reports its stall honestly",
+          BALK_WINDOW_S - 1.5 < r["max_stalled_s"] <= BALK_WINDOW_S,
+          f"{r['max_stalled_s']:.1f}s reported after {BALK_WINDOW_S - 0.5:.1f}s of holding")
+
     # --- telemetry -------------------------------------------------------------
     r = simulate(5.0, HOLDING, 20.0)
     check("clearance probes are not interventions", r["interventions"] == 0,
           f"{r['interventions']} guard interventions counted from probing alone")
+
+    # Per-EPISODE, not per-process. This was a real bug: `reset()` cleared the state
+    # machine and left the tallies alone, so in the UI -- where several episodes share one
+    # process -- episode 2 reported episode 1's recoveries plus its own. Headless runs
+    # never showed it, because there the process IS the episode, which is exactly the kind
+    # of bug that survives a benchmark and appears the first time someone watches.
+    rec = r["rec"]
+    before = (rec.engagements, rec.balks)
+    rec.reset()
+    check("reset clears the per-episode tallies",
+          (rec.engagements, rec.balks, rec.blocked_behind) == (0, 0, 0),
+          f"was {before}, now ({rec.engagements}, {rec.balks}) after reset()")
 
     print("\n" + "=" * 78)
     if fails:
         for f in fails:
             print(f"  FAIL  {f}")
     else:
-        print("  PASS - recovery fires only on a wedge, reverses straight, and stops.")
+        print("  PASS - wedge and balk each fire on their own evidence, reverse straight, "
+              "and stop.")
     print("=" * 78)
     return 1 if fails else 0
 

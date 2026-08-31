@@ -55,6 +55,34 @@ the robot has driven `RECOVERY_CLEARED_M` from where it was released, which is t
 deadlock actually broken; or `RECOVERY_MEMORY_S` has passed, which is long enough for a
 couple of generations to have been asked the question and is the cap on how long a fact
 about the past is allowed to shape the present.
+
+**THE SECOND TRIGGER: standing still with nothing in front (a BALK).** The wedge above
+requires an obstacle inside the guard's stop distance, and the line that enforced it used
+to bail out with the comment "standing still with room ahead is the policy choosing to
+hold, and overriding it would drive through a deliberate stop". That reasoning was wrong,
+and the first full ladder is what showed it: `office_nearest_elevator` answered STOP on
+**42 of its 65 decisions** from 5.5 m out, with its own description of those same frames
+reading "there is a wall straight ahead, the most open walkable floor is to the RIGHT,
+TARGET: not visible". Nothing was ever close enough to be a wedge, so the recovery never
+fired once, and the episode ended 5.5 m short. `hospital_exit_room` failed the same way
+with the guard involved: 2655 interventions, 12% of the gap closed.
+
+The correction is the same structural argument that justifies taking STOP off the menu
+after a reverse, and it is worth stating in full because it is what makes this safe:
+**a robot still inside the control loop has not arrived.** `run_navigation.py` breaks the
+instant `distance <= success_threshold_m`, so arrival is latched and terminal. Therefore a
+stop that persists for `BALK_WINDOW_S` cannot be the correct stop -- there is no state of
+the world in which standing still for five seconds, still being driven, is right. It is
+not a deliberate stop being overridden; it is a stop that has already been proven wrong by
+the fact that the loop is still running.
+
+What a balk does about it is deliberately not "drive forward anyway". It reverses
+`BALK_BACK_M` and then forces a re-decision, because the failure is one of INFORMATION,
+not of will: the model said it could not see the target. Backing up half a metre widens
+the field of view and puts a landmark that was cropped at the frame edge back inside it,
+which is the one thing the robot can do to change the answer rather than to override it.
+Overriding it -- picking a direction ourselves -- would be inventing a heading that
+nothing in the stack has looked at.
 """
 
 from __future__ import annotations
@@ -70,6 +98,17 @@ COOLDOWN_S = 2.0          # let the policy see and act on the new view before re
 MAX_CONSECUTIVE = 4       # a wedge this deep is a result, not something to keep poking
 RECOVERY_MEMORY_S = 6.0   # ~3 generations: long enough to be asked, short enough to end
 RECOVERY_CLEARED_M = 0.5  # driven this far from the release point = the deadlock is over
+
+# The BALK: standing still with nothing in front. Longer window than the wedge because
+# there is no obstacle corroborating the stall -- the only evidence is time, so it has to
+# be enough time that a slow crawl or one cautious generation cannot look like a stop.
+BALK_WINDOW_S = 5.0
+# And a shorter reverse, because the purpose is different. A wedge reverse is an ESCAPE
+# and has to clear the obstacle; a balk reverse is a LOOK, and half a metre is already a
+# visibly wider field of view -- enough for a landmark cropped out at the frame edge to
+# come back into it. Backing further would only spend distance the robot then has to
+# re-drive.
+BALK_BACK_M = 0.5
 
 
 class StuckRecovery:
@@ -87,6 +126,13 @@ class StuckRecovery:
         self.back_limit_m = back_limit_m
         self.engagements = 0          # how many times it fired, for the result record
         self.blocked_behind = 0       # fired, and could not reverse either
+        # Counted apart from `engagements` because they are evidence about different
+        # failures: a wedge says the robot drove into something, a balk says the policy
+        # stopped without arriving. A run reporting one is not the same run reporting the
+        # other, and summing them would hide which of the two the episode actually hit.
+        self.balks = 0
+        self._mode = "wedge"          # which trigger is currently engaged
+        self._release_mode = "wedge"  # ...and which one the live memory belongs to
         # Set on the step the manoeuvre ends, cleared by whoever acts on it. A flag
         # rather than a third return value from `update`: the release is a one-off event
         # and every other step would have to carry a False for it, which is how a caller
@@ -115,6 +161,25 @@ class StuckRecovery:
         self._consecutive = 0
         self._release_t = -1e9
         self.release_pending = False
+        # The tallies are per EPISODE, and they were not being cleared. One instance is
+        # built per process and `reset()` runs per episode, so in the UI -- where several
+        # episodes share a process -- episode 2 reported episode 1's recoveries plus its
+        # own. Headless runs never showed it because there the process is the episode.
+        self.engagements = 0
+        self.balks = 0
+        self.blocked_behind = 0
+
+    @property
+    def mode(self) -> str:
+        """"wedge" or "balk" -- which trigger is engaged RIGHT NOW.
+
+        Distinct from `memory_kind`, which answers the same question about a manoeuvre that
+        has already finished. The status line wants this one: while reversing, "backing out
+        of a wedge" and "backing off after stalling" describe the same motion for opposite
+        reasons, and a watcher who is told the wrong one will look for an obstacle that was
+        never there.
+        """
+        return self._mode
 
     def take_release(self) -> bool:
         """True once per manoeuvre, on the step it ended. Clears itself.
@@ -126,6 +191,28 @@ class StuckRecovery:
         """
         fired, self.release_pending = self.release_pending, False
         return fired
+
+    def stalled_s(self, sim_time: float, position) -> float:
+        """How long the robot has been making no progress. 0.0 when it is moving.
+
+        Reported to the policy so the model can be told what the picture cannot show it:
+        one frame of a stationary robot is identical to one frame of a moving one. This is
+        the honest form of "add some history" -- a number measured here, where position is
+        known, rather than a story assembled on the server, where it is not.
+        """
+        if self._active:
+            return 0.0
+        # Walk BACKWARDS from the newest sample and stop at the first one that is far
+        # away: the stall began there. Scanning forwards and taking the first near sample
+        # instead would find a position the robot merely passed through earlier and report
+        # a rock-out-and-back as one long stall -- overstating exactly the case where the
+        # robot is moving the most.
+        oldest = sim_time
+        for t, x, y in reversed(self._history):
+            if math.dist((x, y), (position[0], position[1])) > STALL_PROGRESS_M:
+                break
+            oldest = t
+        return sim_time - oldest
 
     def memory_live(self, sim_time: float, position) -> bool:
         """Should the next decision be told the robot has just backed out of something?
@@ -140,6 +227,16 @@ class StuckRecovery:
             return False
         return math.dist(
             self._release_pos, (position[0], position[1])) < RECOVERY_CLEARED_M
+
+    def memory_kind(self, sim_time: float, position) -> str | None:
+        """"wedge", "balk" or None -- which manoeuvre the live memory came from.
+
+        The two need different sentences and the difference is not cosmetic: after a wedge
+        the thing in front is the thing that blocked you, after a balk there was never
+        anything in front and the problem was that you could not see your target. Telling
+        the model the wrong one of those is worse than telling it neither.
+        """
+        return self._release_mode if self.memory_live(sim_time, position) else None
 
     def front_clearance_m(self, position, yaw: float) -> float:
         """Distance to the nearest thing ahead, or inf.
@@ -173,8 +270,12 @@ class StuckRecovery:
         # fired once. It fired at all in longer runs only because clearing the history on
         # release reshuffles which samples exist -- i.e. the 3 s trigger was really a
         # random one.
-        while (len(self._history) > 1
-               and sim_time - self._history[1][0] >= STALL_WINDOW_S):
+        # Pruned to the LONGER of the two windows, because the balk test needs 5 s of
+        # history to be able to say anything and the wedge test reads its own 3 s out of
+        # the same list. One list, two spans, measured by `_moved_over` rather than by
+        # index -- indexing element 0 only works while there is exactly one window.
+        keep_s = max(STALL_WINDOW_S, BALK_WINDOW_S)
+        while len(self._history) > 1 and sim_time - self._history[1][0] >= keep_s:
             self._history.pop(0)
 
         if sim_time - self._release_t < COOLDOWN_S:
@@ -183,10 +284,10 @@ class StuckRecovery:
             return command, False
         # Need a full window before the displacement over it means anything -- at the
         # start of an episode the history is one sample and would read as zero progress.
-        if len(self._history) < 2 or sim_time - self._history[0][0] < STALL_WINDOW_S:
+        moved = self._moved_over(STALL_WINDOW_S, sim_time, position)
+        if moved is None:
             return command, False
-        t0, x0, y0 = self._history[0]
-        if math.dist((x0, y0), (position[0], position[1])) > STALL_PROGRESS_M:
+        if moved > STALL_PROGRESS_M:
             # Moving, so leave it alone -- but only clear the consecutive count once the
             # robot is far enough from the last wedge to have actually left it, not
             # merely moving. The escape radius has to be bigger than the manoeuvre's own
@@ -199,11 +300,41 @@ class StuckRecovery:
                 self._consecutive = 0
             return command, False
         if self.front_clearance_m(position, yaw) > self.guard.stop_distance_m:
-            # Standing still with room ahead. That is the policy choosing to hold, and
-            # overriding it here would drive through a deliberate stop.
-            return command, False
+            # Standing still with room ahead: not a wedge. This used to return here, on
+            # the grounds that it is the policy choosing to hold and overriding it would
+            # drive through a deliberate stop. See the module docstring for why that was
+            # wrong -- arrival is latched and terminal, so a robot still being driven has
+            # not arrived, and a stop this long has therefore already been proven wrong.
+            # It still gets a LONGER window than a wedge, because time is the only
+            # evidence here: no obstacle corroborates it.
+            balked = self._moved_over(BALK_WINDOW_S, sim_time, position)
+            if balked is None or balked > STALL_PROGRESS_M:
+                return command, False
+            self.balks += 1
+            return self._engage("balk", sim_time, position)
 
+        return self._engage("wedge", sim_time, position)
+
+    def _moved_over(self, window_s: float, sim_time: float, position) -> float | None:
+        """Distance covered over the last `window_s`, or None if history is too short.
+
+        None and 0.0 are different answers and conflating them is what makes a stall
+        detector fire on the first frame of an episode: an empty history has covered no
+        distance, which is not the same as a robot that has covered no distance.
+        """
+        ref = None
+        for t, x, y in self._history:
+            if sim_time - t >= window_s:
+                ref = (x, y)
+            else:
+                break
+        if ref is None:
+            return None
+        return math.dist(ref, (position[0], position[1]))
+
+    def _engage(self, mode: str, sim_time: float, position):
         self._active = True
+        self._mode = mode
         self._backed_m = 0.0
         self._start = (position[0], position[1])
         self._engage_t = sim_time
@@ -214,6 +345,10 @@ class StuckRecovery:
     def _continue(self, sim_time: float, position, yaw: float, command):
         self._backed_m = math.dist(self._start, (position[0], position[1]))
         clear = self.front_clearance_m(position, yaw)
+        # A balk ends on distance alone. There is no clearance condition to wait for --
+        # the front was already clear when it engaged, which is what made it a balk -- and
+        # the limit is shorter because the manoeuvre is a look, not an escape.
+        limit = BALK_BACK_M if self._mode == "balk" else self.back_limit_m
         stuck_behind = sim_time - self._engage_t > self._give_up_s
         if stuck_behind:
             # Wedged front AND back. Reversing harder will not help and the robot would
@@ -221,11 +356,13 @@ class StuckRecovery:
             # and let the run record that this happened rather than hiding it in a
             # flat trace.
             self.blocked_behind += 1
-        if (stuck_behind or self._backed_m >= self.back_limit_m
-                or clear > self.guard.stop_distance_m + CLEAR_MARGIN_M):
+        if (stuck_behind or self._backed_m >= limit
+                or (self._mode == "wedge"
+                    and clear > self.guard.stop_distance_m + CLEAR_MARGIN_M)):
             self._active = False
             self._release_t = sim_time
             self._release_pos = (position[0], position[1])
+            self._release_mode = self._mode
             # Raised on every release, including the give-up one. A robot wedged front
             # AND back needs the re-decision more than the others, not less: reversing
             # got it nothing, so the only thing left that can change is the answer.

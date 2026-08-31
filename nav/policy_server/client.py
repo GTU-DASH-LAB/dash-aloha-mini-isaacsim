@@ -113,6 +113,8 @@ class PolicyClient:
         delayed_image_paths: list[str] | None = None,
         robot_type: str = "wheeled robot",
         recovered: bool = False,
+        recovery_kind: str = "",
+        stalled_s: float = 0.0,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -130,10 +132,17 @@ class PolicyClient:
         background generation; the caller is expected to keep those and reference the
         second-to-last one. See run_navigation.py's `gen_starts`.
 
-        `recovered` says the robot has just reversed out of a wedge. The arc-menu server
-        uses it to tell the model something the picture cannot: that the obstacle filling
-        the frame is the one that stopped it, seen from a metre further back. `server.py`
-        ignores the field, so it is safe to send either way.
+        `recovered` says the robot has just reversed. The arc-menu server uses it to tell
+        the model something the picture cannot: that the view in front of it is a view it
+        has already failed at, seen from a metre further back. `recovery_kind` says which
+        failure -- "wedge" (drove into something) or "balk" (stopped with clear floor
+        ahead) -- and `stalled_s` is how long the robot has been making no progress, which
+        no single frame can show.
+
+        All three are ignored by `server.py`, so they are safe to send either way. That is
+        not incidental: the runner talks to whichever server is listening, and a field that
+        broke the TIC-VLA baseline would make the two policies un-comparable on the same
+        ladder.
         """
         return self._post(
             "/predict",
@@ -147,5 +156,7 @@ class PolicyClient:
                 "delayed_image_paths": delayed_image_paths,
                 "robot_type": robot_type,
                 "recovered": recovered,
+                "recovery_kind": recovery_kind,
+                "stalled_s": stalled_s,
             },
         )

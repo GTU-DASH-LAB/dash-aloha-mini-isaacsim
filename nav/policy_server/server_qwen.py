@@ -48,6 +48,7 @@ Three things this file has to get right, none of them about prompting
 
 from __future__ import annotations
 
+import collections
 import math
 import os
 import re
@@ -67,10 +68,11 @@ from scipy.interpolate import PchipInterpolator
 # but not `nav/`, where the shared code lives. The `menu` format needs it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
-    CREEP_MPS, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED, DESCRIBE_TARGET,
-    FREE_SPACE_SYSTEM, SELECT_AFTER_RECOVERY, make_arcs,
-    parse_target_distance, plan_from_kappa, render_menu, speed_for,
-    select_system,
+    CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
+    DESCRIBE_TARGET, FREE_SPACE_SYSTEM, SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY,
+    SPEED_CHOICE_FROM_M, direction_word, history_note, make_arcs,
+    parse_choice_speed, parse_target_distance, plan_from_kappa, render_menu,
+    select_system, speed_for, speed_from_level,
 )
 
 MODEL_PATH = os.environ.get(
@@ -109,13 +111,62 @@ GEN_TIMEOUT_S = float(os.environ.get("QVLA_GEN_TIMEOUT_S", 45.0))
 # plan even at the worst staleness observed. This is what the original instruction asked
 # for -- "the next 100 actions, so the control loop is fast" -- and 100 points at 10 Hz is
 # exactly that. DT is unchanged at 0.1 s, so the control rate is the same 10 Hz.
-HORIZON_S = 10.0
-N_WAYPOINTS = 100
-# Ten control points, one per second. The model writes these; PCHIP densifies to
-# N_WAYPOINTS. Spacing them 1.0 s apart rather than packing more in keeps the count the
-# model has to hold in its head roughly where it was at 6.
-CTRL_TIMES = tuple(float(i) for i in range(1, 11))
-DT = HORIZON_S / N_WAYPOINTS          # 0.1 s -- 10 Hz, unchanged
+
+# --------------------------------------------------------------------------------------
+# HOW HARD THE MODEL THINKS -- and why the horizon is defined inside this block
+# --------------------------------------------------------------------------------------
+# Three levels, each a set of decode budgets. The interesting one is not the size of the
+# budgets, it is that THE HORIZON IS ONE OF THEM.
+#
+# Thinking costs wall-clock, wall-clock is staleness, and staleness eats the plan from the
+# front: `/predict` serves `full[ceil(time_delay/DT):]`, `plan_speed` returns 0.0 for a
+# plan shorter than two points, and `braking` takes the min. That is not a hypothetical --
+# it is the exact failure recorded above, where a 3.0 s horizon against a 2.7-5 s
+# generation drove the robot 0.27 m in 70 s while every single generation was correct.
+#
+# So a level that thinks for 15 s on a 10 s horizon does not think better. It stops the
+# robot, and it stops it in the way that looks like a policy failure rather than a
+# configuration one: `has_plan: true`, plausible waypoints, speed 0.00. Raising the
+# horizon with the budget is not tuning, it is the precondition for the measurement
+# meaning anything. Every number below is derived from `HORIZON_S`, never typed twice --
+# see MAX_REACH_M for what one hardcoded copy of this constant already cost.
+#
+# The horizons are sized off the measured cost of the two menu generations at each level:
+# ~2.1 s at medium, and roughly 3x and 8x the decode at high and very high.
+_LEVELS: dict[str, dict[str, float]] = {
+    # describe / select budgets are max_new_tokens; *_think is the reasoning pass, 0 = off.
+    "medium":    {"describe": 110, "describe_think": 0,   "select_think": 0,
+                  "answer": 8,  "horizon_s": 10.0},
+    "high":      {"describe": 200, "describe_think": 0,   "select_think": 180,
+                  "answer": 16, "horizon_s": 16.0},
+    "very_high": {"describe": 260, "describe_think": 220, "select_think": 420,
+                  "answer": 24, "horizon_s": 30.0},
+}
+# "very high", "very-high" and "VERY_HIGH" all mean the same thing to a person typing it
+# into a shell, and there is no reading under which they should not here.
+THINK_LEVEL = os.environ.get("QVLA_THINK_LEVEL", "medium").strip().lower().replace(
+    " ", "_").replace("-", "_")
+if THINK_LEVEL not in _LEVELS:
+    # Loudly, for the reason QVLA_FORMAT is: a typo that fell back to `medium` would run
+    # the cheap level and label the results as the expensive one, and the whole point of
+    # the ladder is comparing the three.
+    raise SystemExit(
+        f"QVLA_THINK_LEVEL must be one of {sorted(_LEVELS)}, got {THINK_LEVEL!r}")
+LEVEL = _LEVELS[THINK_LEVEL]
+
+HORIZON_S = float(os.environ.get("QVLA_HORIZON_S", LEVEL["horizon_s"]))
+# 10 Hz is the control rate and is what stays fixed across levels; the POINT COUNT is what
+# moves. Written this way round -- derive the count from the rate -- because the other way
+# round (fix 100 points, let DT stretch) would silently drop the control rate to 3.3 Hz at
+# very_high and change what `time_delay` slicing means at the same time.
+_CONTROL_HZ = 10.0
+N_WAYPOINTS = int(round(HORIZON_S * _CONTROL_HZ))
+# Ten control points spread over the horizon. The model writes these; PCHIP densifies to
+# N_WAYPOINTS. Ten and not "one per second" so the count the model has to hold in its head
+# does not grow to thirty when the horizon does -- the horizon exists to survive latency,
+# not to ask for a longer list.
+CTRL_TIMES = tuple(round(HORIZON_S * i / 10.0, 2) for i in range(1, 11))
+DT = HORIZON_S / N_WAYPOINTS          # 0.1 s -- 10 Hz, unchanged at every level
 
 # Reject a hallucinated scale, but DERIVE the threshold, because a hardcoded one is a
 # second copy of the horizon hiding in the parser. This was a flat 6.0 m -- 3 s at the
@@ -147,6 +198,13 @@ _state: dict = {
     # one run landing in the first step of the next.
     "epoch": 0,
     "stale_discards": 0,
+    # THE HISTORY CHANNEL: the last few directions actually driven, as words. Bounded, and
+    # bounded tightly -- six decisions is about twenty seconds, which is the span over
+    # which "I keep choosing straight and nothing is happening" is a fact rather than a
+    # biography. A long list would also push the useful end of it off the end of the
+    # select call's attention, which is the one call whose wording we are free to compose
+    # and therefore the one worth not diluting.
+    "recent": collections.deque(maxlen=6),
 }
 _lock = threading.Lock()
 # Serialises GPU decode for `/raw` alone. `_lock` cannot do this job: it is held for
@@ -182,6 +240,22 @@ class PredictRequest(BaseModel):
     # when the same idea was worth nothing on TIC-VLA. Defaults False, so every existing
     # caller keeps its exact behaviour.
     recovered: bool = False
+    # WHICH recovery: "wedge" (drove into something and reversed out) or "balk" (stood
+    # still with clear floor ahead and reversed to look again). Kept as a separate field
+    # rather than replacing `recovered`, because they are not the same statement and one
+    # cannot be derived from the other: `recovered` says the last few seconds contained a
+    # manoeuvre, `recovery_kind` says what the model should be told about it, and telling
+    # it the wrong one -- "something was blocking you" when nothing was -- is worse than
+    # telling it neither. Empty string with `recovered=True` still means wedge, which is
+    # what every caller written before this field existed meant.
+    recovery_kind: str = ""
+    # How long the robot has been making no progress, in seconds, measured by the runner.
+    # 0.0 while moving. This is the honest form of "give the model some history": a number
+    # taken where the position is known, rather than a story assembled on the server,
+    # which sees the choices it made and has no way to know whether any of them moved
+    # anything. One frame of a stationary robot is the same picture as one frame of a
+    # moving one.
+    stalled_s: float = 0.0
 
 
 class PredictResponse(BaseModel):
@@ -675,6 +749,47 @@ def _generate(messages: list[dict], image_paths: list[str], max_new: int) -> str
     return prefix + gen + "</think>\n" + ANSWER_PREFIX + answer
 
 
+def _chat_prompt(image_paths: list[str], system: str, user: str, think: bool) -> str:
+    """The templated prompt string, up to but not including the assistant's first token.
+
+    Split out of `free_generate` so `think_then_answer` can re-enter the SAME prompt with a
+    partial generation appended. Rebuilding it from the messages there instead would be a
+    second copy of the template call, and the two would differ the first time either was
+    touched -- which on this model means the forced-answer pass running under a different
+    `enable_thinking` than the pass it is continuing.
+    """
+    content: list[dict] = [{"type": "image", "image": p} for p in image_paths]
+    content.append({"type": "text", "text": user})
+    messages = ([{"role": "system", "content": system}] if system else []) + [
+        {"role": "user", "content": content}]
+    kwargs = {} if think else {"enable_thinking": False}
+    try:
+        return proc_apply(messages, **kwargs)
+    except TypeError:
+        # Older processors do not take the flag; losing the saving beats not running.
+        return proc_apply(messages)
+
+
+def proc_apply(messages: list[dict], **kwargs) -> str:
+    return _state["proc"].apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=False, **kwargs)
+
+
+def _decode(prompt: str, image_paths: list[str], max_new: int) -> str:
+    """Run the model on an already-templated prompt. Returns the NEW text only."""
+    from PIL import Image
+
+    proc, model = _state["proc"], _state["model"]
+    imgs = [Image.open(p).convert("RGB") for p in image_paths]
+    with _raw_gate:
+        inputs = proc(text=[prompt], images=imgs or None,
+                      return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_new, **_SAMPLING)
+        return proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
+                                 skip_special_tokens=True)[0]
+
+
 def free_generate(image_paths: list[str], system: str, user: str, max_new: int,
                   prefill: str = "", think: bool = False) -> tuple[str, float]:
     """One generation from an arbitrary system/user prompt. Returns (text, seconds).
@@ -683,39 +798,65 @@ def free_generate(image_paths: list[str], system: str, user: str, max_new: int,
     than the body of the endpoint: the two must run the model identically, or the numbers
     the probes recorded through `/raw` would not describe what the benchmark then drives.
     """
-    from PIL import Image
-
-    proc, model = _state["proc"], _state["model"]
-    content: list[dict] = [{"type": "image", "image": p} for p in image_paths]
-    content.append({"type": "text", "text": user})
-    messages = ([{"role": "system", "content": system}] if system else []) + [
-        {"role": "user", "content": content}]
-    kwargs = {} if think else {"enable_thinking": False}
-    try:
-        text = proc.apply_chat_template(messages, add_generation_prompt=True,
-                                        tokenize=False, **kwargs)
-    except TypeError:
-        text = proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-
-    imgs = [Image.open(p).convert("RGB") for p in image_paths]
     t0 = time.perf_counter()
-    with _raw_gate:
-        inputs = proc(text=[text + prefill], images=imgs or None,
-                      return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=max_new, **_SAMPLING)
-        gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
-                                skip_special_tokens=True)[0]
+    text = _chat_prompt(image_paths, system, user, think)
+    gen = _decode(text + prefill, image_paths, max_new)
     return prefill + gen, time.perf_counter() - t0
+
+
+def think_then_answer(image_paths: list[str], system: str, user: str, think_budget: int,
+                      answer_budget: int, prefill: str = "") -> tuple[str, str, float]:
+    """Reason first, then answer. Returns (answer_text, thinking_text, seconds).
+
+    THE ANSWER IS FORCED, not requested, and that is the entire content of this function.
+    Asked to think and then answer, this model at a 1024-token cap ran to the cap and
+    emitted no `</think>` in 5 of 6 generations -- with GOOD reasoning inside it, naming the
+    right scene and reaching the right decision, and no answer to parse. `_generate` already
+    solves that for the waypoint formats; the menu format needs the same trick and could not
+    reach it, because `_generate` is welded to `build_messages` and `ANSWER_PREFIX`.
+
+    So: cap the thinking, and if the model has not closed the block, close it ourselves and
+    re-enter with the answer's first characters already written. The second pass is not
+    being asked to decide anything -- the decision is already in its own context -- it is
+    being asked to write down what it just concluded.
+
+    Why not simply raise the cap: the failure is not that the budget is too small, it is
+    that the model does not stop on its own. A bigger budget buys longer deliberation and
+    the same missing answer, at 54 s a call instead of 8 s. On a navigation loop that is not
+    a slower answer, it is a stopped robot -- see the horizon block at the top of this file.
+
+    `think_budget <= 0` degrades to a plain generation, so the medium level runs through
+    exactly the same code path as before this function existed rather than a parallel one.
+    """
+    if think_budget <= 0:
+        text, dt = free_generate(image_paths, system, user, answer_budget, prefill=prefill)
+        return text, "", dt
+
+    t0 = time.perf_counter()
+    prompt = _chat_prompt(image_paths, system, user, think=True)
+    gen = _decode(prompt, image_paths, think_budget)
+    head, closed_itself, tail = gen.partition("</think>")
+    if closed_itself and tail.strip():
+        # It finished on its own and kept going into the answer. Take the model's own
+        # answer rather than forcing a second one: the forced pass would re-derive a
+        # conclusion that is already written, and pay another decode to do it.
+        return tail.strip(), head.strip(), time.perf_counter() - t0
+
+    answer = _decode(prompt + gen + "</think>\n" + prefill, image_paths, answer_budget)
+    return prefill + answer, head.strip(), time.perf_counter() - t0
 
 
 _MENU_ARCS = make_arcs()
 _STOP_LABEL = len(_MENU_ARCS) + 1
-_MENU_SYSTEM = select_system(_STOP_LABEL)
-# Same menu, same labels, minus the one answer that cannot be right immediately after a
-# reverse. Built once at import next to its sibling rather than per call, so the two can
-# only ever differ in the way `select_system` says they differ.
-_MENU_SYSTEM_MOVE = select_system(_STOP_LABEL, stop_allowed=False)
+# Four prompts from two independent flags, built once at import rather than per call, so
+# the variants can only ever differ in the ways `select_system` says they differ. The
+# alternative -- composing the strings at the call site -- is how a run ends up with the
+# no-stop rule silently paired with the one-number answer format.
+_MENU_SYSTEMS = {
+    (stop, speed): select_system(_STOP_LABEL, stop_allowed=stop, speed_choice=speed)
+    for stop in (True, False) for speed in (True, False)
+}
+
 # Seeded, so a benchmark run is reproducible, and shuffled per call rather than fixed,
 # because a stable numbering is the one confound that makes this whole approach look like
 # it works when it does not: number the arcs left to right and a model can answer "1" for
@@ -726,7 +867,8 @@ _menu_rng = np.random.default_rng(int(os.environ.get("QVLA_MENU_SEED", "0")))
 
 def menu_plan(image_paths: list[str], instruction: str,
               step: int | None,
-              recovered: bool = False) -> tuple[np.ndarray | None, str]:
+              recovered: bool = False, kind: str = "",
+              stalled_s: float = 0.0) -> tuple[np.ndarray | None, str]:
     """The `menu` format's whole pipeline: two generations, one curvature, one plan.
 
     Returns (plan or None, a reasoning string for the run log). None means the reply named
@@ -764,29 +906,68 @@ def menu_plan(image_paths: list[str], instruction: str,
     # scored, and the arc choices below could move. The re-run is the check.
     # Order matters and the reason is in `DESCRIBE_AFTER_RECOVERY`: the recovery note goes
     # between the two questions, so the TARGET line stays the last thing asked for.
-    describe = (DESCRIBE_SIDED
-                + (DESCRIBE_AFTER_RECOVERY if recovered else "")
+    # Which of the two recovery notes to use, if any. `kind` is the new, specific field and
+    # `recovered` the old boolean; an older caller that sends only the boolean still gets
+    # the wedge wording it has always got, which is what it meant.
+    kind = kind or ("wedge" if recovered else "")
+    after_note = {"wedge": DESCRIBE_AFTER_RECOVERY, "balk": DESCRIBE_AFTER_BALK}.get(
+        kind, "")
+    describe = (DESCRIBE_SIDED + after_note
                 + DESCRIBE_TARGET.format(instruction=instruction))
-    # 110 tokens was sized for two sentences plus the TARGET line. The recovery note asks
-    # for no extra output -- it changes what the model looks at, not what it writes -- so
-    # the budget is deliberately not raised with it.
-    seen, _ = free_generate([newest], FREE_SPACE_SYSTEM, describe, 110)
+    # 110 tokens at medium was sized for two sentences plus the TARGET line. The recovery
+    # note asks for no extra output -- it changes what the model looks at, not what it
+    # writes -- so the budget does not rise with it, only with the thinking level.
+    seen, seen_think, _ = think_then_answer(
+        [newest], FREE_SPACE_SYSTEM, describe,
+        int(LEVEL["describe_think"]), int(LEVEL["describe"]))
     seen = seen.strip().replace("\n", " ")
     target_m = parse_target_distance(seen)
-    speed = speed_for(target_m, MENU_SPEED_MPS)
+
+    # THE SPEED CHANNEL. Near the target the model is offered the choice; far from it, or
+    # with no estimate at all, the ramp decides exactly as before. Opening the question
+    # only where it is a real question keeps every far-field decision running under the
+    # prompt the 100% / 92% / 90% / 83% numbers were measured under.
+    ask_speed = target_m is not None and target_m <= SPEED_CHOICE_FROM_M
+
+    with _lock:
+        recent = list(_state["recent"])
+    hist = history_note(recent, stalled_s)
 
     user = (f"What the robot can see ahead of it: {seen}\n\n"
-            + (f"{SELECT_AFTER_RECOVERY}\n\n" if recovered else "")
+            + (f"{hist}\n\n" if hist else "")
+            + ({"wedge": f"{SELECT_AFTER_RECOVERY}\n\n",
+                "balk": f"{SELECT_AFTER_BALK}\n\n"}.get(kind, ""))
             + f"Navigation instruction: {instruction}\n\n"
-            + f"Which numbered path do you take?")
-    reply, _ = free_generate(
-        [menu], _MENU_SYSTEM_MOVE if recovered else _MENU_SYSTEM, user, 8)
+            + ("Which numbered path do you take, and how fast?" if ask_speed
+               else "Which numbered path do you take?"))
+    reply, sel_think, _ = think_then_answer(
+        # A balk takes STOP away for the same reason a wedge does, and with a stronger
+        # case: the front was measured CLEAR, so "every drawn path runs into something"
+        # is not merely unlikely here, it is known false.
+        [menu], _MENU_SYSTEMS[(not kind, ask_speed)], user,
+        int(LEVEL["select_think"]), int(LEVEL["answer"]))
 
-    m = re.search(r"\d+", reply)
-    choice = int(m.group()) if m else None
-    note = (("[after reverse] " if recovered else "")
+    choice, level = parse_choice_speed(reply)
+    if ask_speed and level is not None:
+        speed, speed_src = speed_from_level(level, MENU_SPEED_MPS), "model"
+    else:
+        # Includes the case where the speed was asked for and not given. Falling back to
+        # the ramp rather than to cruise matters: the ramp already knows the target is
+        # close, so a model that declines to answer gets a slow approach, not a fast one.
+        speed, speed_src = speed_for(target_m, MENU_SPEED_MPS), "ramp"
+
+    note = ((f"[after {kind}] " if kind else "")
+            + (f"[history] {hist}\n" if hist else "")
             + f"[free space] {seen}\n[menu] {labels} -> {reply.strip()[:20]!r}")
-    if recovered and choice == _STOP_LABEL:
+    if seen_think or sel_think:
+        # The reasoning is kept in the note, which is what `/health` returns as
+        # `last_reasoning` and what the video prints. At `medium` both are empty strings
+        # and this line does nothing, so the three levels differ in what they SHOW as well
+        # as in what they cost -- otherwise a very_high run would be indistinguishable
+        # from a medium one in the recording, and the comparison would rest on the verdict
+        # alone.
+        note += (f"\n[thinking] {(seen_think + ' || ' + sel_think).strip()[:600]}")
+    if kind and choice == _STOP_LABEL:
         # Answered the one label the system prompt just took away. Honoured anyway, and
         # flagged instead: the alternative is to overrule the model with a direction we
         # invented, and the off-menu branch below would reuse the previous plan, which on
@@ -811,15 +992,29 @@ def menu_plan(image_paths: list[str], instruction: str,
         note = note + (f" -> kappa {kappa:+.2f} @{speed:.2f}m/s"
                        + (f" (target {target_m:.1f} m)" if target_m is not None else ""))
 
+    # Push AFTER the decision is resolved, so the history the next call reads is what was
+    # actually driven and not what was asked for. A STOP goes in as "stopped": it is the
+    # single most useful entry in the list -- a run that has answered STOP four times in a
+    # row is the failure this channel exists to make visible to the model.
+    if choice is not None:
+        with _lock:
+            _state["recent"].append(
+                "stopped" if choice == _STOP_LABEL else
+                direction_word(kappa) if kappa is not None else "an unreadable answer")
+
     _record(step, menu, instruction, labels, choice, kappa, seen, reply.strip(),
-            target_m, speed, recovered)
+            target_m, speed, recovered, kind=kind, speed_source=speed_src,
+            speed_level=level if ask_speed else None, stalled_s=stalled_s,
+            thinking=(seen_think, sel_think), history=hist)
     return plan, note
 
 
 def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             choice: int | None, kappa: float | None, seen: str, reply: str,
             target_m: float | None = None, speed: float | None = None,
-            recovered: bool = False) -> None:
+            recovered: bool = False, kind: str = "", speed_source: str = "ramp",
+            speed_level: int | None = None, stalled_s: float = 0.0,
+            thinking: tuple[str, str] = ("", ""), history: str = "") -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -854,6 +1049,28 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 # no STOP on it, so counting stops across a run would otherwise mix two
                 # different question sets and report the average of them.
                 "recovered": recovered,
+                # "" | "wedge" | "balk". `recovered` above stays a bare boolean so every
+                # existing reader -- the video, bench_status, summarize_runs -- keeps
+                # working unchanged; this says WHICH, because the two are different
+                # failures with different fixes and averaging them would hide which one
+                # the episode hit.
+                "kind": kind,
+                # "model" when the model named its own approach speed, "ramp" when
+                # `speed_for` did. Recorded next to the level it wrote, because "the model
+                # chose badly" and "the model was never asked" are the two hypotheses this
+                # whole channel exists to separate, and after the fact the SPEED alone
+                # cannot tell them apart -- both produce a number in the same range.
+                "speed_source": speed_source,
+                "speed_level": speed_level,
+                # From the runner, which is the only process that knows where the robot
+                # actually is. Zero on a moving robot.
+                "stalled_s": round(float(stalled_s), 2),
+                "history": history,
+                # Empty strings at `medium`. Kept whole rather than summarised: this is
+                # the only durable copy of what the expensive levels bought.
+                "think_level": THINK_LEVEL,
+                "think_describe": thinking[0],
+                "think_select": thinking[1],
             }) + "\n")
     except Exception as exc:
         print(f"[qvla-server] could not record decision: {exc}", flush=True)
@@ -861,7 +1078,8 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
 
 def _generation_worker(messages: list[dict], image_paths: list[str],
                        step: int | None, max_new: int, instruction: str = "",
-                       recovered: bool = False, epoch: int = 0) -> None:
+                       recovered: bool = False, epoch: int = 0, kind: str = "",
+                       stalled_s: float = 0.0) -> None:
     """Runs on a background thread so the control loop never waits on decode.
 
     This is the same two-rate idea as TIC-VLA's `predict_async`, one level up: there the
@@ -875,7 +1093,8 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
     """
     try:
         if _ARC_FORMAT == "menu":
-            plan, text = menu_plan(image_paths, instruction, step, recovered)
+            plan, text = menu_plan(image_paths, instruction, step, recovered,
+                                   kind, stalled_s)
         else:
             text = _generate(messages, image_paths, max_new)
             ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
@@ -929,8 +1148,17 @@ def health() -> dict:
             # `menu` expresses speed only as a scalar the describe call estimates -- the
             # drawn choice is pure geometry, so there is no braking WITHIN a menu plan.
             "format": _ARC_FORMAT,
+            # Reported for the same reason `format` is, and it is the field a ladder run
+            # is labelled by: three runs of the same thirteen episodes at three levels are
+            # three different measurements, and nothing else in this response distinguishes
+            # them. `horizon_s` rides along because it is derived from the level and is the
+            # constant that decides whether a slow generation stops the robot.
+            "think_level": THINK_LEVEL,
+            "horizon_s": HORIZON_S,
+            "n_waypoints": N_WAYPOINTS,
             **({"menu_speed_mps": MENU_SPEED_MPS, "menu_creep_mps": CREEP_MPS,
-                "stop_label": _STOP_LABEL} if _ARC_FORMAT == "menu" else {}),
+                "stop_label": _STOP_LABEL,
+                "recent": list(_state["recent"])} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],
             "generations": _state["generations"],
@@ -1006,6 +1234,10 @@ def reset(req: ResetRequest = ResetRequest()) -> dict:
     with _lock:
         _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None,
                       run_dir=run_dir, epoch=_state["epoch"] + 1)
+        # Between episodes, not within them. Carrying six directions from the last run
+        # into the first decision of the next would tell the model it had "recently
+        # chosen" things it chose in a different building.
+        _state["recent"].clear()
     return {"ok": True, "run_dir": str(run_dir) if run_dir else None}
 
 
@@ -1109,7 +1341,8 @@ def predict(req: PredictRequest) -> PredictResponse:
         th = threading.Thread(
             target=_generation_worker,
             args=(messages, list(req.image_paths), req.current_step, max_new,
-                  req.instruction, req.recovered, epoch), daemon=True)
+                  req.instruction, req.recovered, epoch, req.recovery_kind,
+                  req.stalled_s), daemon=True)
         with _lock:
             _state["gen_thread"] = th
         started_step = req.current_step

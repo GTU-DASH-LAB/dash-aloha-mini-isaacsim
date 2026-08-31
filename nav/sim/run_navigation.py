@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import queue
 import sys
 import threading
@@ -75,6 +76,28 @@ PHYSICS_DT = 1.0 / 60.0
 # compared within one run. Kept here rather than at the call site so the logged column
 # always describes the same horizon the controller would have used.
 GUIDANCE_HORIZON_S = 6.0
+
+# How often a third-person frame is written to disk during a recorded run, in physics
+# steps. 2 steps = 30 frames per simulated second.
+#
+# This used to fire only on decision steps, and a decision is taken every ~3 s, so the
+# recorded third-person track was ~0.3 fps: a slideshow of a robot teleporting between
+# poses, which is unreadable as motion. The video is the only way anyone but the runner
+# sees what happened, so a track that cannot show HOW the robot moved cannot answer the
+# question it is watched to answer.
+#
+# WHAT IT COSTS, measured rather than assumed, because "render every frame" sounds
+# expensive and mostly is not: Kit renders this camera's render product every frame
+# whether or not anything reads it (see camera_source.py), so the render is already paid
+# for. What a capture actually costs is the readback plus the JPEG encode, measured at
+# 1.70 ms against a 34.6 ms physics step. Every 2 steps is therefore ~2.5% of sim time,
+# plus ~25 kB per frame on disk -- about 90 MB for a 100 s episode, deleted with the
+# frames once the video is built.
+#
+# Overridable because that trade is different on a long episode than on a short one, and
+# because the honest answer to "is this slowing the benchmark" is a number the operator
+# can change, not a constant they have to trust.
+CHASE_EVERY = max(1, int(os.environ.get("NAV_CHASE_EVERY", "2")))
 
 
 def ready_message(info: dict) -> str:
@@ -264,6 +287,21 @@ class NavigationRunner:
         frame = self._chase.grab_jpeg()
         if frame:
             self.chase_jpeg = frame
+
+    def _capture_chase(self, step: int) -> None:
+        """Grab a third-person frame and, if this run is recording, write it to disk.
+
+        Best-effort throughout: a missing third-person frame costs a panel in a video and
+        must never cost a benchmark episode. That is why the whole body is wrapped rather
+        than just the write -- `_update_chase` creates the camera on first use, and a scene
+        without one has already been seen to raise from inside Kit rather than return None.
+        """
+        try:
+            self._update_chase()
+            if self.record_dir is not None and self.chase_jpeg:
+                (self.record_dir / f"chase_{step:08d}.jpg").write_bytes(self.chase_jpeg)
+        except Exception as exc:
+            print(f"[nav] chase capture failed at step {step}: {exc}", flush=True)
 
     def _update_idle_views(self) -> None:
         """Main thread only. Keep both camera panels live between runs.
@@ -554,6 +592,18 @@ class NavigationRunner:
             position = self.base.position()
             distance = math.dist(position[:2], ep.goal[:2])
 
+            # Third-person capture, BEFORE the exit checks so the last frame written is
+            # the robot at the goal rather than a metre short of it -- the arrival is the
+            # one moment of an episode a viewer most wants to see.
+            #
+            # The `or` is not redundant with the modulus. A decision frame must ALWAYS have
+            # a third-person twin, because that pairing is what the video is built on, and
+            # `replan_every_steps` is not guaranteed to be a multiple of `CHASE_EVERY` --
+            # tune either one and the twins would start going missing, silently, on exactly
+            # the frames that carry the reasoning text.
+            if step % CHASE_EVERY == 0 or step % ep.replan_every_steps == 0:
+                self._capture_chase(step)
+
             if distance <= ep.success_threshold_m:
                 success = True
                 break
@@ -566,19 +616,9 @@ class NavigationRunner:
 
             # --- replan ---------------------------------------------------
             if step % ep.replan_every_steps == 0:
-                # Grabbed BEFORE the decision, so `chase_<step>.jpg` and
-                # `menu_<step>.jpg` are the same instant seen two ways rather than one
-                # frame apart. Best-effort: a missing third-person frame costs a panel
-                # in a video and must never cost a benchmark episode.
-                if self.record_dir is not None:
-                    try:
-                        self._update_chase()
-                        if self.chase_jpeg:
-                            (self.record_dir / f"chase_{step:08d}.jpg").write_bytes(
-                                self.chase_jpeg)
-                    except Exception as exc:
-                        print(f"[nav] chase capture failed at step {step}: {exc}",
-                              flush=True)
+                # The third-person twin of this decision was grabbed at the top of the
+                # loop, a few lines and no simulation steps ago, so `chase_<step>.jpg` and
+                # `menu_<step>.jpg` are still the same instant seen two ways.
                 frame_path = self.camera.grab_to_file()
                 if frame_path is None:
                     # An empty render means the sensor pipeline is not up. Driving on
@@ -648,6 +688,17 @@ class NavigationRunner:
                         # few seconds after the manoeuvre, and it stops the moment the
                         # robot has driven clear of where it was released.
                         recovered=self.recovery.memory_live(sim_time, position),
+                        # ...and WHICH manoeuvre, because the two need opposite
+                        # sentences. After a wedge, something was in the way; after a
+                        # balk, nothing was and the robot stopped anyway. Telling the
+                        # model the wrong one of those is worse than telling it neither.
+                        recovery_kind=self.recovery.memory_kind(sim_time, position) or "",
+                        # The other half of "give it some history", and the half no
+                        # prompt can supply: one frame of a stationary robot is the same
+                        # picture as one frame of a moving one, so without a number from
+                        # here the model cannot know that the last four decisions
+                        # achieved nothing. Measured where the position is known.
+                        stalled_s=self.recovery.stalled_s(sim_time, position),
                     )
                 except PolicyServerError as exc:
                     self._set(state="error", message=str(exc))
@@ -773,7 +824,14 @@ class NavigationRunner:
             # Do not push this to every step. 28 fps would cost ~5% and the browser
             # cannot consume it anyway -- the page fetches /chase.jpg on its own timer,
             # and these two numbers have to be raised together or neither moves.
-            if step % 3 == 0:
+            #
+            # At the default `CHASE_EVERY` of 2 the capture at the top of the loop is
+            # already faster than this, and running both would pay for two readbacks to
+            # show one picture. This exists for the case where somebody raises
+            # `NAV_CHASE_EVERY` to make a long episode cheaper to record -- the LIVE view
+            # should not get slower because the RECORDING got sparser. Two rates, two
+            # purposes, and the faster of them wins.
+            if CHASE_EVERY > 3 and step % 3 == 0:
                 self._update_chase()
 
             if step % 30 == 0:
@@ -785,7 +843,9 @@ class NavigationRunner:
                     wall_s=round(wall_time, 1),
                     guard_interventions=self.guard.interventions,
                     message=(
-                        f"backing out of a wedge ({self.recovery.engagements})"
+                        (f"backing off after stalling ({self.recovery.balks})"
+                         if self.recovery.mode == "balk" else
+                         f"backing out of a wedge ({self.recovery.engagements})")
                         if recovering else
                         # Checked before the guard line on purpose: right after a reverse
                         # the obstacle is usually still inside the slow band, so "blocked
@@ -817,6 +877,12 @@ class NavigationRunner:
             path_length_m=path_length,
             guard_interventions=self.guard.interventions,
             recoveries=self.recovery.engagements,
+            # A subset of `recoveries`, not a second total. Reported separately because the
+            # two say different things about the run: a wedge means the robot drove into
+            # something, a balk means the policy stopped without arriving. An episode with
+            # four wedges and one with four balks have nothing in common, and a single
+            # number would report them as the same run.
+            balks=self.recovery.balks,
             recoveries_blocked_behind=self.recovery.blocked_behind,
             recovery_replans=replans,
             recovery_replans_failed=replans_failed,

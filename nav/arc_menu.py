@@ -285,9 +285,88 @@ SELECT_AFTER_RECOVERY = (
     "Choose a path that leads around it, toward whichever side the description above "
     "says is open.")
 
+# --------------------------------------------------------------------------------------
+# ...and after a BALK, which is a different situation and needs different words
+# --------------------------------------------------------------------------------------
+# A wedge is "something is in my way". A balk is "I stopped, and I should not have". The
+# robot was standing still with clear floor in front of it, which on the first full ladder
+# was the single largest failure: 42 of 65 decisions on `office_nearest_elevator` answered
+# STOP from 5.5 m out, with the model's own description of the same frames naming an open
+# side AND saying the target was not visible.
+#
+# So do not tell it to go round an obstacle -- there is no obstacle, and saying there is
+# would be false. Tell it the two things that are true and that the picture cannot show:
+# it has just backed up to get a wider view, and standing still is not an option because
+# it has not arrived. The second half is a fact about the harness, not encouragement:
+# arrival ends the episode, so a robot still being asked has not arrived.
+DESCRIBE_AFTER_BALK = (
+    " One thing you cannot see in this image: the robot had stopped moving for several "
+    "seconds even though the floor ahead of it was clear, and it has just backed up a "
+    "little to widen its view. It has NOT reached its destination. Look carefully for the "
+    "place or object the instruction names -- it may be off to one side, far away, or "
+    "partly hidden -- and say where it is.")
+
+SELECT_AFTER_BALK = (
+    "The robot stopped a moment ago without having arrived anywhere, and has backed up "
+    "slightly to see more. Standing still is what already failed, so keep moving: pick "
+    "the path that makes the most progress toward what the instruction asks for, using "
+    "the description above to decide which way that is.")
+
+# --------------------------------------------------------------------------------------
+# The history line
+# --------------------------------------------------------------------------------------
+# One frame of a stationary robot and one frame of a moving robot are the same picture, so
+# without this the model re-answers each decision as if it were the first. That is exactly
+# how a run ends up choosing "straight" eleven times against a wall: nothing in the input
+# says the last ten "straight"s achieved nothing.
+#
+# It goes to the SELECT call and not to the describe call, and the split is deliberate.
+# Call 1's job is to report what is in the image, and its wording is the wording the 100% /
+# 92% / 90% / 83% numbers were measured under; a paragraph about the past would change the
+# question being asked there. What the robot already tried bears on WHICH PATH to take, not
+# on what the floor looks like, and call 2 is the call we are free to compose.
+def history_note(recent: list[str], stalled_s: float) -> str:
+    """One sentence of what was recently chosen and whether it worked. "" when new.
+
+    `recent` is oldest-first direction words. The stall reading comes from the runner,
+    which is the only place that knows where the robot actually is -- the server sees the
+    choices it made and has no way to know whether any of them moved anything.
+    """
+    if not recent and stalled_s < 1.0:
+        return ""
+    parts = []
+    if recent:
+        parts.append("Recently you chose, oldest first: " + ", ".join(recent) + ".")
+    if stalled_s >= 1.0:
+        parts.append(f"The robot has not moved for about {stalled_s:.0f} seconds, so "
+                     f"whatever it has been choosing is not working.")
+    return " ".join(parts)
+
+
+def direction_word(kappa: float) -> str:
+    """A curvature as words, for the history line. Negative kappa turns right."""
+    for edge, word in ((-0.5, "hard right"), (-0.25, "right"), (-0.05, "slight right"),
+                       (0.05, "straight"), (0.25, "slight left"), (0.5, "left")):
+        if kappa <= edge:
+            return word
+    return "hard left"
+
 CRUISE_MPS = 0.7      # what the trained policy asks for on these episodes
 CREEP_MPS = 0.2       # slow enough that one replan period advances well under a metre
 SLOW_FROM_M = 4.0     # where the approach starts easing off
+
+# Below this, the model is asked to pick its own approach speed instead of being handed
+# the ramp's. 3.0 m and not 4.0 (where `SLOW_FROM_M` starts easing) because the two answer
+# different questions: the ramp is a safety net that must cover every case, and this is a
+# discretionary channel that should only open where the model has something to see. At
+# 4 m the target is often a smear at the end of a corridor and "how fast should I close
+# the last bit" is not yet a question about anything.
+SPEED_CHOICE_FROM_M = 3.0
+# The scale the model writes on. Ten steps, not a float in m/s: the metric channel is the
+# one this model cannot ground -- that is the whole finding behind the menu format -- so
+# asking for 0.35 would be asking for the number it has already been measured unable to
+# produce. A fraction of a speed IT DOES NOT HAVE TO KNOW is a choice, not an estimate.
+SPEED_LEVELS = 10
 
 # "3", "3.5 m", "0.5 to 1 metre", "2-3 meters". The optional second number is a range, and
 # the pair is kept so the caller can decide which end to believe.
@@ -333,17 +412,64 @@ def speed_for(target_m: float | None, cruise: float = CRUISE_MPS) -> float:
     return float(min(cruise, max(CREEP_MPS, target_m / SLOW_FROM_M * cruise)))
 
 
-def select_system(stop_label: int, stop_allowed: bool = True) -> str:
+def parse_choice_speed(reply: str) -> tuple[int | None, int | None]:
+    """(path label, speed level 0-10 or None) from a reply that may hold one or two ints.
+
+    Lenient in one direction only. The FIRST integer is always the path, because that is
+    the answer that was measured and the one the robot cannot do without; a missing second
+    integer returns None and the caller falls back to the ramp. The reverse leniency --
+    guessing which of two numbers is which -- is what would turn "7" into speed 7 at
+    cruise 0 and park the robot, so it is not offered.
+
+    A second number outside 0..10 is dropped rather than clamped. In range it is a choice;
+    out of range it is the model having written something else entirely -- a distance, a
+    label it changed its mind about -- and clamping would silently convert that into a
+    speed command.
+    """
+    nums = re.findall(r"\d+", reply)
+    if not nums:
+        return None, None
+    choice = int(nums[0])
+    if len(nums) < 2:
+        return choice, None
+    k = int(nums[1])
+    return choice, (k if 0 <= k <= SPEED_LEVELS else None)
+
+
+def speed_from_level(level: int, cruise: float = CRUISE_MPS) -> float:
+    """A 0-10 answer as m/s, floored at the creep speed.
+
+    Level 0 does NOT mean stop, and the floor is the whole reason this is a function. STOP
+    is a menu label -- a decision the model is scored on, that ends the episode's driving
+    and that the recovery machinery can reason about. A speed of zero would be a SECOND way
+    to express the same thing, reachable by an off-by-one or a stray token, indistinguish-
+    able afterwards from a chosen stop, and invisible to `stuck_recovery` (which sees a
+    robot standing still with clear floor ahead and would spend a reverse manoeuvre undoing
+    a command the model meant). This repo has paid for a collapsed-to-zero speed channel
+    three times; keeping the two channels disjoint costs one `max()`.
+    """
+    return float(max(CREEP_MPS, min(cruise, cruise * level / SPEED_LEVELS)))
+
+
+def select_system(stop_label: int, stop_allowed: bool = True,
+                  speed_choice: bool = False) -> str:
     """The arc-selection system prompt, with `stop_label` reserved for stopping.
 
-    `stop_allowed=False` takes that choice away for one decision, and it is used in
-    exactly one place: the call immediately after the robot has reversed out of a wedge.
-    The justification is that BOTH reasons this prompt gives for answering `stop_label`
-    are known to be false at that instant. The robot cannot have arrived -- the control
-    loop in `run_navigation.py` breaks the moment it is inside the success threshold, so a
-    robot still being driven has not got there. And "every drawn path runs into something"
-    was the situation the reverse just undid; there is a metre more room now than there
-    was when that was last true.
+    `stop_allowed=False` takes that choice away for one decision, and it is used on the
+    calls immediately after a recovery manoeuvre -- either kind, a wedge or a balk. The
+    justification is that BOTH reasons this prompt gives for answering `stop_label` are
+    known to be false at that instant. The robot cannot have arrived -- the control loop in
+    `run_navigation.py` breaks the moment it is inside the success threshold, so a robot
+    still being driven has not got there. And "every drawn path runs into something" was
+    the situation the reverse just undid; there is a metre more room now than there was
+    when that was last true. After a balk the second reason is even weaker: the front was
+    measured CLEAR, which is what made it a balk rather than a wedge.
+
+    `speed_choice=True` asks for a second number, the approach speed, and is set only when
+    the describe call has just reported the target within `SPEED_CHOICE_FROM_M`. It is an
+    independent flag rather than a third mode because it crosses the other one: a robot can
+    balk two metres from its goal, and that decision needs both the no-stop rule and the
+    speed question.
 
     Note this removes an ANSWER, not a capability: the next decision, one generation
     later, has the full menu back. A robot that genuinely should stop will stop then, a
@@ -355,9 +481,24 @@ image. Answer {stop_label} to stop and stay still, and only for one of two reaso
 robot has arrived at the place the instruction names, or every drawn path runs into \
 something. Stopping at the right place is part of the task. Do not answer {stop_label} \
 merely because the way ahead is tight.""" if stop_allowed else """Stopping is not one of \
-your choices here. The robot has not arrived anywhere, and it has just had to reverse out \
-of a dead end, so standing still is the one thing already known not to work. Pick the \
-drawn path with the most open floor along it, even if none of them is good."""
+your choices here. The robot has not arrived anywhere, and it has just reversed a little \
+after failing to make any progress, so standing still is the one thing already known not \
+to work. Pick the drawn path with the most open floor along it, even if none of them is \
+good."""
+
+    # The speed question is asked ONLY near the target, and the prompt says so, because
+    # "how fast" is a different question at 12 m and at 2 m. Far away it has one sensible
+    # answer -- go -- and asking it anyway spends tokens and adds a number that can go
+    # wrong for no gain. Close in, it is the actual difficulty: the arcs are all 3 m long,
+    # so with the target 2 m off the choice is not WHERE to drive but HOW MUCH of the
+    # chosen path to use before looking again.
+    answer_rule = (f"""Answer with TWO whole numbers separated by a space: first the \
+number of the chosen path, then how fast to drive it, from 0 (barely creeping) to \
+{SPEED_LEVELS} (full speed). You are close to what the instruction names, so choose the \
+speed deliberately: slow down to place the robot accurately, keep the speed up if there is \
+still ground to cover. A low number never means stopping -- it means moving gently. \
+Write nothing but the two numbers.""" if speed_choice else
+                   "Answer with the number of the chosen path and nothing else.")
     return f"""You are the navigation system of a small wheeled robot, looking through its \
 forward camera. The camera is {CAM_HEIGHT_M:.2f} m above the floor, level, with a \
 {CAM_FOV_DEG:.0f} degree horizontal field of view.
@@ -373,7 +514,7 @@ stays on open, walkable floor and does not run into a wall, a door frame or an o
 
 {stop_rule}
 
-Answer with the number of the chosen path and nothing else."""
+{answer_rule}"""
 
 
 def plan_from_kappa(kappa: float, speed_mps: float, n_waypoints: int, dt: float,

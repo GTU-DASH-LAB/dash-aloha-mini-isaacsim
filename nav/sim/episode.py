@@ -184,6 +184,14 @@ class EpisodeResult:
     # existed still load; 0 on those means "not measured", not "never happened".
     recoveries: int = 0
     recoveries_blocked_behind: int = 0
+    # How many of `recoveries` were BALKS -- the robot standing still with clear floor
+    # ahead of it -- rather than wedges. A subset, not a second total, and worth its own
+    # field because the two are different failures with different fixes: a wedge is a
+    # steering problem and a balk is the policy answering STOP without having arrived,
+    # which on the first full ladder was the single largest cause of failure. Defaulted,
+    # so runs recorded before the balk trigger existed still load; 0 there means "not
+    # measured", and specifically not "the robot never stalled".
+    balks: int = 0
     # How many of those ended in a forced re-decision, and how many could not. A run with
     # `recoveries > 0` and `recovery_replans == 0` is a robot that reversed and was then
     # handed the same plan back -- the manoeuvre without the point of it.

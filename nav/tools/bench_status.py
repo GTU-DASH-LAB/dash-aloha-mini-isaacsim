@@ -21,7 +21,12 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PROGRESS = REPO / "nav/results/ladder_progress.log"
+# Must agree with `on_episode.sh`, which WRITES this file: same env var, same suffix rule.
+# A status reader that looks at the untagged path during a tagged ladder does not error --
+# it reports "0 of 13 scored" against a run that is half done, which is the worst kind of
+# wrong for a 3 a.m. mail.
+TAG = os.environ.get("QVLA_RUN_TAG", "").strip()
+PROGRESS = REPO / f"nav/results/ladder_progress{'_' + TAG if TAG else ''}.log"
 MENUS = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
 PORT = os.environ.get("NAV_POLICY_PORT", "8766")
 
@@ -54,7 +59,8 @@ def status() -> str:
     except Exception:
         names = []
     ok = sum(v.startswith("SUCCESS") for _, _, v in done)
-    out.append(f"{len(done)} of {len(names) or '?'} episodes scored, {ok} succeeded")
+    out.append(f"{'[' + TAG + '] ' if TAG else ''}"
+               f"{len(done)} of {len(names) or '?'} episodes scored, {ok} succeeded")
 
     # The run directory the server is writing into right now. `decisions.jsonl` growing
     # between two hourly mails is the difference between "slow episode" and "wedged".
@@ -68,10 +74,15 @@ def status() -> str:
                 f"  {n} decisions so far, last written {age / 60:.1f} min ago"]
         if (d / "decisions.jsonl").is_file() and n:
             last = json.loads((d / "decisions.jsonl").read_text().splitlines()[-1])
+            kind = last.get("kind") or ("wedge" if last.get("recovered") else "")
             out += [f"  step {last.get('step')}  ->  "
                     + ("STOP" if last.get("stop") else f"path {last.get('choice')}"
                        f"  kappa {last.get('kappa')}")
-                    + ("   [after reversing out]" if last.get("recovered") else ""),
+                    + (f"  at {last['speed_mps']:.2f} m/s"
+                       f"{'*' if last.get('speed_source') == 'model' else ''}"
+                       if last.get("speed_mps") is not None else "")
+                    + ({"wedge": "   [after reversing out of a wedge]",
+                        "balk": "   [after backing off -- it had stalled]"}.get(kind, "")),
                     f"  it says: {str(last.get('free_space', ''))[:300]}"]
 
     h = _health()
@@ -84,6 +95,14 @@ def status() -> str:
             f"{k}={v}" for k, v in h.items()
             if k in ("format", "predictions", "generations", "parse_failures",
                      "gen_errors", "stale_discards", "menu_speed_mps", "has_plan")))
+        # The level and the horizon it drags with it, straight off the server, because the
+        # tag in the subject line is a LABEL somebody typed and this is the thing that is
+        # actually running. A ladder tagged `very_high` against a server left at medium is
+        # a full set of numbers measuring the wrong configuration.
+        if any(k in h for k in ("think_level", "horizon_s")):
+            out.append("  " + "  ".join(
+                f"{k}={v}" for k, v in h.items()
+                if k in ("think_level", "horizon_s", "n_waypoints")))
 
     if done:
         out += ["", "scored so far:"]

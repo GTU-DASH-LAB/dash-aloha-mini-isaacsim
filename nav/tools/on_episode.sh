@@ -20,7 +20,12 @@ cd "$REPO" || exit 0
 
 MENUS="${QVLA_MENU_DIR:-/tmp/qvla-menus}"
 VIDEO_DIR="$REPO/nav/results/videos"
-PROGRESS="$REPO/nav/results/ladder_progress.log"
+# Names this ladder. Set it to the thinking level and the three runs of the same thirteen
+# episodes stay three separate measurements instead of one averaged mess: their own
+# progress file, their own "ladder so far" list in the mail, their own video names, their
+# own subject line. Empty keeps every path exactly as it was.
+TAG="${QVLA_RUN_TAG:-}"
+PROGRESS="$REPO/nav/results/ladder_progress${TAG:+_$TAG}.log"
 
 # Anchored on the episode name with no trailing slash inside the glob, so
 # `hospital_vending_machine` cannot match `hospital_vending_machine2`.
@@ -31,6 +36,13 @@ if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/decisions.jsonl" ]; then
   echo "-- building video for $(basename "$RUN_DIR")"
   python3 nav/tools/make_run_video.py "$RUN_DIR" --out-dir "$VIDEO_DIR" || true
   CAND="$VIDEO_DIR/$(basename "$RUN_DIR").mp4"
+  if [ -f "$CAND" ] && [ -n "$TAG" ]; then
+    # The run directory is timestamped, so three levels never collide on disk -- but a
+    # timestamp does not say WHICH level, and a directory of 39 videos that can only be
+    # sorted back into three runs by reading their clocks is a directory nobody will sort.
+    TAGGED="$VIDEO_DIR/$(basename "$RUN_DIR")__${TAG}.mp4"
+    mv -f "$CAND" "$TAGGED" && CAND="$TAGGED"
+  fi
   [ -f "$CAND" ] && VIDEO="$CAND"
 fi
 
@@ -76,9 +88,11 @@ if res:
         f"  path       {g('path_length_m',' m')} in {g('elapsed_s',' s sim')}"
         f"  ({g('policy_calls')} policy calls, {g('wall_s',' s wall')})",
         f"  guard      {g('guard_interventions')} interventions",
-        # These four are the point of this branch: a run with recoveries and no replans
-        # is the reverse manoeuvre without the re-decision that justifies it.
-        f"  recovery   {g('recoveries')} reversed"
+        # These are the point of this branch: a run with recoveries and no replans is the
+        # reverse manoeuvre without the re-decision that justifies it. `balks` is a SUBSET
+        # of `reversed`, printed as one because the two failures it splits -- drove into
+        # something, versus stopped for no reason -- have different fixes.
+        f"  recovery   {g('recoveries')} reversed ({g('balks')} of them balks)"
         f", {g('recoveries_blocked_behind')} blocked behind"
         f", {g('recovery_replans')} re-decided"
         f", {g('recovery_replans_failed')} failed to re-decide",
@@ -92,10 +106,28 @@ if run_dir and pathlib.Path(run_dir, "decisions.jsonl").is_file():
     bad = sum(x.get("kappa") is None and not x.get("stop") for x in recs)
     out += ["", f"  decisions  {len(recs)}  ({stops} STOP, {rec_n} taken after a reverse,"
                 f" {bad} unreadable reply)"]
+    # How often the model was OFFERED its own approach speed and how often it took the
+    # offer. Both halves are needed: "chose badly" and "was never asked" produce the same
+    # speeds afterwards and have opposite fixes.
+    asked = [x for x in recs if x.get("speed_level") is not None
+             or x.get("speed_source") == "model"]
+    chose = [x for x in recs if x.get("speed_source") == "model"]
+    if asked or chose:
+        lv = [x["speed_level"] for x in chose if x.get("speed_level") is not None]
+        out += [f"  speed      model chose on {len(chose)} of {len(asked)} near-target "
+                f"decisions" + (f"  (levels {sorted(set(lv))} of 10)" if lv else "")]
+    if any(x.get("think_describe") or x.get("think_select") for x in recs):
+        thought = sum(1 for x in recs
+                      if x.get("think_describe") or x.get("think_select"))
+        out += [f"  thinking   {thought} of {len(recs)} decisions produced reasoning "
+                f"({recs[-1].get('think_level', '?')})"]
     # The model's own words on the last decision, because a number says whether it
     # arrived and only this says what it thought it was looking at when it did.
     if recs:
         out += ["", "  last look:", "    " + str(recs[-1].get("free_space", ""))[:400]]
+        if recs[-1].get("think_select"):
+            out += ["  last thought:",
+                    "    " + str(recs[-1]["think_select"])[:400]]
 
 out += ["", "ladder so far:"]
 for line in pathlib.Path(progress).read_text().splitlines():
@@ -106,7 +138,10 @@ print("\n".join(out))
 PY
 ) || BODY="$EP ($CONTROLLER): $VERDICT"
 
-SUBJ="[bench $DONE done, $OK ok] $EP: ${VERDICT%% *}"
+# The tag goes in the subject because the mail is the only place these runs are read
+# side by side. Thirteen "hospital_exit_room: FAILED" subjects in one inbox, three of them
+# from different thinking levels, is a thread nobody can score.
+SUBJ="[bench${TAG:+ $TAG} $DONE done, $OK ok] $EP: ${VERDICT%% *}"
 if [ -n "$ATTACH" ]; then
   python3 nav/tools/notify_run.py --subject "$SUBJ" --body "$BODY" --attach "$ATTACH"
 else

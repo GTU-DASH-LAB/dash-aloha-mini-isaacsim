@@ -108,6 +108,26 @@ def project(x_forward: float, y_left: float, w: int = CAM_W, h: int = CAM_H,
     return u, v
 
 
+def badge_xy(px: list[tuple[float, float]], w: float, h: float,
+             r: float) -> tuple[float, float]:
+    """Where an arc's number badge goes, given the arc's projected pixels.
+
+    At the far end of the arc, which is where the paths are furthest apart and a number is
+    least likely to sit on top of a neighbour's. "Far end" means the last point still
+    INSIDE the frame, not the arc's true end: the outer arcs leave the 90 degree view
+    before 3 m, and clamping their true end to the border stacks their badges in the corner
+    where they read as a pair rather than as two paths.
+
+    Shared with the video tool rather than duplicated there. The video redraws the chosen
+    arc over the menu, which lands a thick white stroke straight through that arc's own
+    badge and makes the one number a viewer most needs the hardest to read -- so it redraws
+    the badge on top afterwards, and it has to land in exactly the same place to do that.
+    """
+    inside = [p for p in px if r < p[0] < w - r and r < p[1] < h - r]
+    ux, uy = inside[-1] if inside else px[-1]
+    return min(max(ux, r + 4), w - r - 4), min(max(uy, r + 4), h - r - 4)
+
+
 def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[int],
                 width: int = 13, font_size: int = 96) -> str:
     """Draw the arcs and their labels onto a copy of the frame. Returns `out_path`.
@@ -142,16 +162,8 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
         draw.line(px, fill=(20, 20, 20), width=width + 6, joint="curve")
         draw.line(px, fill=colour, width=width, joint="curve")
 
-        # Label at the far end of the arc, which is where the paths are furthest apart and
-        # a number is least likely to sit on top of a neighbour's. "Far end" means the last
-        # point still INSIDE the frame, not the arc's true end: the outer arcs leave the
-        # 90 degree view before 3 m, and clamping their true end to the border stacks their
-        # badges in the corner where they read as a pair rather than as two paths.
         r = font_size * 0.72
-        inside = [p for p in px if r < p[0] < w - r and r < p[1] < h - r]
-        ux, uy = inside[-1] if inside else px[-1]
-        ux = min(max(ux, r + 4), w - r - 4)
-        uy = min(max(uy, r + 4), h - r - 4)
+        ux, uy = badge_xy(px, w, h, r)
         draw.ellipse([ux - r, uy - r, ux + r, uy + r], fill=(20, 20, 20), outline=colour,
                      width=6)
         draw.text((ux, uy), str(label), fill=colour, font=font, anchor="mm")

@@ -779,7 +779,7 @@ def menu_plan(image_paths: list[str], instruction: str,
 
 def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             choice: int | None, kappa: float | None, seen: str, reply: str,
-            target_m: float | None = None, speed: float = MENU_SPEED_MPS) -> None:
+            target_m: float | None = None, speed: float | None = None) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -801,7 +801,13 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 # Kept apart on purpose: `target_m` is what the model SAID and `speed` is
                 # what we DID with it. Storing only the speed would make a bad estimate and
                 # a bad mapping look identical afterwards, and they have different fixes.
-                "target_m": target_m, "speed_mps": speed,
+                # `speed` defaults to None and is resolved HERE, not in the signature: a
+                # default argument is bound once at def time, so `= MENU_SPEED_MPS` would
+                # have frozen the launch value and gone on recording it after /menu_speed
+                # changed the real one -- a wrong number in the record with nothing wrong
+                # in the driving, which is the hardest kind to notice later.
+                "target_m": target_m,
+                "speed_mps": MENU_SPEED_MPS if speed is None else speed,
             }) + "\n")
     except Exception as exc:
         print(f"[qvla-server] could not record decision: {exc}", flush=True)
@@ -881,6 +887,44 @@ def health() -> dict:
             "last_reasoning": _state["reasoning"],
             "has_plan": _state["plan"] is not None,
         }
+
+
+class SpeedRequest(BaseModel):
+    """Cruise speed, in m/s, for menu plans where the target is not in sight."""
+
+    cruise_mps: float
+
+
+@app.post("/menu_speed")
+def menu_speed(req: SpeedRequest) -> dict:
+    """Retune the cruise speed without reloading 28.75 GiB of weights.
+
+    Speed is the one menu parameter worth changing while watching a run, because what it
+    really sets is how far the robot travels BLIND: a generation takes about 3 s, so at
+    0.70 m/s it covers 2.1 m of a 3.0 m arc before it can revise anything, and the whole
+    overshoot failure lives in that gap. Trying a value is a 30-second question and a
+    server restart is a 35-second answer to it plus a cold first generation.
+
+    Every decision already records the speed it used, so a run whose speed changed halfway
+    is still readable afterwards -- but it is not one measurement, and `summarize_runs.py`
+    cannot know that. Change it between episodes, not during a scored one.
+
+    The floor is not settable. `CREEP_MPS` is the bottom of the approach ramp and is
+    already under what the tightest episode's timeout allows; making it adjustable from
+    here would let a stall be dialled in by accident and read as a policy failure.
+    """
+    global MENU_SPEED_MPS
+    v = float(req.cruise_mps)
+    if not CREEP_MPS <= v <= 1.5:
+        raise HTTPException(
+            status_code=400,
+            detail=f"cruise must be between the creep floor {CREEP_MPS} and the episodes' "
+                   f"own 1.5 m/s cap; got {v}")
+    was, MENU_SPEED_MPS = MENU_SPEED_MPS, v
+    print(f"[qvla-server] menu cruise {was:.2f} -> {v:.2f} m/s "
+          f"({v * 3.0:.1f} m travelled per ~3 s generation)", flush=True)
+    return {"ok": True, "was": was, "cruise_mps": v,
+            "metres_per_generation": round(v * 3.0, 2)}
 
 
 class ResetRequest(BaseModel):

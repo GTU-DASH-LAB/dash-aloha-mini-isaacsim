@@ -35,7 +35,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from arc_menu import _PALETTE, make_arcs, project  # noqa: E402
+from arc_menu import _PALETTE, badge_xy, make_arcs, project  # noqa: E402
 
 W, H = 1280, 720          # the menu, downscaled from 1920x1080
 CAPTION_H = 300           # room for three wrapped lines plus a header
@@ -71,16 +71,39 @@ def draw_frame(rec: dict, menu_path: Path, arcs, index: int, total: int):
               for u, v in (p for p in (project(x, y) for x, y in arcs[i].points)
                            if p is not None)]
         if len(px) >= 2:
+            colour_i = _PALETTE[i % len(_PALETTE)]
             d.line(px, fill=(255, 255, 255), width=18, joint="curve")
-            d.line(px, fill=_PALETTE[i % len(_PALETTE)], width=8, joint="curve")
+            d.line(px, fill=colour_i, width=8, joint="curve")
+            # ...and put the badge back on top. The highlight is 18 px of white drawn
+            # straight through the chosen arc's own number, so without this the ONE label
+            # a viewer needs to read is the only illegible one on the frame -- reported
+            # from a real frame where the chosen "7" had the stroke through it.
+            r = 96 * 0.72 * H / 1080.0
+            bx, by = badge_xy(px, W, H, r)
+            d.ellipse([bx - r, by - r, bx + r, by + r], fill=(20, 20, 20),
+                      outline=colour_i, width=5)
+            d.text((bx, by), str(rec.get("choice")), fill=colour_i,
+                   font=_font(FONT_B, int(96 * H / 1080.0)), anchor="mm")
 
-    tag = ("STOP" if stop else
+    # Say WHY there is no such number on the picture. The stop label is deliberately not
+    # drawn -- it is the one option that is not a path -- and a viewer watching the video
+    # has no way to know that, so an unlabelled choice reads as the model inventing a
+    # label it could not have seen.
+    tag = (f"STOP  (label {rec['choice']} - not drawn, it is not a path)" if stop else
            f"path {rec['choice']}   kappa {kappa:+.2f} 1/m" if kappa is not None
            else "UNREADABLE REPLY -- previous plan reused")
     colour = ((255, 90, 90) if stop else (120, 255, 160) if kappa is not None
               else (255, 200, 80))
     d.rectangle([0, 0, W, 54], fill=(15, 15, 18))
-    d.text((16, 27), f"decision {index + 1}/{total}   step {rec.get('step')}",
+    # Commanded speed on every frame, because "the robot looks too fast" is a judgement a
+    # viewer should be able to check against a number rather than estimate off playback
+    # that is not real time in the first place. `target` is the model's own distance
+    # estimate; blank when it said it could not see the target, which is also when the
+    # speed is at cruise and worth being able to tell apart from a near-target cruise.
+    v, tgt = rec.get("speed_mps"), rec.get("target_m")
+    speed = "" if v is None else (f"   {v:.2f} m/s" + (f"  target {tgt:.1f} m" if tgt
+                                                      is not None else "  target unseen"))
+    d.text((16, 27), f"decision {index + 1}/{total}   step {rec.get('step')}{speed}",
            fill=(190, 190, 200), font=_font(FONT, 26), anchor="lm")
     d.text((W - 16, 27), tag, fill=colour, font=_font(FONT_B, 28), anchor="rm")
 

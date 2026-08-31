@@ -171,6 +171,14 @@ class EpisodeResult:
     guard_interventions: int
     timed_out: bool
     controller: str
+    # Which policy answered, straight off its own `/health`: "<model> [<format>] @<port>".
+    # Filenames carry the episode and the controller and nothing about the brain, so a
+    # directory of runs from TIC-VLA, Q-VLA-direct and the arc-menu selector was
+    # distinguishable only by guessing from timestamps -- and this harness has already
+    # once scored a ladder off two-week-old files and printed a plausible 6/13. Defaulted
+    # so every run recorded before this field existed still loads; "" means unknown, which
+    # is the truth about those and must not be read as any particular policy.
+    policy: str = ""
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)

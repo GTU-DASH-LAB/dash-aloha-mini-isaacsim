@@ -159,6 +159,95 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
     return out_path
 
 
+# --------------------------------------------------------------------------------------
+# Driving on it
+#
+# Everything above is the experiment; everything below is what the policy server runs.
+#
+# The prompts are the SIDED variant of `nav/tools/probe_arc_repair.py` -- the only one of
+# four framings that avoided walls at 100% while still holding straight down an open
+# corridor 92% of the time, and the only one whose choice negated when the frame was
+# mirrored (83%, against 0% for asking in one call). Two calls, both on the frozen model:
+# ask what is in the way and which side is open, then hand that answer to the menu.
+#
+# The measured text lives in the probe files and is deliberately duplicated rather than
+# imported: those files are the record of what was actually run, and a shared string would
+# let an edit here silently invalidate a result recorded there. If these two drift apart,
+# the numbers in CLAUDE.md describe the probe, not the server.
+#
+# The one addition the probes had no need for is STOP. Every benchmark instruction names a
+# destination ("stop at the nearest elevator"), and a menu of seven forward arcs cannot
+# express arrival: without it the robot is structurally incapable of finishing an episode
+# and every run ends in an overshoot.
+# --------------------------------------------------------------------------------------
+
+FREE_SPACE_SYSTEM = (
+    f"You are looking through the forward camera of a small wheeled robot. The camera is "
+    f"{CAM_HEIGHT_M:.2f} m above the floor, level, with a {CAM_FOV_DEG:.0f} degree "
+    f"horizontal field of view. Answer briefly and literally, describing only what is "
+    f"visible in this image.")
+
+DESCRIBE_SIDED = (
+    "Answer in two short sentences. First: is there a wall, a door, a doorframe or a large "
+    "object straight ahead of the robot within about 3 metres? Name it, or say the way "
+    "ahead is open. Second: say which direction has the most open, walkable floor the "
+    "robot could drive along -- far left, left, straight ahead, right, or far right.")
+
+
+def select_system(stop_label: int) -> str:
+    """The arc-selection system prompt, with `stop_label` reserved for stopping."""
+    return f"""You are the navigation system of a small wheeled robot, looking through its \
+forward camera. The camera is {CAM_HEIGHT_M:.2f} m above the floor, level, with a \
+{CAM_FOV_DEG:.0f} degree horizontal field of view.
+
+Several candidate paths have been drawn onto the floor of the image. Each one is a real \
+route the robot can drive, starting at the robot and curving away from it, and each ends \
+in a numbered circle. The numbers are arbitrary tags, not an order: they do not run left \
+to right and carry no meaning beyond identifying a path.
+
+Your job is to choose the one path that best carries out the navigation instruction. \
+Judge each path by where it actually goes on the floor in the image. Prefer a path that \
+stays on open, walkable floor and does not run into a wall, a door frame or an object.
+
+There is one extra choice, {stop_label}, which is not drawn on the image. Answer \
+{stop_label} to stop and stay still, and only for one of two reasons: the robot has \
+arrived at the place the instruction names, or every drawn path runs into something. \
+Stopping at the right place is part of the task. Do not answer {stop_label} merely \
+because the way ahead is tight.
+
+Answer with the number of the chosen path and nothing else."""
+
+
+def plan_from_kappa(kappa: float, speed_mps: float, n_waypoints: int, dt: float,
+                    arc_len_m: float = DEFAULT_LENGTH_M) -> np.ndarray:
+    """A chosen curvature -> an (N, 2) FLU plan of cumulative positions at `dt` spacing.
+
+    Waypoint i is where the robot should be at t = (i+1)*dt, which is the convention the
+    servers and controllers already use -- the origin is not a waypoint.
+
+    The drawn arc is 3 m long because that is as far as the projection stays legible; past
+    about 4 m the candidates converge toward the horizon and their labels collide. The plan
+    has to cover a full horizon, which is longer. Holding the curvature for the whole
+    horizon is the wrong reading of the model's answer: kappa = 0.60 held for 7 m is 240
+    degrees, a pirouette nobody chose. So the plan drives the arc the model actually looked
+    at and then continues straight along the heading it ends on, which is what "take the
+    path that curves left" means to anyone who has ever driven -- turn onto it, then carry
+    on. The curvature is re-chosen from a fresh image every replan, so a longer turn is
+    expressed by choosing it again, not by extrapolating one choice further than it was
+    made.
+    """
+    s = np.arange(1, n_waypoints + 1) * dt * speed_mps
+    on_arc = np.minimum(s, arc_len_m)
+    beyond = np.maximum(s - arc_len_m, 0.0)
+    theta = kappa * on_arc                       # heading, frozen once past the arc
+    if abs(kappa) < 1e-9:
+        x, y = on_arc, np.zeros_like(on_arc)
+    else:
+        r = 1.0 / kappa
+        x, y = r * np.sin(theta), r * (1.0 - np.cos(theta))
+    return np.stack([x + beyond * np.cos(theta), y + beyond * np.sin(theta)], axis=-1)
+
+
 def leftmost_label(arcs: list[Arc], labels: list[int]) -> int:
     """Label of the arc that turns hardest left -- ground truth for 'turn left'."""
     return labels[max(range(len(arcs)), key=lambda i: arcs[i].kappa)]

@@ -112,6 +112,10 @@ def score(path: Path, cfg: dict) -> dict | None:
         "file": path.name,
         "episode": d.get("episode", "?"),
         "controller": d.get("controller", "?"),
+        # "" for every run written before EpisodeResult grew this field. Reported as
+        # "unrecorded" rather than guessed: the whole point is to stop a table implying
+        # that thirteen numbers came from one brain when nothing on disk says so.
+        "policy": d.get("policy", "") or "unrecorded",
         "success": success,
         "initial_m": initial,
         "closest_m": closest,
@@ -138,6 +142,8 @@ def fmt(v: float, spec: str = "6.2f") -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--controller", help="only runs with this controller")
+    ap.add_argument("--policy", help="only runs whose policy label contains this "
+                                     "substring, e.g. 'menu' or 'InternVL'")
     ap.add_argument("--latest", metavar="EPISODE", help="only the newest run of it")
     ap.add_argument("--oneline", action="store_true", help="one terse line, for scripts")
     args = ap.parse_args()
@@ -146,6 +152,8 @@ def main() -> None:
     rows = [r for r in (score(p, cfg) for p in sorted(RESULTS.glob("*.json"))) if r]
     if args.controller:
         rows = [r for r in rows if r["controller"] == args.controller]
+    if args.policy:
+        rows = [r for r in rows if args.policy in r["policy"]]
     if args.latest:
         rows = [r for r in rows if r["episode"] == args.latest]
         rows = rows[-1:]
@@ -158,7 +166,7 @@ def main() -> None:
         r = rows[-1]
         verdict = "SUCCESS" if r["success"] else "FAIL"
         print(
-            f"{verdict} {r['episode']}/{r['controller']}: "
+            f"{verdict} {r['episode']}/{r['controller']}/{r['policy']}: "
             f"{r['initial_m']:.1f} -> closest {fmt(r['closest_m'], '.2f')} m "
             f"(final {fmt(r['final_m'], '.1f')}), closed {r['closed_frac'] * 100:.0f}%, "
             f"spl {r['spl']:.2f}, path {r['path_m']:.1f} m, guard {r['guard']}"
@@ -189,8 +197,14 @@ def main() -> None:
         )
 
     done = [r for r in rows if r["success"]]
+    # Named before the score, because a mixed table is not a result and the reader has
+    # to see that before reading the fraction under it.
+    seen = sorted({r["policy"] for r in rows})
+    print(f"\npolicy: {', '.join(seen)}"
+          + ("   <- MIXED; this total spans different policies and is not one result"
+             if len(seen) > 1 else ""))
     print(
-        f"\n{len(done)}/{len(rows)} succeeded"
+        f"{len(done)}/{len(rows)} succeeded"
         f"  |  mean closed {sum(r['closed_frac'] for r in rows) / len(rows) * 100:.0f}%"
         f"  |  mean spl {sum(r['spl'] for r in rows) / len(rows):.2f}"
     )

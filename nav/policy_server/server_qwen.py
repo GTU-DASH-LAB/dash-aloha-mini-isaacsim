@@ -51,6 +51,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import threading
 import time
 import traceback
@@ -61,6 +62,14 @@ import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from scipy.interpolate import PchipInterpolator
+
+# Running this file puts its own directory on sys.path (that is how `qwen_load` resolves)
+# but not `nav/`, where the shared code lives. The `menu` format needs it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from arc_menu import (  # noqa: E402
+    DESCRIBE_SIDED, FREE_SPACE_SYSTEM, make_arcs, plan_from_kappa, render_menu,
+    select_system,
+)
 
 MODEL_PATH = os.environ.get(
     "QVLA_MODEL", "/home/gtu-dsa/robotics/models/Qwen3.8-27B-NVFP4"
@@ -245,12 +254,32 @@ Reply with the waypoints only, inside answer tags, and nothing else. Write exact
 # cumulative path lengths stay exactly as expressive as the six x values were. Only the
 # lateral channel changes representation. If left turns appear under `arc` and nothing
 # else moves, the cause is isolated to the signed-offset encoding and nothing else.
+#
+# `menu` is a third thing and does not belong to that comparison at all: the model stops
+# writing a trajectory in any form and instead PICKS one off a menu drawn on its own
+# camera image (`nav/arc_menu.py`). It exists because `pairs` and `arc` were both measured
+# and both fail in the same place -- the model reasons correctly about where to go and
+# then writes a number it cannot ground, since nothing in a monocular frame tells it how
+# far 2.07 m is. Selecting a label removes the ungrounded number rather than re-encoding
+# it, and it measures 100% on following a direction word against 43% chance. See CLAUDE.md.
 _ARC_FORMAT = os.environ.get("QVLA_FORMAT", "pairs").lower()
-if _ARC_FORMAT not in ("pairs", "arc"):
+if _ARC_FORMAT not in ("pairs", "arc", "menu"):
     # Loudly, not by falling back. A typo here would silently run the format we already
     # know is one-sided and label the result as the new one -- an hour of GPU time spent
     # re-measuring a known negative.
-    raise SystemExit(f"QVLA_FORMAT must be 'pairs' or 'arc', got {_ARC_FORMAT!r}")
+    raise SystemExit(f"QVLA_FORMAT must be 'pairs', 'arc' or 'menu', got {_ARC_FORMAT!r}")
+
+# How fast the chosen arc is driven. Unlike `pairs` and `arc`, `menu` has no speed channel
+# at all: every candidate is the same 3 m long, so the model chooses a DIRECTION and
+# nothing else, and the speed has to come from here. 0.7 m/s is the operating point the
+# trained policy asks for on these episodes (measured mean 0.731 on office_nearest_
+# elevator), so the two are driven at the same pace and the comparison is about steering.
+#
+# The consequence is worth stating rather than discovering: `plan_speed` is constant under
+# this format, so the `braking` controller's min(cap, plan) never engages and the only way
+# this policy can slow down is to stop outright. That is what the STOP label is for.
+MENU_SPEED_MPS = float(os.environ.get("QVLA_MENU_SPEED", "0.7"))
+MENU_DIR = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
 
 _TASK_ARC = """
 The four images are consecutive frames from your forward camera, oldest first, about 3 seconds apart. The last one is NOW.
@@ -620,24 +649,126 @@ def _generate(messages: list[dict], image_paths: list[str], max_new: int) -> str
     return prefix + gen + "</think>\n" + ANSWER_PREFIX + answer
 
 
+def free_generate(image_paths: list[str], system: str, user: str, max_new: int,
+                  prefill: str = "", think: bool = False) -> tuple[str, float]:
+    """One generation from an arbitrary system/user prompt. Returns (text, seconds).
+
+    Shared by `/raw` and by the `menu` format, which is the reason it is a function rather
+    than the body of the endpoint: the two must run the model identically, or the numbers
+    the probes recorded through `/raw` would not describe what the benchmark then drives.
+    """
+    from PIL import Image
+
+    proc, model = _state["proc"], _state["model"]
+    content: list[dict] = [{"type": "image", "image": p} for p in image_paths]
+    content.append({"type": "text", "text": user})
+    messages = ([{"role": "system", "content": system}] if system else []) + [
+        {"role": "user", "content": content}]
+    kwargs = {} if think else {"enable_thinking": False}
+    try:
+        text = proc.apply_chat_template(messages, add_generation_prompt=True,
+                                        tokenize=False, **kwargs)
+    except TypeError:
+        text = proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+
+    imgs = [Image.open(p).convert("RGB") for p in image_paths]
+    t0 = time.perf_counter()
+    with _raw_gate:
+        inputs = proc(text=[text + prefill], images=imgs or None,
+                      return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_new, **_SAMPLING)
+        gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
+                                skip_special_tokens=True)[0]
+    return prefill + gen, time.perf_counter() - t0
+
+
+_MENU_ARCS = make_arcs()
+_STOP_LABEL = len(_MENU_ARCS) + 1
+_MENU_SYSTEM = select_system(_STOP_LABEL)
+# Seeded, so a benchmark run is reproducible, and shuffled per call rather than fixed,
+# because a stable numbering is the one confound that makes this whole approach look like
+# it works when it does not: number the arcs left to right and a model can answer "1" for
+# left without ever looking at the image. Every measurement behind this format was taken
+# under a shuffle and the policy has to run under one too.
+_menu_rng = np.random.default_rng(int(os.environ.get("QVLA_MENU_SEED", "0")))
+
+
+def menu_plan(image_paths: list[str], instruction: str,
+              step: int | None) -> tuple[np.ndarray | None, str]:
+    """The `menu` format's whole pipeline: two generations, one curvature, one plan.
+
+    Returns (plan or None, a reasoning string for the run log). None means the reply named
+    no label on the menu, which the caller counts as a parse failure and answers by reusing
+    the previous plan -- the same fallback every other format has.
+
+    Only the newest frame is used. The other formats hand the model four frames at 3 s
+    spacing because they have to infer their own motion; here the question is about where
+    the floor is open right now, and the arcs are drawn on one image.
+    """
+    MENU_DIR.mkdir(parents=True, exist_ok=True)
+    newest = image_paths[-1]
+
+    labels = (_menu_rng.permutation(len(_MENU_ARCS)) + 1).tolist()
+    menu = str(MENU_DIR / f"menu_{step if step is not None else 0:08d}.jpg")
+    render_menu(newest, menu, _MENU_ARCS, labels)
+    by_label = {int(lab): _MENU_ARCS[i].kappa for i, lab in enumerate(labels)}
+
+    # Call 1 is the whole reason this variant works. Asked to choose in one call, the model
+    # drove into the wall 78% of the time; asked to describe first, 28%; asked to describe
+    # AND name the open side, 0%. The middle number is the informative one -- a description
+    # that says "a wall about 1 m away" reports that the way is blocked and never says
+    # which way is open, so the second call turns and guesses where.
+    seen, _ = free_generate([newest], FREE_SPACE_SYSTEM, DESCRIBE_SIDED, 80)
+    seen = seen.strip().replace("\n", " ")
+
+    user = (f"What the robot can see ahead of it: {seen}\n\n"
+            f"Navigation instruction: {instruction}\n\n"
+            f"Which numbered path do you take?")
+    reply, _ = free_generate([menu], _MENU_SYSTEM, user, 8)
+
+    m = re.search(r"\d+", reply)
+    choice = int(m.group()) if m else None
+    note = f"[free space] {seen}\n[menu] {labels} -> {reply.strip()[:20]!r}"
+    if choice == _STOP_LABEL:
+        # Cumulative positions all at the origin. `_lookahead_point` returns a distance
+        # below `_EPS` for this and every controller answers Command(0, 0, 0) -- the same
+        # path a "Stop. Do not move." plan already takes, not a special case bolted on.
+        return np.zeros((N_WAYPOINTS, 2)), note + " -> STOP"
+    if choice not in by_label:
+        return None, note + " -> unparsed"
+    k = by_label[choice]
+    return (plan_from_kappa(k, MENU_SPEED_MPS, N_WAYPOINTS, DT),
+            note + f" -> kappa {k:+.2f}")
+
+
 def _generation_worker(messages: list[dict], image_paths: list[str],
-                       step: int | None, max_new: int) -> None:
+                       step: int | None, max_new: int, instruction: str = "") -> None:
     """Runs on a background thread so the control loop never waits on decode.
 
     This is the same two-rate idea as TIC-VLA's `predict_async`, one level up: there the
     fast half was the action expert, here it is simply "keep driving the plan you have".
     A 3 s plan against a ~2-3 s generation leaves the loop a plan at all times.
+
+    `menu` spends two generations instead of one and lands at ~2.1 s, which is inside that
+    budget only because the horizon was already raised to 10 s. It is also why `menu` is
+    given the raw instruction rather than `messages`: it builds its own prompts around a
+    rendered image that does not exist until this thread runs.
     """
     try:
-        text = _generate(messages, image_paths, max_new)
-        ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
+        if _ARC_FORMAT == "menu":
+            plan, text = menu_plan(image_paths, instruction, step)
+        else:
+            text = _generate(messages, image_paths, max_new)
+            ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
+            plan = None if ctrl is None else densify(ctrl)
         with _lock:
             _state["generations"] += 1
             _state["reasoning"] = text
-            if ctrl is None:
+            if plan is None:
                 _state["parse_failures"] += 1
             else:
-                _state["plan"] = densify(ctrl)
+                _state["plan"] = plan
                 _state["plan_gen_step"] = step
     except Exception as exc:                       # never let a worker kill the server
         # Counted apart from parse_failures on purpose. Those two look identical from the
@@ -664,10 +795,14 @@ def health() -> dict:
         return {
             "ok": _state["model"] is not None,
             "model": MODEL_PATH,
-            "mode": "qvla-direct (no action expert)",
+            "mode": ("qvla-arc-menu (selects a drawn path)" if _ARC_FORMAT == "menu"
+                     else "qvla-direct (no action expert)"),
             # Reported so a probe can never misattribute a result to the wrong format.
-            # The two are not comparable: `arc` cannot express an S-curve at all.
+            # The three are not comparable: `arc` cannot express an S-curve at all, and
+            # `menu` cannot express a speed.
             "format": _ARC_FORMAT,
+            **({"menu_speed_mps": MENU_SPEED_MPS, "stop_label": _STOP_LABEL}
+               if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],
             "generations": _state["generations"],
@@ -725,30 +860,9 @@ def raw(req: RawRequest) -> dict:
         if _state["gen_thread"] is not None:
             raise HTTPException(status_code=409, detail="a plan generation is in flight")
 
-    from PIL import Image
-
-    proc, model = _state["proc"], _state["model"]
-    content: list[dict] = [{"type": "image", "image": p} for p in req.image_paths]
-    content.append({"type": "text", "text": req.user})
-    messages = ([{"role": "system", "content": req.system}] if req.system else []) + [
-        {"role": "user", "content": content}]
-    kwargs = {} if req.think else {"enable_thinking": False}
-    try:
-        text = proc.apply_chat_template(messages, add_generation_prompt=True,
-                                        tokenize=False, **kwargs)
-    except TypeError:
-        text = proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-
-    imgs = [Image.open(p).convert("RGB") for p in req.image_paths]
-    t0 = time.perf_counter()
-    with _raw_gate:
-        inputs = proc(text=[text + req.prefill], images=imgs or None,
-                      return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=req.max_new_tokens, **_SAMPLING)
-        gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
-                                skip_special_tokens=True)[0]
-    return {"text": req.prefill + gen, "latency_s": round(time.perf_counter() - t0, 3)}
+    text, dt = free_generate(req.image_paths, req.system, req.user, req.max_new_tokens,
+                             prefill=req.prefill, think=req.think)
+    return {"text": text, "latency_s": round(dt, 3)}
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -770,7 +884,10 @@ def predict(req: PredictRequest) -> PredictResponse:
     # distance estimate for another 700 tokens without changing the answer.
     max_new = int(os.environ.get(
         "QVLA_MAX_NEW_TOKENS", 300 if think else _answer_tokens()))
-    messages = build_messages(req, req.image_paths, think)
+    # `menu` writes its own prompts on a thread, around an image that has not been rendered
+    # yet, so there is nothing to build here and building it anyway would only bill the
+    # tokeniser for a prompt nobody sends.
+    messages = [] if _ARC_FORMAT == "menu" else build_messages(req, req.image_paths, think)
 
     started_step = None
     with _lock:
@@ -780,7 +897,8 @@ def predict(req: PredictRequest) -> PredictResponse:
     if not busy:
         th = threading.Thread(
             target=_generation_worker,
-            args=(messages, list(req.image_paths), req.current_step, max_new), daemon=True)
+            args=(messages, list(req.image_paths), req.current_step, max_new,
+                  req.instruction), daemon=True)
         with _lock:
             _state["gen_thread"] = th
         started_step = req.current_step

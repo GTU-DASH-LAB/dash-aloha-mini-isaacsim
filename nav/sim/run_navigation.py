@@ -199,6 +199,19 @@ class NavigationRunner:
         snap["chase_available"] = self.chase_available
         return snap
 
+    def policy_label(self) -> str:
+        """Identify the server that answered, for the run record.
+
+        Read off `/health` rather than from our own flags: the port is what we chose, the
+        model and format are what actually loaded, and it is the second pair that decides
+        what the number means. A stale server left running in the wrong format is exactly
+        the mistake this is here to make visible afterwards.
+        """
+        info = getattr(self, "_policy_info", None) or {}
+        model = str(info.get("model", "?")).rsplit("/", 1)[-1]
+        fmt = info.get("format")
+        return f"{model}{f' [{fmt}]' if fmt else ''} @{self.policy.base.rsplit(':', 1)[-1]}"
+
     def request_stop(self) -> None:
         self._abort.set()
 
@@ -402,6 +415,9 @@ class NavigationRunner:
 
         self._set(state="ready", message="waiting for policy server")
         info = self.policy.wait_until_ready()
+        # Kept, not just printed: it is the only place the run learns which brain it is
+        # about to drive, and `EpisodeResult.policy` records it alongside the result.
+        self._policy_info = info
         self._set(state="idle", message=ready_message(info))
 
     # --------------------------------------------------------------- execution
@@ -712,6 +728,7 @@ class NavigationRunner:
             guard_interventions=self.guard.interventions,
             timed_out=timed_out,
             controller=self.controller_name,
+            policy=self.policy_label(),
             trace=trace,
             plans=plans,
         )

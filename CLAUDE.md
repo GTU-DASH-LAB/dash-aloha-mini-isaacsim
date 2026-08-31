@@ -1194,6 +1194,66 @@ that affect the *rest* of this repo:
   Cost: **2.10 s** per decision against DIGIT's 0.31 s, both calls on one frozen model. The
   0.31 s path is still correct when the instruction carries the direction; the 2.10 s path
   is what "drive safely" costs.
+- **8/13 on the ladder with the frozen arc-menu Qwen, up from 6/13 with TIC-VLA.** Full
+  13 episodes, `braking`, one server, 49.7 min wall, **0 errors**. Read the server's own
+  counters next to it, because that is the check that catches a ladder scored against a
+  dead port: 2294 predictions, 989 generations, 0 gen errors, 5 parse failures (0.5%).
+  Successes: `hospital_down_hallway`, `office_passing_hallway`, both vending machines,
+  `office_hallway_turn`, `hospital_past_wheelchairs`, `hospital_forward_staircase`,
+  `warehouse`. **No action expert, no fine-tuning, no trajectory data** — the whole policy
+  is a drawn menu and two calls to a frozen 27B.
+- **Backing out of a wedge is only half a recovery, and the first version shipped only that
+  half.** Reversing hands control back to a policy looking at the same obstacle from a
+  metre further away, holding a cached plan that says STOP, shown the frame that made it
+  say STOP. Worse, at 1.4 m nothing is inside `stop_distance_m` any more, so the wedge
+  trigger cannot re-arm and the robot stands there for the rest of the episode. The fix is
+  three things at once, and each is separately necessary: **throw the plan away**
+  (`/replan`, plus an `epoch` counter so a generation already in flight is discarded on
+  arrival rather than landing as a fresh-looking stale plan), **say what happened** in the
+  prompt, and **remove STOP from the menu** for that decision. The last one is not a hack:
+  both reasons the prompt gives for answering STOP are known false right after a reverse —
+  the robot cannot have arrived, because arrival latches and ends the episode, and standing
+  still is precisely the thing that just failed. Prompt is the right channel here and the
+  authority is measured, not assumed: instructions move the arc-menu plan **103°**, against
+  ~9° for TIC-VLA's action expert.
+
+  Ladder result: **6 reverses, 6 forced re-decisions, 0 failures to re-decide**, 3 of them
+  with something behind the robot as well. `hospital_vending_machine2` was **0/3** before
+  and is **2/2** after (pilot + ladder), both wins going through exactly one reverse and one
+  re-decision. Do not read that as 2/2 being the rate — n is small and this stack is noisy
+  — but the mechanism firing 6 times and re-deciding 6 times is not noise.
+- **STOP is being used to mean "blocked", which is the mirror image of the wedge bug and is
+  now the top failure mode.** `office_nearest_elevator` answered STOP on **42 of 65**
+  decisions from 5.5 m out, oscillating stop/move/stop/move. Its own free-space text on
+  those frames: *"Yes, there is a wall straight ahead of the robot. The most open, walkable
+  floor is to the RIGHT. TARGET: not visible"* — naming an open side and denying it can see
+  the target, in the same sentence as an answer that means "I have arrived or everything is
+  blocked". `hospital_exit_room` is the same illness with the guard in the loop: **2655
+  interventions, 12% closed**. The prompt already says "do not answer 8 merely because the
+  way ahead is tight" and that is not holding, so the fix is structural in the same way the
+  recovery's was — gate STOP on what the description says (target visible AND near) rather
+  than trusting the model to apply a rule. **Not attempted mid-ladder on purpose**: changing
+  the prompt between episodes leaves 13 numbers measured under two policies.
+- **Three failures, three different causes — do not average them.** `hospital_down_hallway2`
+  stopped at **1.58 m** against a 1.50 m threshold while its twin on the same corridor
+  scored spl 1.00: 8 cm, the same behaviour landing either side of a hard cutoff, not a
+  navigation error. `office_hallway_turn2` and `warehouse_aisle6` **arrive and then leave**
+  (2.23 m → 8.10 m final), the long-documented consequence of DynaNav terminating at 1.5 m
+  so their controller is never asked to stop. Only the STOP-means-blocked pair above is a
+  new problem.
+- **Record both cameras or the video cannot answer the question you will ask it.** The menu
+  frame shows what the model looked at and what it chose; only a third-person view shows
+  whether the robot then went there. A scraped wall, a pivot in place and a reverse out of
+  a wedge are all invisible from the camera doing the deciding, because that camera moves
+  with the robot. Two gotchas, both hit for real: the video canvas must be sized off whether
+  the RUN recorded a chase view, not off whether a given frame's file exists — one missing
+  jpeg otherwise changes the frame size mid-stream and ffmpeg rejects the whole encode; and
+  the chase camera must stay lazy, because once an Isaac Sim `Camera` exists Kit renders its
+  render product every frame whether or not anything reads it.
+- **Resend refuses `Python-urllib/3.x` with HTTP 403 "error code: 1010".** Cloudflare
+  banning the client string, not the key, and the one-line error names neither.
+  `scripts/notify-progress.sh` never hit it because curl sends its own User-Agent. Any new
+  Python caller of that API needs one set explicitly.
 
 ## Next step
 

@@ -451,6 +451,33 @@ def speed_from_level(level: int, cruise: float = CRUISE_MPS) -> float:
     return float(max(CREEP_MPS, min(cruise, cruise * level / SPEED_LEVELS)))
 
 
+# A benchmark instruction is usually a SEQUENCE, and this selector had no notion of which
+# part of it it was on. `hospital_exit_room` says "Exit the room AND TURN RIGHT to enter
+# the hallway. Continue straight ahead...", and on its first two decisions the model's own
+# describe call said "the way ahead is open, with a doorway visible in the distance, the
+# most open walkable floor is straight ahead, TARGET: 10 m" -- and the select call answered
+# a right-hand arc anyway, kappa -0.35 then -0.60. Those were the ONLY two decisions in
+# that 160-decision episode where describe and select disagreed. By decision three the
+# robot faced the room's cabinets, the target was never visible again, and it spent the
+# episode grinding along furniture: 257 guard interventions, 40 m of path, 6.66 m closest.
+# The turn belonged after the doorway and was spent before it.
+#
+# The prompt is the right channel for this and that is measured, not assumed: an
+# instruction moves THIS plan 103 degrees, against ~9 for TIC-VLA's action expert.
+#
+# Wording chosen by `probe_instruction_stage.py`, holding the frame and the description the
+# model itself produced on it and varying only the question. Three candidates all recovered
+# exactly what deleting the direction word recovers (mean kappa -0.350 -> -0.075) while
+# still answering HARD RIGHT, 6 of 6, when the description was flipped to say the open
+# floor was on the right -- so this is not "always go straight". The longer wording was
+# rejected on the control frames, where it replied "Based on the..." instead of a digit on
+# 3 of 9 calls; in the live loop that is a decision with no plan behind it. Two sentences
+# is the version that fixes the failure and keeps the answer contract.
+STAGE_RULE = ("The instruction may list several moves in order; do only the earliest one "
+              "not yet done. Where it names a direction the description does not call "
+              "open, follow the description.")
+
+
 def select_system(stop_label: int, stop_allowed: bool = True,
                   speed_choice: bool = False) -> str:
     """The arc-selection system prompt, with `stop_label` reserved for stopping.
@@ -509,6 +536,7 @@ in a numbered circle. The numbers are arbitrary tags, not an order: they do not 
 to right and carry no meaning beyond identifying a path.
 
 Your job is to choose the one path that best carries out the navigation instruction. \
+{STAGE_RULE} \
 Judge each path by where it actually goes on the floor in the image. Prefer a path that \
 stays on open, walkable floor and does not run into a wall, a door frame or an object.
 

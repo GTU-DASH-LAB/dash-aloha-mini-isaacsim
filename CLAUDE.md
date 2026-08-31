@@ -1142,6 +1142,58 @@ that affect the *rest* of this repo:
   is a real SFT target string. The model learned to emit the CE `ignore_index` as text.
   Any parser reading `<answer>` must reject `-100` explicitly rather than treat it as a
   waypoint — as a coordinate it is 100 m behind and 100 m to the right.
+- **The arc selector follows instructions at 100% and is obstacle-blind out of the box.
+  Both halves matter; do not quote one without the other.** Frozen Qwen3.8-27B-FP8, arcs
+  drawn on the robot's own camera by `nav/arc_menu.py`, answer is a label. Labels shuffled
+  every trial, so a left-to-right prior scores chance.
+
+  *Instructions* (`probe_arc_selection.py`, 144 trials): "turn left" / "turn right" / "go
+  straight" each **100%** side-correct against 43% chance, mean κ separating left from
+  right by **+1.190** of a 1.20 menu span. In heading terms the instruction moves the plan
+  **103°**, against 0.6° for TIC-VLA's expert and a 9° ceiling for anything injected into
+  it. Median latency **0.31 s**. This is the zero-shot instruction following, on a frozen
+  model, with no trajectory data.
+
+  *Obstacles* (`probe_arc_obstacles.py`, same model, instruction "Drive safely."): it drove
+  the straight arc into a wall on **89%** of blocked frames, and — the control that needs
+  no human labels — **0 of 18** choices negated when the frame was mirrored. Following a
+  direction word and seeing free space are separate capabilities, and only the first one
+  was there.
+- **That obstacle failure was in the question, not the eyes — and the fix is one extra
+  sentence in a two-call chain.** Worth the whole chain of probes to see, because the two
+  causes cost wildly different amounts to repair.
+
+  `probe_free_space.py` asked about free space directly, no arcs drawn. Forced choice
+  between a blocked and an open frame, every pairing in both orders: **70/70**, 50% of
+  replies "1" so no position bias, and the free text named the obstacle on **6/6** blocked
+  frames with a distance ("a large red double door"). Perception is not the problem.
+
+  (Instrument note: the first version asked a per-frame yes/no and got 100% recall with 50%
+  specificity off 18 NOs in 24 — most of what always-say-NO scores. And its free-text
+  question, "describe what is between the robot and 3 m ahead", produced twelve
+  descriptions of tile patterns and no mention of the wall: it put "floor" in the model's
+  mouth. Both were measuring the phrasing. Force the choice and name the categories.)
+
+  `probe_arc_repair.py`, four ways to ask, same frames, same shuffles, same pixels:
+
+  | variant | avoid wall | keep straight | open side | mirror | latency |
+  |---|---|---|---|---|---|
+  | DIGIT — one image, bare digit | 22% | 100% | 20% | 0% | 0.31 s |
+  | THINK — reason then answer, one call | 33% | 86% | 37% | 17% | 2.42 s |
+  | CHAIN — describe, then choose | 72% | 100% | 60% | 28% | 2.10 s |
+  | **SIDED** — describe **and name the open side**, then choose | **100%** | **92%** | **90%** | **83%** | 2.10 s |
+
+  Chance is 43% for open side and ~0% for mirror. CHAIN's own gap is the tell: it passes
+  along "there is a wall approximately 0.5 to 1 metre away", which reports that the way is
+  blocked and never says which way is open, so the second call turns and guesses where.
+  Asking the first call to name the free side wires together two things that each already
+  scored 100% alone. Keep the open-corridor frames in any rerun — they are what separates
+  SIDED from a model that merely learned to swerve, and they are why THINK's 86% is a
+  demerit and not noise.
+
+  Cost: **2.10 s** per decision against DIGIT's 0.31 s, both calls on one frozen model. The
+  0.31 s path is still correct when the instruction carries the direction; the 2.10 s path
+  is what "drive safely" costs.
 
 ## Next step
 

@@ -39,6 +39,9 @@ from arc_menu import _PALETTE, badge_xy, make_arcs, project  # noqa: E402
 
 W, H = 1280, 720          # the menu, downscaled from 1920x1080
 CAPTION_H = 300           # room for three wrapped lines plus a header
+# The third-person panel, when the run recorded one. Same height as the menu so the two
+# sit on one baseline; 16:9 keeps the chase camera's own aspect, so nothing is stretched.
+CHASE_W = 1280
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
@@ -51,8 +54,17 @@ def _font(path: str, size: int):
         return ImageFont.load_default()
 
 
-def draw_frame(rec: dict, menu_path: Path, arcs, index: int, total: int):
-    """One video frame: the menu, the chosen path drawn back over it, and the reasoning."""
+def draw_frame(rec: dict, menu_path: Path, arcs, index: int, total: int,
+               chase_path: Path | None = None):
+    """One video frame: the menu, the chosen path drawn back over it, and the reasoning.
+
+    With `chase_path` the third-person view is placed beside it, same instant, same
+    width. The two answer different questions and neither is sufficient: the menu says
+    what the model was looking at and what it picked, and only the outside view shows
+    whether the robot then actually went there -- a scraped wall, a pivot in place, a
+    reverse out of a wedge are all invisible from the camera doing the deciding, because
+    that camera moves with them.
+    """
     from PIL import Image, ImageDraw
 
     im = Image.open(menu_path).convert("RGB").resize((W, H), Image.LANCZOS)
@@ -108,15 +120,57 @@ def draw_frame(rec: dict, menu_path: Path, arcs, index: int, total: int):
     # that just failed. Without a mark, those frames look like ordinary ones that happen
     # never to stop, which is the wrong conclusion to let a viewer draw from a video.
     after = "   [after reversing out]" if rec.get("recovered") else ""
-    d.text((16, 27),
-           f"decision {index + 1}/{total}   step {rec.get('step')}{speed}{after}",
-           fill=(255, 200, 80) if after else (190, 190, 200),
-           font=_font(FONT, 26), anchor="lm")
-    d.text((W - 16, 27), tag, fill=colour, font=_font(FONT_B, 28), anchor="rm")
+    # The banner is one line over a panel of fixed width and both halves grow: the left
+    # gains a target distance and a recovery mark, the right gains a long STOP
+    # explanation. Laid out at fixed sizes they overlapped for real -- the recovery mark
+    # printed straight through "path 4", so the two things this frame exists to show were
+    # the two that were illegible. Measure and shrink instead; the marker earns its place
+    # by being kept last, so what degrades first is a word and not a number.
+    # Nothing here is ever DROPPED to make room, only shrunk. A layout that discards the
+    # recovery mark when the line is long discards it on exactly the frames where the
+    # right-hand tag is longest, which is the STOP tag -- i.e. it would go missing on
+    # "stopped anyway despite the no-stop prompt", the one combination worth seeing.
+    short = "   [recovered]" if after else ""
+    for size, mark in ((26, after), (26, short), (23, short), (20, short), (17, short)):
+        left = f"decision {index + 1}/{total}   step {rec.get('step')}{speed}{mark}"
+        left_font, tag_font = _font(FONT, size), _font(FONT_B, size + 2)
+        if (d.textlength(left, font=left_font)
+                + d.textlength(tag, font=tag_font) <= W - 56):
+            break
+    d.text((16, 27), left, fill=(255, 200, 80) if after else (190, 190, 200),
+           font=left_font, anchor="lm")
+    d.text((W - 16, 27), tag, fill=colour, font=tag_font, anchor="rm")
 
-    out = Image.new("RGB", (W, H + CAPTION_H), (15, 15, 18))
+    # `chase_path` not None means the RUN recorded a third-person view, so the panel is
+    # reserved whether or not this particular frame survived. Sizing the canvas off
+    # whether one file happens to exist would give a video whose dimensions change
+    # mid-stream, which ffmpeg rejects outright -- one lost jpeg would cost the video.
+    chase = None
+    if chase_path is not None and chase_path.is_file():
+        try:
+            chase = Image.open(chase_path).convert("RGB").resize(
+                (CHASE_W, H), Image.LANCZOS)
+        except Exception:
+            chase = None      # truncated jpeg from a run killed mid-write
+
+    total_w = W + (CHASE_W if chase_path is not None else 0)
+    out = Image.new("RGB", (total_w, H + CAPTION_H), (15, 15, 18))
     out.paste(im, (0, 0))
     c = ImageDraw.Draw(out)
+    if chase_path is not None:
+        if chase is not None:
+            out.paste(chase, (W, 0))
+        else:
+            c.text((W + CHASE_W // 2, H // 2), "third-person frame missing",
+                   fill=(90, 95, 115), font=_font(FONT, 30), anchor="mm")
+        # A seam and a label, because two 16:9 renders of the same room side by side are
+        # genuinely ambiguous about which one the model is answering on.
+        c.rectangle([W - 2, 0, W + 1, H], fill=(15, 15, 18))
+        for x, text, col in ((16, "what the model sees  (its own camera)", (150, 200, 255)),
+                             (W + 16, "third person  (not shown to the model)",
+                              (255, 190, 120))):
+            c.text((x, H - 18), text, fill=col, font=_font(FONT_B, 20), anchor="ls")
+
     y = H + 22
     for label, body, col, size in (
         ("instruction", rec.get("instruction", ""), (255, 255, 255), 25),
@@ -125,7 +179,7 @@ def draw_frame(rec: dict, menu_path: Path, arcs, index: int, total: int):
                  f"{rec.get('reply', '')!r}", (140, 145, 165), 21),
     ):
         c.text((22, y), label, fill=(105, 110, 130), font=_font(FONT_B, 17))
-        for line in _wrap(str(body), _font(FONT, size), W - 132 - 22)[:3]:
+        for line in _wrap(str(body), _font(FONT, size), total_w - 132 - 22)[:3]:
             c.text((132, y), line, fill=col, font=_font(FONT, size))
             y += size + 7
         y += 12
@@ -162,12 +216,19 @@ def build(run_dir: Path, out_dir: Path, hold: float, keep_frames: bool) -> Path 
 
     arcs = make_arcs()
     tmp = Path(tempfile.mkdtemp(prefix="qvla-vid-"))
+    # Decided once for the whole run, not per frame: see draw_frame on why the canvas
+    # cannot change size mid-video. Runs recorded before the chase camera was wired in
+    # have none, and still build exactly as they did.
+    has_chase = any(run_dir.glob("chase_*.jpg"))
     n = 0
     for i, rec in enumerate(recs):
         menu = run_dir / rec["menu"]
         if not menu.is_file():
             continue          # a decision whose image was cleaned up; skip, do not fake it
-        draw_frame(rec, menu, arcs, i, len(recs)).save(tmp / f"f{n:05d}.png")
+        # Paired on the filename rather than on a second index. Both are written from the
+        # same step number, so the two views cannot drift apart without the names saying so.
+        chase = run_dir / rec["menu"].replace("menu_", "chase_") if has_chase else None
+        draw_frame(rec, menu, arcs, i, len(recs), chase).save(tmp / f"f{n:05d}.png")
         n += 1
     if n == 0:
         print(f"  {run_dir.name}: {len(recs)} decisions but no menu images survived")

@@ -29,12 +29,19 @@ CONTROLLER="braking"
 ONLY=""
 FROM=""
 KEEP_GOING=1
+# Optional command run after every episode, as: $ON_EPISODE <episode> <controller>
+# <verdict>. It is what turns an unattended two-hour ladder into something you can
+# follow -- build the video, send the mail, whatever. Deliberately a hook and not
+# built in: none of that belongs in the thing whose job is to produce a trustworthy
+# number, and a hook that fails must never be able to change one.
+ON_EPISODE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --controller) CONTROLLER="$2"; shift 2 ;;
     --only)       ONLY="$2"; shift 2 ;;
     --from)       FROM="$2"; shift 2 ;;
     --stop-on-fail) KEEP_GOING=0; shift ;;
+    --on-episode) ON_EPISODE="$2"; shift 2 ;;
     -h|--help)    sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -136,6 +143,15 @@ for EP in "${EPISODES[@]}"; do
     tail -15 "$LOGDIR/run_${EP}_${CONTROLLER}.log"
     ERR=$((ERR+1))
     [ $KEEP_GOING -eq 0 ] && exit 1
+    VERDICT="CRASHED (rc=$RC)"
+  fi
+
+  # After the verdict is counted, so a broken hook cannot move the score. Errors are
+  # printed and swallowed for the same reason: an email that bounces at episode 4 must
+  # not end a ladder that still has nine episodes to run.
+  if [ -n "$ON_EPISODE" ]; then
+    "$ON_EPISODE" "$EP" "$CONTROLLER" "${VERDICT:-unknown}" \
+      || echo "!! on-episode hook failed for $EP (continuing)"
   fi
   echo
 done

@@ -167,6 +167,10 @@ class NavigationRunner:
         # watching. `chase_wanted` is set from the UI thread; the main thread acts on it.
         self.chase_jpeg: bytes | None = None
         self.chase_wanted = False
+        # Where this run's chase frames go, alongside the server's menus. Set per
+        # episode from /reset's answer; None means the server is not recording, so
+        # there is nothing to build a video out of and no reason to pay for the camera.
+        self.record_dir: Path | None = None
         self.chase_available: bool | None = None  # None = not tried yet
         self._chase: object | None = None
         self._preview_t = 0.0  # throttles the between-runs camera refresh
@@ -451,7 +455,21 @@ class NavigationRunner:
         controller.reset()
         # Clears the KV cache between episodes, and names the episode so the arc-menu
         # server files this run's menus and decisions under it.
-        self.policy.reset(run=ep.name)
+        reset_info = self.policy.reset(run=ep.name)
+
+        # Where the server is filing this run's menus and decisions. The chase frames go
+        # in the SAME directory, keyed on the same step number, so the video tool can
+        # pair "what the robot saw and chose" with "what it looked like from outside"
+        # without a second index that could drift out of step with the first.
+        # None whenever the server is not recording, which is also exactly when there is
+        # no video to build -- so no separate switch for this.
+        rec_dir = reset_info.get("run_dir") if isinstance(reset_info, dict) else None
+        self.record_dir = Path(rec_dir) if rec_dir else None
+        if self.record_dir is not None:
+            # Turning this on creates the camera, and once an Isaac Sim `Camera` exists
+            # Kit renders its render product every frame whether or not anything reads
+            # it -- so a run that is not being recorded must not pay for it.
+            self.set_chase_enabled(True)
 
         # Put the robot on the start line. This is now REQUIRED, not a convenience:
         # nav stages are built per environment, so the stage opens at whatever pose it
@@ -548,6 +566,19 @@ class NavigationRunner:
 
             # --- replan ---------------------------------------------------
             if step % ep.replan_every_steps == 0:
+                # Grabbed BEFORE the decision, so `chase_<step>.jpg` and
+                # `menu_<step>.jpg` are the same instant seen two ways rather than one
+                # frame apart. Best-effort: a missing third-person frame costs a panel
+                # in a video and must never cost a benchmark episode.
+                if self.record_dir is not None:
+                    try:
+                        self._update_chase()
+                        if self.chase_jpeg:
+                            (self.record_dir / f"chase_{step:08d}.jpg").write_bytes(
+                                self.chase_jpeg)
+                    except Exception as exc:
+                        print(f"[nav] chase capture failed at step {step}: {exc}",
+                              flush=True)
                 frame_path = self.camera.grab_to_file()
                 if frame_path is None:
                     # An empty render means the sensor pipeline is not up. Driving on

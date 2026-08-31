@@ -1,2 +1,8 @@
+# Run artifacts: every one of these is regenerable from a run and none is small.
+# Videos in particular are ~6 MB each and a full ladder makes thirteen of them.
 *.json
+*.log
+videos/
+logs/
+ladder_progress.log
 !.gitignore

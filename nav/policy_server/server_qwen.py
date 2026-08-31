@@ -127,6 +127,10 @@ _state: dict = {
     "think": os.environ.get("QVLA_THINK", "0") == "1",
 }
 _lock = threading.Lock()
+# Serialises GPU decode for `/raw` alone. `_lock` cannot do this job: it is held for
+# microseconds around `_state` updates while generation runs outside it, by design, so
+# that a background plan never blocks the control loop's status reads.
+_raw_gate = threading.Lock()
 
 
 class PredictRequest(BaseModel):
@@ -683,6 +687,68 @@ def reset() -> dict:
     with _lock:
         _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None)
     return {"ok": True}
+
+
+class RawRequest(BaseModel):
+    """Free-form generation against the loaded model. A probe endpoint, not a policy one.
+
+    It exists because the interesting question stopped being "what waypoints does the
+    model write" -- that channel is measured and dead -- and became "what can this model
+    answer about a picture". Asking that through `/predict` is impossible: `/predict` owns
+    the prompt, forces `<answer>(` as a prefill and runs the reply through a waypoint
+    parser. `/raw` hands the prompt over and returns the text.
+
+    Loading a second copy to avoid touching the server is not an option: the 27B FP8
+    weights hold 31.7 of GPU1's 32.6 GiB.
+    """
+
+    image_paths: list[str] = Field(default_factory=list)
+    system: str = ""
+    user: str
+    prefill: str = ""
+    max_new_tokens: int = 64
+    think: bool = False
+
+
+@app.post("/raw")
+def raw(req: RawRequest) -> dict:
+    """Generate freely. Refuses rather than racing a benchmark for the same GPU."""
+    if _state["model"] is None:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    missing = [p for p in req.image_paths if not Path(p).is_file()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"image paths not found: {missing[:3]}")
+    # `_lock` guards `_state`, not the GPU -- `_generation_worker` decodes outside it. Two
+    # concurrent `model.generate` calls on one FP8 model is not a race worth debugging
+    # later from a weird number, so decline while a plan is being generated.
+    with _lock:
+        if _state["gen_thread"] is not None:
+            raise HTTPException(status_code=409, detail="a plan generation is in flight")
+
+    from PIL import Image
+
+    proc, model = _state["proc"], _state["model"]
+    content: list[dict] = [{"type": "image", "image": p} for p in req.image_paths]
+    content.append({"type": "text", "text": req.user})
+    messages = ([{"role": "system", "content": req.system}] if req.system else []) + [
+        {"role": "user", "content": content}]
+    kwargs = {} if req.think else {"enable_thinking": False}
+    try:
+        text = proc.apply_chat_template(messages, add_generation_prompt=True,
+                                        tokenize=False, **kwargs)
+    except TypeError:
+        text = proc.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+
+    imgs = [Image.open(p).convert("RGB") for p in req.image_paths]
+    t0 = time.perf_counter()
+    with _raw_gate:
+        inputs = proc(text=[text + req.prefill], images=imgs or None,
+                      return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=req.max_new_tokens, **_SAMPLING)
+        gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
+                                skip_special_tokens=True)[0]
+    return {"text": req.prefill + gen, "latency_s": round(time.perf_counter() - t0, 3)}
 
 
 @app.post("/predict", response_model=PredictResponse)

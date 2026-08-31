@@ -1002,9 +1002,26 @@ that affect the *rest* of this repo:
   does both — but that it cannot convert a decision into coordinates, and cannot do it
   inside a control period even when it does. 22 s/plan against a 10 s horizon is 2.2× over
   budget, and raising the horizon to cover it means planning further ahead than the scene
-  stays valid. Untested and the obvious next step: `do_sample=False` is the suspect for the
-  mode collapse, and the code comment asserting "sampling buys nothing when the output is a
-  list of coordinates" was never measured. TIC-VLA itself samples at 0.7.
+  stays valid.
+- **Sampling breaks the SPEED collapse and does nothing for steering; the `+` sign bug is
+  real but is not the cause.** Two follow-ups, both worth recording because one confirmed a
+  suspicion and one killed an even better story. (1) `do_sample=False` was the suspect for
+  the mode collapse, and the comment asserting "sampling buys nothing when the output is a
+  list of coordinates" had never been measured. At `QVLA_TEMPERATURE=0.7` the five scenes
+  give four distinct speeds instead of one — so that comment was wrong — but `y` is still
+  exactly `0.00` in all 50 waypoints. Under sampling, chance alone should put mass
+  somewhere off zero. (2) `_NUM` was `-?\d+(?:\.\d+)?`: optional minus and **no plus**, so
+  `(0.32, +0.01)` failed the pair match, `parse_control_points` returned None, and the
+  runner saw no plan — indistinguishable from the model writing zeros. Since the prompt
+  says "make y negative to go right and positive to go LEFT", an explicit `+` on exactly
+  the turn recorded as impossible is what you would expect, and no earlier probe read the
+  RAW text. Fixed to `[-+]?`. **But it was not the cause**: with the fix in, at the original
+  greedy/no-think baseline, "Turn left." and "Turn right." both return raw
+  `(0.00, 0.00) ×10` with `parse_failures = 0`. The model really does write literal zeros.
+  Recorded this way round on purpose — the tempting version of this entry is "found the
+  one-sided steering bug", and checking cost one probe. Note also that "Turn right." no
+  longer produces the clean parabola the entry above reports: that was the 6-point/3.0 s
+  horizon, and at 10 points both directions are dead.
 - **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
   images.** Both measured off the completed `DynaNav_json.zip` by reading its central
   directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,

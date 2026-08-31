@@ -288,6 +288,16 @@ _THINK_TASK = (
 ANSWER_PREFIX = "<answer>" if _ARC_FORMAT == "arc" else "<answer>("
 
 
+# Read once, at import, so a benchmark run cannot change decoding halfway through and so
+# the value is visible in one place rather than at two call sites in `_generate`. Unset
+# means greedy, which stays the default: sampling is the experiment, not the baseline.
+_TEMPERATURE = float(os.environ.get("QVLA_TEMPERATURE", "0") or 0)
+_SAMPLING: dict = (
+    {"do_sample": True, "temperature": _TEMPERATURE, "top_p": 0.9}
+    if _TEMPERATURE > 0 else {"do_sample": False}
+)
+
+
 def _answer_tokens() -> int:
     """Decode budget for the coordinate list alone, derived from the control-point count.
 
@@ -375,7 +385,14 @@ def build_messages(req: PredictRequest, image_paths: list[str], think: bool) -> 
 # --------------------------------------------------------------------------------------
 # Parsing and densification
 # --------------------------------------------------------------------------------------
-_NUM = r"-?\d+(?:\.\d+)?"
+# `[-+]?`, not `-?`. An explicit plus is exactly what a model writes when the prompt draws
+# its attention to the sign -- and this one says "make y negative to go right and positive
+# to go LEFT", which invites `+0.15` for precisely the turn that was recorded as impossible.
+# `(0.32, +0.01)` failed the whole pair match, `parse_control_points` returned None, and the
+# runner saw no plan: the same all-zeros symptom as the model refusing to steer. Every probe
+# that concluded "it never emits a positive y" read that symptom, and none of them read the
+# raw text. `float("+0.15")` has always worked; only the regex disagreed.
+_NUM = r"[-+]?\d+(?:\.\d+)?"
 # The third component is optional and discarded. TIC-VLA's training format is
 # (x, y, theta) and theta there is literally atan2(y, x) of the same pair -- redundant --
 # so a model that emits one out of habit is not wrong, just verbose. Rejecting those
@@ -559,11 +576,14 @@ def _generate(messages: list[dict], image_paths: list[str], max_new: int) -> str
     imgs = [Image.open(p).convert("RGB") for p in image_paths]
     inputs = proc(text=[text + prefix], images=imgs, return_tensors="pt").to(model.device)
     with torch.no_grad():
-        # Greedy. TIC-VLA samples at temperature 0.7, but sampling buys nothing when the
-        # output is a list of coordinates, and nav/README.md already records that run-to-
-        # run variance on this stack comes from async cache timing rather than sampling.
-        # One less source of noise in a benchmark that is scored on 3 repeats.
-        out = model.generate(**inputs, max_new_tokens=max_new, do_sample=False)
+        # Greedy by default. The claim this comment used to make -- that sampling "buys
+        # nothing when the output is a list of coordinates" -- was never measured, and the
+        # evidence now points the other way: greedy decoding into a heavily templated
+        # answer collapses onto a clean arithmetic sequence, `(0.70, 0.00) … (7.00, 0.00)`,
+        # identical across five unrelated scenes and unmoved by the model's own reasoning
+        # that it should steer left. A collapsed mode is exactly what a temperature is for.
+        # QVLA_TEMPERATURE opts in so the question can be settled instead of asserted.
+        out = model.generate(**inputs, max_new_tokens=max_new, **_SAMPLING)
     gen = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
                             skip_special_tokens=True)[0]
     if not _state["think"]:
@@ -590,7 +610,7 @@ def _generate(messages: list[dict], image_paths: list[str], max_new: int) -> str
     closed = text + prefix + gen + "</think>\n" + ANSWER_PREFIX
     inputs = proc(text=[closed], images=imgs, return_tensors="pt").to(model.device)
     with torch.no_grad():
-        out = model.generate(**inputs, max_new_tokens=_answer_tokens(), do_sample=False)
+        out = model.generate(**inputs, max_new_tokens=_answer_tokens(), **_SAMPLING)
     answer = proc.batch_decode(out[:, inputs["input_ids"].shape[-1]:],
                                skip_special_tokens=True)[0]
     return prefix + gen + "</think>\n" + ANSWER_PREFIX + answer

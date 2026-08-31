@@ -1031,6 +1031,73 @@ that affect the *rest* of this repo:
   **Extract each zip then delete it.** Reading the central directory is the cheap way to
   learn this; a ratio guessed from "it's JSON, it'll compress" would have been badly wrong
   in the safe direction and "it's JPEG, it won't" wrong in the dangerous one.
+- **TIC-VLA obeys instructions in prose and ignores them in every number it emits —
+  including the VLM's own `<answer>`.** Measured because the robot kept driving through
+  "stop", "turn right", "turn left" and "go backward". The obvious hypothesis was that
+  understanding exists in the VLM and dies at the KV-cache interface to the action expert,
+  which would have made a text/action consistency loss the fix. **It is not that.** Hold
+  the scene, history and `robot_state` fixed and vary only the instruction, `/reset` before
+  every call (frames 600–603, our nav cache):
+
+  | instruction | expert @3 s | expert heading | VLM `<answer>` @3 s |
+  |---|---|---|---|
+  | Go straight ahead down the hallway. | (+1.68, +0.00) | +0.03° | **(+2.07, +0.00)** |
+  | Stop immediately. Do not move at all. | (+1.73, +0.02) | +0.55° | **(+2.07, +0.00)** |
+  | Turn right. | (+1.78, +0.01) | +0.31° | **(+2.07, +0.00)** |
+  | Turn left. | (+1.75, +0.01) | +0.27° | **(+2.07, +0.00)** |
+  | Turn hard right, 90 degrees, now. | (+1.82, −0.00) | −0.01° | **(+2.07, +0.00)** |
+  | Go backward. Reverse. | (+1.74, +0.02) | +0.53° | **(+2.07, +0.00)** |
+
+  The `<answer>` is bit-identical to two decimals across six contradictory commands, and
+  the two heads agree with each other to 0.0–0.6° of bearing and a 1.14–1.23× magnitude
+  ratio. So the interface is not where language dies: **both** numeric channels are deaf,
+  and a consistency loss between two channels that already agree to half a degree has
+  nothing to pull on. That closes the "birleştirelim / couple the heads" idea as stated —
+  the coupling already exists in effect.
+
+  The prose is the opposite. `<think>` tracks every command exactly: "I will hold position,
+  keep brakes engaged, monitor the doorway, and avoid rolling" for stop; "I have just
+  completed a gentle left turn" for left. The mechanism is visible in the tense — for
+  "Turn hard right, 90 degrees, now" it writes "I have **completed** the right turn and am
+  now moving straight", and for "Go backward. Reverse." it writes "...to start the backward
+  step. Next I will **move forward**." It converts the command into a past-tense narration
+  of the trajectory it was already going to take. That is exactly what §3.3 of the paper
+  built: instructions annotated by GPT-5 *given* the trajectory, so instruction and
+  trajectory never conflict in training and the learned relation is descriptive, not
+  imperative. Never trained as a command, so nothing to generalize — this is not weak
+  generalization.
+
+  Controls, because "it ignores language" is worthless without them:
+  - **Vision is not deaf on the same inputs.** Pin the instruction, vary the scene over 8
+    scenes: heading sd **52.95°** (range 153.4°), path-length sd 0.76 m (0.66–3.32 m).
+    Instruction axis on the same frames: heading sd **0.21°** (range 0.6°), length sd
+    0.034 m. The KV cache carries perception and drops language, on our own Isaac Sim
+    renders, which also answers the "these frames are OOD for SCAND/GND" objection.
+  - **Speed is the one channel where "stop" registers at all, and only sometimes.** With
+    four frames it does nothing: 1.91 m over 3 s against 1.98 m for "go straight", a 4%
+    cut, 0.64 m/s. With a *single* frame (`check_policy_sanity.py --frame nav_000600.jpg`)
+    it halves the plan, 1.05 m against 2.02 m — real, but 0.35 m/s is still driving, and
+    the heading spread stays 3.5°. So the honest statement is that "stop" is a weak speed
+    prior in one input regime and absent in the other, never a stop. Consistent with
+    Eq (5), where `r_speed` penalizes slow motion. Do not report "stop" as fully ignored;
+    that overstates a result that changes with the number of frames.
+  - **It is deterministic.** `check_policy_sanity.py --repeats 4` gives within-instruction
+    spread of exactly 0.000° — so **ignore that tool's `ratio: inf` PASS**, it is a
+    divide-by-zero, not evidence. The tool's docstring assumes `do_sample=True` from
+    `predict()`; `predict_async()` does not sample this way. Read its per-instruction
+    headings instead of its verdict.
+  - Pick the probe scene carefully: frames 150–153 plan +90°/0.84 m, a degenerate sideways
+    shuffle where nothing moves for any reason. The first instruction sweep ran there and
+    would have been an artifact; frames 600–603 (forward, 0.66 m/s) is the honest regime.
+- **TIC-VLA's `<answer>` is sometimes the literal `-100` padding sentinel** — 10 of 16
+  generations in one sweep, 0 of 8 in another, so it is input-dependent, not universal.
+  Cause is in the vendored code: `vlm_data.py:282` interpolates `guidance_waypoint` straight
+  into the answer string, and `policy_data.py:283` initialises that tensor to `-100` for
+  samples with no delayed frame or under 9 s of future. `policy_data.py:396` only *counts*
+  those as `invalid`, it never drops them, so `<answer>(-100.00, -100.00, -100.00), ...`
+  is a real SFT target string. The model learned to emit the CE `ignore_index` as text.
+  Any parser reading `<answer>` must reject `-100` explicitly rather than treat it as a
+  waypoint — as a coordinate it is 100 m behind and 100 m to the right.
 
 ## Next step
 

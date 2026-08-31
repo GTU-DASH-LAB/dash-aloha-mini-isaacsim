@@ -1082,13 +1082,57 @@ that affect the *rest* of this repo:
     Eq (5), where `r_speed` penalizes slow motion. Do not report "stop" as fully ignored;
     that overstates a result that changes with the number of frames.
   - **It is deterministic.** `check_policy_sanity.py --repeats 4` gives within-instruction
-    spread of exactly 0.000° — so **ignore that tool's `ratio: inf` PASS**, it is a
-    divide-by-zero, not evidence. The tool's docstring assumes `do_sample=True` from
-    `predict()`; `predict_async()` does not sample this way. Read its per-instruction
-    headings instead of its verdict.
+    spread of exactly 0.000°, and 6 unpatched generations of `predict()` were bit-identical
+    — so **ignore that tool's `ratio: inf` PASS**, it is a divide-by-zero, not evidence.
+    The cause is not that generation is disabled: `DynaNav/ticvla.py:584` and `:945` both
+    use `do_sample=True` with `temperature=0.1, top_p=0.1, top_k=10`, which is effectively
+    greedy for this model. Read the tool's per-instruction headings, not its verdict.
   - Pick the probe scene carefully: frames 150–153 plan +90°/0.84 m, a degenerate sideways
     shuffle where nothing moves for any reason. The first instruction sweep ran there and
     would have been an artifact; frames 600–603 (forward, 0.66 m/s) is the honest regime.
+- **Prompting has about ±9° of authority over TIC-VLA's action expert, and it saturates.**
+  This is the bound on every "better system prompt / skill / soft prompt" idea, measured
+  rather than argued, by `nav/tools/probe_cache_bandwidth.py`. The expert cannot be reached
+  by language directly — it cross-attends to last-layer KV values — so the probe patches
+  `vlm.chat` on the instance and writes the reasoning itself. That grants *more* control
+  than any prompt could have, since a prompt can only influence the text this sets exactly.
+
+  Noise floor first: 6 unpatched generations were bit-identical, heading sd **0.000°**.
+  Then, same scene, same instruction, only the reasoning replaced:
+
+  | injected reasoning | heading | endpoint @3 s |
+  |---|---|---|
+  | (real generation) | +0.66° | (+1.54, +0.02) |
+  | RIGHT, `y = −1.5` spelled out | **−7.62°** | (+0.94, −0.13) |
+  | LEFT, `y = +1.5` spelled out | +9.61° | (+1.12, +0.19) |
+  | STOP, `(0,0,0)` | +8.82° | (+0.21, +0.03) |
+  | REVERSE, `x = −1` | +9.38° | (+0.19, +0.03) |
+  | NONSENSE — a bechamel recipe, `(7.77, 7.77)` | +7.39° | (+1.25, +0.16) |
+  | EMPTY | +10.83° | (+0.20, +0.04) |
+
+  Read the controls, not the spread. Right-vs-left, two opposed meanings in near-identical
+  wording, is 17.2° apart; right-vs-bechamel, unrelated meaning in alien wording, is 15.0°
+  apart. Ratio **1.15** — so the words are worth roughly 2°. What the expert actually
+  tracks is the **numbers** inside `<answer>`: STOP (`x=0`) and REVERSE (`x<0`) both land
+  on the same ~0.20 m endpoint as EMPTY, while the recipe carrying `x=7.77` drives 1.25 m.
+  "Stop appears to work" is the cache degrading toward no-information, not obedience.
+
+  Holding the prose fixed and neutral and sweeping only the injected lateral value gives
+  the transfer function: output y is monotone in injected y over **8 of 9** points
+  (−0.239 → +0.241 for y ∈ [−6, +3]), gain **0.070** in [−3, 3] — **14× attenuation** —
+  and then it *reverses*: y = +6 steers +2.56°, less than y = +3's +9.04°. Best steering
+  anywhere in the sweep is **9.63°**.
+
+  So the authority ranking on this architecture is scene **153°** ≫ injected numbers
+  **±9°** ≫ words **~2°**. A turn is 90°. Prompting is a trim tab; it can bias lane
+  position and cannot command a turn. Do not spend effort on prompt engineering here —
+  and note this also rules out soft prompting, which is gradient training aimed at the
+  same ±9° channel.
+
+  Gotcha when reproducing: a real generation must run before any patched one. `vlm.chat`
+  sets `img_context_token_id` as a side effect and the cache-building forward pass reads
+  it; patching chat away on a cold model crashes in InternVL on `selected.sum()` with
+  `selected` still a bool.
 - **TIC-VLA's `<answer>` is sometimes the literal `-100` padding sentinel** — 10 of 16
   generations in one sweep, 0 of 8 in another, so it is input-dependent, not universal.
   Cause is in the vendored code: `vlm_data.py:282` interpolates `guidance_waypoint` straight

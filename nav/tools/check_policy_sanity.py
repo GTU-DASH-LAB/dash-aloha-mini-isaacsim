@@ -121,9 +121,10 @@ def main() -> int:
     )
     between = spread(list(per_instr_mean_heading.values()))
     # `inf` here is a divide-by-zero, not a result. TIC-VLA measured a within-instruction
-    # spread of exactly 0.000 deg over 4 repeats -- `predict_async()` does not sample the
-    # way the docstring above assumes `predict()` does -- and that turned a 0.6 deg spread
-    # across six contradictory commands into "PASS, well beyond sampling noise". The ratio
+    # spread of exactly 0.000 deg over 4 repeats: both entry points do sample, but at
+    # temperature 0.1 / top_p 0.1 / top_k 10 (DynaNav/ticvla.py:584, :945), which is
+    # effectively greedy -- and that turned a 0.6 deg spread across six contradictory
+    # commands into "PASS, well beyond sampling noise". The ratio
     # is only meaningful when there IS noise to be beyond, so when there is none, fall back
     # to judging the between-spread on its own scale.
     deterministic = within <= 1e-9

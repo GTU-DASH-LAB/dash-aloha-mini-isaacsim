@@ -33,6 +33,7 @@ it works when it does not. Callers pass their own permutation; the probe randomi
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -192,6 +193,87 @@ DESCRIBE_SIDED = (
     "object straight ahead of the robot within about 3 metres? Name it, or say the way "
     "ahead is open. Second: say which direction has the most open, walkable floor the "
     "robot could drive along -- far left, left, straight ahead, right, or far right.")
+
+# The two sentences above are verbatim what was measured; this is appended, not merged, so
+# the validated part of the question is still being asked in the same words.
+#
+# It exists because the first ladder failed in a way neither the probes nor I predicted.
+# Every episode ran the same shape: a clean approach closing 70-90% of the distance, then
+# the robot parking at 4-7 m and milling there for the rest of the run, travelling 1.6x to
+# 3.0x the straight-line distance and timing out just outside the 1.5 m threshold. Not too
+# slow -- a perfect run needed 0.19-0.30 m/s and it moved at 0.51-0.64. Not a missing stop
+# either: STOP was chosen on 3-20% of calls.
+#
+# The cause is in the menu's geometry. The shortest arc is 3 m and the plan runs 7 m, so
+# once the target is 3 m away EVERY option drives past it. There is no "go forward one
+# metre" to choose, only "drive 7 m" or "stop dead", and the robot oscillates between them.
+#
+# The fix is a metric channel, and this call is where it is cheapest: it already names
+# objects with distances at 6/6 ("a large red double door", "approximately 0.5 to 1 metre
+# away"). Asking how far the target is costs no extra call and no extra latency.
+#
+# Note what this does NOT do. The model still chooses direction only; the menu is unchanged
+# because the menu is what measured 100%. Distance comes from this sentence, not from a
+# choice, so it is an estimate the model was never scored on -- which is why it only scales
+# speed and never stops the robot. Stopping stays the model's own labelled decision.
+#
+# The trailing TARGET line is a parse anchor, not decoration. The first sentence already
+# reports distances -- "a wall approximately 0.5 to 1 metre away" -- so a regex looking for
+# metres anywhere in the reply reads the OBSTACLE's distance and calls it the target's,
+# which is the one confusion that would make the robot creep toward every wall it passes.
+# Asking for the number in a fixed place is cheaper and more reliable than any amount of
+# sentence-splitting on our side.
+DESCRIBE_TARGET = (
+    " Third: the robot has been told \"{instruction}\". Finish your answer with a line of "
+    "the form 'TARGET: <number> m' saying roughly how far away the place or object that "
+    "instruction names is, or exactly 'TARGET: not visible' if you cannot see it.")
+
+CRUISE_MPS = 0.7      # what the trained policy asks for on these episodes
+CREEP_MPS = 0.2       # slow enough that one replan period advances well under a metre
+SLOW_FROM_M = 4.0     # where the approach starts easing off
+
+# "3", "3.5 m", "0.5 to 1 metre", "2-3 meters". The optional second number is a range, and
+# the pair is kept so the caller can decide which end to believe.
+_TARGET_RE = re.compile(
+    r"TARGET\s*[:\-]?\s*(?:(not\s*visible|none|unknown)"
+    r"|(\d+(?:\.\d+)?)\s*(?:(?:to|-|–|and)\s*(\d+(?:\.\d+)?)\s*)?"
+    r"(?:m\b|met(?:re|er)s?\b)?)", re.IGNORECASE)
+
+
+def parse_target_distance(reply: str) -> float | None:
+    """Metres to the instruction's target, or None for 'cannot see it' / no answer.
+
+    None means "no estimate", and every caller must treat it as cruise, not as zero. The
+    model is not scored on this number -- there is no ground truth for it in the benchmark
+    -- so the failure that has to be cheap is the missing answer, not the wrong one.
+
+    A range collapses to its NEAR end. Slowing a metre early costs a second; braking a
+    metre late is the overshoot this whole channel exists to remove.
+    """
+    m = _TARGET_RE.search(reply)
+    if m is None or m.group(1):
+        return None
+    lo = float(m.group(2))
+    return min(lo, float(m.group(3))) if m.group(3) else lo
+
+
+def speed_for(target_m: float | None, cruise: float = CRUISE_MPS) -> float:
+    """Plan speed from the model's estimate of how far the target is.
+
+    Linear rather than a threshold, and floored rather than zeroed. A cliff would turn one
+    bad estimate into a stall, and a zero would duplicate the STOP label with a number the
+    model was never scored on. Ramping means a wrong estimate costs a slower approach,
+    which the next call undoes 3 s later, and the robot converges on the target instead of
+    flying past it and circling back.
+
+    `cruise` is a parameter and not a second reading of the module constant because the
+    server already owns that number as `QVLA_MENU_SPEED`. Two constants holding one value
+    is the failure mode this repo has hit three times -- each copy stayed plausible, each
+    produced a wrong number instead of an error.
+    """
+    if target_m is None:
+        return cruise
+    return float(min(cruise, max(CREEP_MPS, target_m / SLOW_FROM_M * cruise)))
 
 
 def select_system(stop_label: int) -> str:

@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -73,6 +74,17 @@ def heading(wp: np.ndarray) -> float:
     return math.degrees(math.atan2(wp[-1, 1], wp[-1, 0]))
 
 
+def _note_speed(note: str, default: float) -> float:
+    """The `@0.35m/s` the server stamps into its own reasoning string.
+
+    Read from the server rather than recomputed here on purpose. Deriving it from the arc
+    length would make the SHAPE check compare a number against itself and pass whatever
+    the server did, which is precisely the check this is supposed to be.
+    """
+    m = re.search(r"@([\d.]+)m/s", note or "")
+    return float(m.group(1)) if m else default
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frame-dir", default="/tmp/alohamini-nav-frames")
@@ -101,27 +113,37 @@ def main() -> int:
 
     fails: list[str] = []
     plans: dict[str, np.ndarray] = {}
+    notes: dict[str, str] = {}
     print(f"\nframe {args.frame}, one instruction at a time, /reset between each")
     for name, text in INSTRUCTIONS:
         call(base, "/reset", {})
         out = predict(base, frames, text)
         wp = np.asarray(out["waypoints"], dtype=float)
         plans[name] = wp
+        notes[name] = out.get("reasoning") or ""
         arc = float(np.sum(np.hypot(*np.diff(np.vstack([[0, 0], wp]), axis=0).T)))
-        note = (out.get("reasoning") or "").split("->")[-1].strip()
+        note = notes[name].split("->")[-1].strip()
         print(f"  {name:9} {len(wp):4d} wp  end=({wp[-1, 0]:+.2f},{wp[-1, 1]:+.2f})  "
               f"bearing {heading(wp):+7.1f} deg  arc {arc:.2f} m  "
               f"{out['latency_s']:5.2f}s  {note[:28]}")
 
-    # ---- SHAPE
+    # ---- SHAPE. Checked against the speed the server SAYS it used, not against the cruise
+    # value: since the distance channel went in, plan speed is set per call from the model's
+    # estimate of how far the instruction's target is, so a fixed 7.00 m would FAIL a
+    # correctly-working server the moment the model reports a near target on this frame.
+    # The cruise number still bounds it -- an estimate may only ever slow the robot down.
     wp = plans["straight"]
-    speed = info["menu_speed_mps"]
+    speed = _note_speed(notes["straight"], info["menu_speed_mps"])
     arc = float(np.sum(np.hypot(*np.diff(np.vstack([[0, 0], wp]), axis=0).T)))
     want = speed * len(wp) * 0.1
     if len(wp) != 100:
         fails.append(f"expected 100 waypoints, got {len(wp)}")
     if abs(arc - want) > 0.05:
         fails.append(f"arc length {arc:.2f} m, expected {want:.2f} m at {speed} m/s")
+    lo, hi = info.get("menu_creep_mps", speed), info["menu_speed_mps"]
+    if not lo - 1e-6 <= speed <= hi + 1e-6:
+        fails.append(f"plan speed {speed:.2f} m/s is outside [{lo}, {hi}] -- the distance "
+                     f"channel may only slow the robot, never speed it past cruise")
 
     # ---- STEERING. The comparison that matters, stated in the same units as the failure
     # it is checking for: TIC-VLA's expert moved the plan 0.6 deg across six instructions.

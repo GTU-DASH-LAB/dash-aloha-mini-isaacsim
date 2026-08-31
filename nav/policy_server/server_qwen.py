@@ -67,7 +67,8 @@ from scipy.interpolate import PchipInterpolator
 # but not `nav/`, where the shared code lives. The `menu` format needs it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
-    DESCRIBE_SIDED, FREE_SPACE_SYSTEM, make_arcs, plan_from_kappa, render_menu,
+    CREEP_MPS, DESCRIBE_SIDED, DESCRIBE_TARGET, FREE_SPACE_SYSTEM, make_arcs,
+    parse_target_distance, plan_from_kappa, render_menu, speed_for,
     select_system,
 )
 
@@ -729,8 +730,22 @@ def menu_plan(image_paths: list[str], instruction: str,
     # AND name the open side, 0%. The middle number is the informative one -- a description
     # that says "a wall about 1 m away" reports that the way is blocked and never says
     # which way is open, so the second call turns and guesses where.
-    seen, _ = free_generate([newest], FREE_SPACE_SYSTEM, DESCRIBE_SIDED, 80)
+    # Call 1 also carries the DISTANCE channel now, which is why the instruction reaches it.
+    # The menu cannot supply one: its shortest arc is 3 m and the plan runs 7 m, so with the
+    # target 3 m off EVERY label overshoots it and the model's only options are "drive 7 m"
+    # or "stop dead". The first ladder failed exactly there -- a clean approach closing
+    # 70-90% of the gap, then milling at 4-7 m for the rest of the episode.
+    #
+    # Say plainly what this costs: DESCRIBE_SIDED's numbers (100% / 92% / 90% / 83%, and
+    # 6/6 on naming obstacles with a distance) were measured WITHOUT this sentence and
+    # without the instruction in front of the model. The two measured sentences are asked
+    # in the same words, but the question they sit in is no longer the question that was
+    # scored, and the arc choices below could move. The re-run is the check.
+    describe = DESCRIBE_SIDED + DESCRIBE_TARGET.format(instruction=instruction)
+    seen, _ = free_generate([newest], FREE_SPACE_SYSTEM, describe, 110)
     seen = seen.strip().replace("\n", " ")
+    target_m = parse_target_distance(seen)
+    speed = speed_for(target_m, MENU_SPEED_MPS)
 
     user = (f"What the robot can see ahead of it: {seen}\n\n"
             f"Navigation instruction: {instruction}\n\n"
@@ -750,15 +765,21 @@ def menu_plan(image_paths: list[str], instruction: str,
         plan, kappa, note = None, None, note + " -> unparsed"
     else:
         kappa = by_label[choice]
-        plan = plan_from_kappa(kappa, MENU_SPEED_MPS, N_WAYPOINTS, DT)
-        note = note + f" -> kappa {kappa:+.2f}"
+        # The distance only scales the plan; the SHAPE is still the label the model chose.
+        # Steering stays a choice off the drawn menu -- the thing that was measured -- and
+        # the estimate, which was not, can do nothing worse than pick the wrong speed.
+        plan = plan_from_kappa(kappa, speed, N_WAYPOINTS, DT)
+        note = note + (f" -> kappa {kappa:+.2f} @{speed:.2f}m/s"
+                       + (f" (target {target_m:.1f} m)" if target_m is not None else ""))
 
-    _record(step, menu, instruction, labels, choice, kappa, seen, reply.strip())
+    _record(step, menu, instruction, labels, choice, kappa, seen, reply.strip(),
+            target_m, speed)
     return plan, note
 
 
 def _record(step: int | None, menu: str, instruction: str, labels: list[int],
-            choice: int | None, kappa: float | None, seen: str, reply: str) -> None:
+            choice: int | None, kappa: float | None, seen: str, reply: str,
+            target_m: float | None = None, speed: float = MENU_SPEED_MPS) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -777,6 +798,10 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 "step": step, "menu": Path(menu).name, "instruction": instruction,
                 "labels": labels, "choice": choice, "kappa": kappa,
                 "stop": choice == _STOP_LABEL, "free_space": seen, "reply": reply,
+                # Kept apart on purpose: `target_m` is what the model SAID and `speed` is
+                # what we DID with it. Storing only the speed would make a bad estimate and
+                # a bad mapping look identical afterwards, and they have different fixes.
+                "target_m": target_m, "speed_mps": speed,
             }) + "\n")
     except Exception as exc:
         print(f"[qvla-server] could not record decision: {exc}", flush=True)
@@ -839,10 +864,11 @@ def health() -> dict:
                      else "qvla-direct (no action expert)"),
             # Reported so a probe can never misattribute a result to the wrong format.
             # The three are not comparable: `arc` cannot express an S-curve at all, and
-            # `menu` cannot express a speed.
+            # `menu` expresses speed only as a scalar the describe call estimates -- the
+            # drawn choice is pure geometry, so there is no braking WITHIN a menu plan.
             "format": _ARC_FORMAT,
-            **({"menu_speed_mps": MENU_SPEED_MPS, "stop_label": _STOP_LABEL}
-               if _ARC_FORMAT == "menu" else {}),
+            **({"menu_speed_mps": MENU_SPEED_MPS, "menu_creep_mps": CREEP_MPS,
+                "stop_label": _STOP_LABEL} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],
             "generations": _state["generations"],

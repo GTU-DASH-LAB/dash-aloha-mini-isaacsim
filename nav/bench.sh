@@ -78,6 +78,28 @@ echo "ladder: ${#EPISODES[@]} episodes, controller=$CONTROLLER"
 printf '  %s\n' "${EPISODES[@]}"
 echo
 
+# WHICH BRAIN IS ANSWERING, printed before the first episode rather than inferred from
+# thirteen results afterwards. `run.sh` defaults to port 8765 and starts TIC-VLA there
+# when nothing answers, so forgetting `NAV_POLICY_PORT=8766` does not run the arc-menu
+# ladder against the wrong policy -- on this machine it cannot even do that, because
+# Qwen already holds GPU1 and TIC-VLA dies of OOM. It ran five episodes into that wall
+# in twenty seconds. Loud and immediate either way; this makes it loud in one line and
+# also states the thinking level, which no result file records for a run that crashes.
+BENCH_PORT="${NAV_POLICY_PORT:-8765}"
+BENCH_HEALTH="$(curl -sf --max-time 10 "http://127.0.0.1:${BENCH_PORT}/health" || true)"
+if [ -n "$BENCH_HEALTH" ]; then
+  echo "policy on :${BENCH_PORT} -- $(printf '%s' "$BENCH_HEALTH" | python3 -c '
+import json, sys
+h = json.load(sys.stdin)
+print("  ".join(f"{k}={h[k]}" for k in
+                ("model", "format", "think_level", "horizon_s", "menu_speed_mps")
+                if k in h))')"
+else
+  echo "policy on :${BENCH_PORT} -- NOTHING ANSWERING; run.sh will start its default"
+  echo "  (TIC-VLA). If you meant the Qwen server, set NAV_POLICY_PORT and re-run."
+fi
+echo
+
 PASS=0; FAIL=0; ERR=0
 for EP in "${EPISODES[@]}"; do
   echo "================================================================"

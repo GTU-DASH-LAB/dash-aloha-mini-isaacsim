@@ -1241,6 +1241,34 @@ that affect the *rest* of this repo:
   (2.23 m → 8.10 m final), the long-documented consequence of DynaNav terminating at 1.5 m
   so their controller is never asked to stop. Only the STOP-means-blocked pair above is a
   new problem.
+- **`warehouse_aisle6`'s path length went 20.9 m → 103.8 m and that is NOT a regression —
+  it is the STOP-freeze lifting and a second failure appearing underneath.** Recorded
+  because a 5× worse-looking number came from a fix working, and reading it as a
+  regression would have argued for reverting one. Both runs make ~245 decisions; only the
+  answers differ.
+
+  | | STOP answered | zero-motion gaps | yaw swept | path | closest |
+  |---|---|---|---|---|---|
+  | before | **205/248 (83%)** | 28% | −50° | 20.9 m | 18.94 m |
+  | after | **18/243 (7%)** | 1% | **−506°** | 103.8 m | 18.07 m |
+
+  The before-run drove 20.9 m and then **parked**: from trace sample 91 of 502 onward it
+  never leaves a 0.5 m circle, covering **0.45 m in the last 82% of the episode**, while
+  its own describe call read *"a large grey brick wall is directly ahead… the most open,
+  walkable floor is to the right. TARGET: not visible"* — the STOP-means-blocked
+  pathology, and it cannot self-clear because arrival latches. Its 20.9 m is not a tidy
+  path, it is a short one plus a long freeze, so **path length was never comparable
+  between these two runs.** Closest approach is, and it barely moved: 18.94 → 18.07.
+
+  What is underneath is new and is its own bug: the after-run chooses **straight on 210 of
+  222 non-STOP decisions** with mean κ −0.028, and a persistent small right bias in a 34 m
+  open warehouse integrates into an **orbit** — 1.40 full clockwise turns, returning to
+  within **0.04 m** of a point it had visited 355 samples earlier. It is not lost in the
+  sense of thrashing; it is driving a smooth 30 m circle because `TARGET: not visible` on
+  142 of 243 frames leaves nothing to correct against. This episode is the only one on the
+  ladder long enough and open enough for a per-decision bias that small to close a loop.
+  **A near-zero mean curvature is not the same as going straight** — over 100 m it is a
+  circle, and the metric that shows it is cumulative yaw, not mean κ.
 - **Record both cameras or the video cannot answer the question you will ask it.** The menu
   frame shows what the model looked at and what it chose; only a third-person view shows
   whether the robot then went there. A scraped wall, a pivot in place and a reverse out of

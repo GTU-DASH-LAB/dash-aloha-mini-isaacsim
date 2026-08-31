@@ -93,12 +93,19 @@ class CollisionGuard:
         yaw: float,
         vx: float,
         vy: float,
+        count: bool = True,
     ) -> GuardResult:
         """Sample toward the direction of TRAVEL, which is not necessarily yaw.
 
         On the holonomic controller the robot can move sideways while facing
         elsewhere, so casting along the heading would guard the wrong direction
         entirely -- it would happily strafe into a wall it was not looking at.
+
+        `count=False` runs the same fan without touching `interventions`, for callers
+        asking "what is over there?" rather than "clip this velocity" -- see
+        `stuck_recovery.py`, which probes clearance every step. Counting those would
+        add hundreds of interventions to a run that never had one, and that number is
+        read as evidence about how cluttered the route was.
         """
         speed = math.hypot(vx, vy)
         if speed < 1e-6:
@@ -148,7 +155,8 @@ class CollisionGuard:
             return GuardResult(False, nearest, vx * scale, vy * scale, nearest_prim, scale)
 
         # --- blocked: keep whatever motion is not INTO an obstacle -----------------
-        self.interventions += 1
+        if count:
+            self.interventions += 1
 
         # Work in world for the projection, because the ray bearings are world angles.
         wx = speed * math.cos(travel)

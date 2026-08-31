@@ -179,6 +179,11 @@ class EpisodeResult:
     # so every run recorded before this field existed still loads; "" means unknown, which
     # is the truth about those and must not be read as any particular policy.
     policy: str = ""
+    # How many times the robot had to back out of a wedge, and how many of those found
+    # the way behind blocked too. Defaulted so runs recorded before the recovery
+    # existed still load; 0 on those means "not measured", not "never happened".
+    recoveries: int = 0
+    recoveries_blocked_behind: int = 0
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)

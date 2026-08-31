@@ -65,6 +65,7 @@ from episode import (  # noqa: E402
 )
 from frame_history import FrameHistory  # noqa: E402
 from guidance import guidance_heading, parse_guidance  # noqa: E402
+from stuck_recovery import StuckRecovery  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
@@ -174,6 +175,7 @@ class NavigationRunner:
         self.art = None
         self.camera = None
         self.guard = None
+        self.recovery = None
         self.base = None
         self._abort = threading.Event()
         self._reset = threading.Event()
@@ -412,6 +414,7 @@ class NavigationRunner:
         self.camera = NavCameraSource(scratch_dir=self.scratch_dir)
         self.camera.warmup(self.kit)
         self.guard = CollisionGuard()
+        self.recovery = StuckRecovery(self.guard)
 
         self._set(state="ready", message="waiting for policy server")
         info = self.policy.wait_until_ready()
@@ -462,6 +465,7 @@ class NavigationRunner:
 
         self.base.sync_from_sim()
         self.guard.interventions = 0
+        self.recovery.reset()
 
         start_pos = self.base.position()
         initial_distance = math.dist(start_pos[:2], ep.goal[:2])
@@ -657,8 +661,14 @@ class NavigationRunner:
                     reasoning=(out.get("reasoning") or "")[:600],
                 )
 
-            # --- guard + step ---------------------------------------------
-            guard = self.guard.check(position, self.base.yaw, command.vx, command.vy)
+            # --- recover, then guard, then step ----------------------------
+            # Recovery runs BEFORE the guard, and the guard then sees the reversing
+            # command: `check` casts along the direction of travel, so a negative vx
+            # aims the fan backwards and the manoeuvre is protected by the same code
+            # that protects driving forward.
+            drive, recovering = self.recovery.update(
+                sim_time, position, self.base.yaw, command)
+            guard = self.guard.check(position, self.base.yaw, drive.vx, drive.vy)
             self.base.apply(
                 # Already guarded, and directionally: what survives is the part of the
                 # command that was not driving into anything.
@@ -666,7 +676,10 @@ class NavigationRunner:
                 guard.vy,
                 # Let the robot keep turning when the guard stops translation --
                 # otherwise it wedges against a wall with no way to face away from it.
-                command.omega,
+                # `drive.omega` rather than `command.omega`: while reversing it is 0,
+                # and turning mid-reverse would take the robot out of the footprint it
+                # just vacated, which is the only space this manoeuvre knows is free.
+                drive.omega,
                 PHYSICS_DT,
             )
             self.kit.update()
@@ -706,6 +719,8 @@ class NavigationRunner:
                     wall_s=round(wall_time, 1),
                     guard_interventions=self.guard.interventions,
                     message=(
+                        f"backing out of a wedge ({self.recovery.engagements})"
+                        if recovering else
                         f"blocked by {guard.hit_prim.split('/')[-1]} at {guard.distance_m:.2f} m"
                         if guard.blocked else ""
                     ),
@@ -728,6 +743,8 @@ class NavigationRunner:
             policy_calls=policy_calls,
             path_length_m=path_length,
             guard_interventions=self.guard.interventions,
+            recoveries=self.recovery.engagements,
+            recoveries_blocked_behind=self.recovery.blocked_behind,
             timed_out=timed_out,
             controller=self.controller_name,
             policy=self.policy_label(),

@@ -28,8 +28,27 @@ the model being able to correct for it.
 This was synchronous until the async switch, and the zeros were correct then: a frozen
 robot really has moved nowhere. If you ever put `predict` back, put the zeros back too.
 
+**And that is exactly what `NAV_PLAN_PERIOD_S` does.** Asynchronous inference is the
+right trade only while a generation is cheap against the plan it is spending. It stops
+being right the moment thinking gets expensive, because "the robot keeps driving" and
+"the robot drives blind" are the same sentence: the blind window IS the generation. The
+13-episode ladder measured the cost and it is not subtle -- 7/13 with no thinking, 2/13
+with a moderate budget, 2/13 with a large one, guard interventions rising from a few
+hundred to over two thousand. That ladder did not measure whether more thinking helps.
+It measured how far a robot travels with its eyes shut, which is proportional to how
+long it thinks, and it therefore made the levels un-comparable by construction.
+
+Set `NAV_PLAN_PERIOD_S` and the loop becomes classical sense -> plan -> act: drive the
+current plan for exactly that many SIMULATED seconds, then hold still until a plan built
+on the CURRENT frame arrives. The simulation genuinely freezes while it waits, because
+the loop reaches `kit.update()` only after the call returns -- so no physics steps, no
+rendering, no sim time, and the compensation zeros above become literally true again.
+Thinking then costs wall-clock instead of costing collisions, which is the only regime in
+which "does it decide better when it thinks longer?" is a question about deciding.
+
 Usage:
     nav/run.sh --episode warehouse --controller braking
+    NAV_PLAN_PERIOD_S=3.0 nav/run.sh --episode warehouse    # stop-and-think every 3 s
 """
 
 from __future__ import annotations
@@ -70,6 +89,78 @@ from stuck_recovery import StuckRecovery  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
+
+# Fixed planning period in SIMULATED seconds, or 0.0 for the paper's asynchronous mode.
+#
+# When set, this replaces the episode's own `replan_every_steps` and switches the loop to
+# sense -> plan -> act: the robot drives one plan for exactly this long, then stops dead
+# and waits for a plan generated from the frame it is standing on. See the module
+# docstring for why -- in one line, an asynchronous loop drives blind for the length of a
+# generation, so raising the thinking budget raises the distance travelled blind, and the
+# thinking levels stop being comparable.
+#
+# The period is the ACTING window, so it must not exceed the plan horizon or the robot
+# runs off the end of its own plan before the next decision: `HORIZON_S` is 10.0 at
+# medium and 16.0 at high, against periods of 3.0 and 1.0 here, so there is a wide margin.
+# `check_plan_period()` enforces it rather than trusting the arithmetic to stay true.
+PLAN_PERIOD_S = float(os.environ.get("NAV_PLAN_PERIOD_S", "") or 0.0)
+
+
+def plan_period_steps(episode_default: int) -> int:
+    """Physics steps between decisions: the fixed period if set, else the episode's own.
+
+    Kept as a function so the two places that need it (the chase-camera pairing and the
+    replan test) cannot drift apart -- they must fire on the same steps or the recorded
+    `chase_<step>.jpg` stops being the third-person twin of `menu_<step>.jpg`.
+    """
+    if PLAN_PERIOD_S > 0:
+        return max(1, round(PLAN_PERIOD_S / PHYSICS_DT))
+    return episode_default
+
+
+def check_plan_period(policy, replan_steps: int, synchronous: bool) -> None:
+    """Print the timing contract, and refuse a period the plan cannot cover.
+
+    Printed and not merely asserted because the failure this guards against is silent:
+    a period longer than the plan horizon leaves the robot driving off the end of its
+    own trajectory for the remainder of every window, which looks like a policy that
+    stops steering rather than like a misconfiguration. And a run that was MEANT to be
+    synchronous but was launched without the variable produces a complete, plausible set
+    of numbers measured under the other regime entirely -- the same class of mistake as
+    scoring a ladder against a server still holding the previous thinking level.
+    """
+    period_s = replan_steps * PHYSICS_DT
+    if not synchronous:
+        print(f"[nav] planning: ASYNCHRONOUS, every {period_s:.2f} s sim "
+              f"({replan_steps} steps); the robot drives the previous plan while the "
+              f"model thinks", flush=True)
+        return
+    print(f"[nav] planning: SYNCHRONOUS, every {period_s:.2f} s sim ({replan_steps} "
+          f"steps); the robot STOPS and waits for each decision", flush=True)
+    # The horizon lives in the server, so ask it rather than assuming the pairing here.
+    # An unreachable or older server is not fatal -- it just cannot answer, and a run
+    # that skips the check is better than one that refuses to start over a status read.
+    horizon = None
+    try:
+        horizon = float(policy.health()["horizon_s"])
+    except Exception:
+        # Includes the TIC-VLA server, which serves the same route with a different
+        # schema and has no `horizon_s` at all. Never subscript a payload this process
+        # does not own -- doing exactly that once turned a whole 13-episode ladder into
+        # a KeyError inside setup() that scored as thirteen ordinary failures.
+        pass
+    if horizon is None:
+        print("[nav] could not read horizon_s from the policy server; period unchecked",
+              flush=True)
+    elif period_s > horizon:
+        raise SystemExit(
+            f"[nav] plan period {period_s:.2f} s exceeds the policy's {horizon:.2f} s "
+            f"horizon -- the robot would run off the end of every plan before the next "
+            f"decision. Lower NAV_PLAN_PERIOD_S or raise the thinking level's horizon.")
+    else:
+        print(f"[nav] plan horizon {horizon:.1f} s covers the {period_s:.2f} s period",
+              flush=True)
+
 
 # Which of the three guidance horizons (3/6/9 s) gets logged in `plans`. Logged for
 # every controller even though only `guided` steers on it, so the two channels can be
@@ -579,6 +670,16 @@ class NavigationRunner:
         # would make the reported delay grow without bound.
         gen_starts: list[tuple[int, float, float, float]] = []
 
+        # Physics steps between decisions, and whether the robot waits for each one. In
+        # synchronous mode the wait is a real stop -- `kit.update()` is not reached while
+        # the HTTP call blocks -- so `think_wall_s` accumulates time the robot spent
+        # standing still, which is the price this mode pays and therefore the number that
+        # has to be reported next to its result.
+        replan_steps = plan_period_steps(ep.replan_every_steps)
+        synchronous = PLAN_PERIOD_S > 0
+        think_wall_s = 0.0
+        check_plan_period(self.policy, replan_steps, synchronous)
+
         while True:
             # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long the
             # robot has to do the task, not how long the hardware takes to decide. That
@@ -601,7 +702,7 @@ class NavigationRunner:
             # `replan_every_steps` is not guaranteed to be a multiple of `CHASE_EVERY` --
             # tune either one and the twins would start going missing, silently, on exactly
             # the frames that carry the reasoning text.
-            if step % CHASE_EVERY == 0 or step % ep.replan_every_steps == 0:
+            if step % CHASE_EVERY == 0 or step % replan_steps == 0:
                 self._capture_chase(step)
 
             if distance <= ep.success_threshold_m:
@@ -615,7 +716,7 @@ class NavigationRunner:
                 break
 
             # --- replan ---------------------------------------------------
-            if step % ep.replan_every_steps == 0:
+            if step % replan_steps == 0:
                 # The third-person twin of this decision was grabbed at the top of the
                 # loop, a few lines and no simulation steps ago, so `chase_<step>.jpg` and
                 # `menu_<step>.jpg` are still the same instant seen two ways.
@@ -639,7 +740,16 @@ class NavigationRunner:
                 # form of DynaNav's `R_start.T @ delta_world`
                 # (nova_carter_test_ticvla.py:815-822); we have a yaw where they have a
                 # quaternion, so the matrix collapses to a sin/cos pair.
-                if gen_starts:
+                if synchronous:
+                    # Nothing to compensate for. The call below blocks, and the loop does
+                    # not reach `kit.update()` until it returns, so the simulation is
+                    # frozen for the whole generation: no steps, no sim time, and a robot
+                    # that has not moved a millimetre since the frame it is being asked
+                    # about. These zeros are not a simplification, they are the
+                    # measurement -- exactly as this file's header says of the
+                    # synchronous era that preceded the async switch.
+                    time_delay, dx, dy = 0.0, 0.0, 0.0
+                elif gen_starts:
                     ref_step, ref_x, ref_y, ref_yaw = gen_starts[0]
                     time_delay = (step - ref_step) * PHYSICS_DT
                     dxw = position[0] - ref_x
@@ -699,6 +809,12 @@ class NavigationRunner:
                         # here the model cannot know that the last four decisions
                         # achieved nothing. Measured where the position is known.
                         stalled_s=self.recovery.stalled_s(sim_time, position),
+                        # Do not hand back the cached plan: block until one exists for
+                        # the frame grabbed a few lines above. The robot is already
+                        # stopped -- this call is what stops it -- so the wait buys the
+                        # guarantee that no metre of this episode is driven on thinking
+                        # that predates the view it was driven through.
+                        wait_fresh=synchronous,
                     )
                 except PolicyServerError as exc:
                     self._set(state="error", message=str(exc))
@@ -722,6 +838,12 @@ class NavigationRunner:
                 guidance = parse_guidance(out.get("reasoning"))
                 command = controller(waypoints, guidance)
                 policy_calls += 1
+                # In synchronous mode this is time the robot spent stopped. It is the
+                # entire price of the mode, and it does NOT appear in `elapsed_s`,
+                # because sim time does not advance while the call blocks -- so without
+                # this field a synchronous run and an asynchronous one look equally cheap
+                # and the trade being made is invisible in the results file.
+                think_wall_s += float(out.get("latency_s") or 0.0)
 
                 # Record what was ASKED for, next to where the robot was, so the two
                 # can be compared afterwards. Both controllers steer at the same
@@ -889,6 +1011,11 @@ class NavigationRunner:
             timed_out=timed_out,
             controller=self.controller_name,
             policy=self.policy_label(),
+            plan_period_s=(replan_steps * PHYSICS_DT) if synchronous else 0.0,
+            think_wall_s=round(think_wall_s, 1),
+            base_z_step_max_m=round(self.base.z_step_max, 6),
+            base_z_span_m=(round(self.base.z_max - self.base.z_min, 6)
+                           if self.base.z_max > self.base.z_min else 0.0),
             trace=trace,
             plans=plans,
         )

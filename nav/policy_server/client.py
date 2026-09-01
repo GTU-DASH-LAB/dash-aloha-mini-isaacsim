@@ -115,6 +115,7 @@ class PolicyClient:
         recovered: bool = False,
         recovery_kind: str = "",
         stalled_s: float = 0.0,
+        wait_fresh: bool = False,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -139,10 +140,17 @@ class PolicyClient:
         ahead) -- and `stalled_s` is how long the robot has been making no progress, which
         no single frame can show.
 
-        All three are ignored by `server.py`, so they are safe to send either way. That is
+        `wait_fresh` asks the server to block until it has a plan built on THESE images,
+        instead of returning the cached one. The caller is expected to have stopped the
+        robot first -- that is the whole point of it, and returning a fresh plan to a robot
+        that kept driving would buy nothing. See run_navigation.py's NAV_PLAN_PERIOD_S.
+
+        All four are ignored by `server.py`, so they are safe to send either way. That is
         not incidental: the runner talks to whichever server is listening, and a field that
         broke the TIC-VLA baseline would make the two policies un-comparable on the same
-        ladder.
+        ladder. `wait_fresh` is the one to watch there -- TIC-VLA's own loop is genuinely
+        asynchronous by design, so sending it True does not make that baseline synchronous
+        and a run must not be labelled as though it had.
         """
         return self._post(
             "/predict",
@@ -158,5 +166,6 @@ class PolicyClient:
                 "recovered": recovered,
                 "recovery_kind": recovery_kind,
                 "stalled_s": stalled_s,
+                "wait_fresh": wait_fresh,
             },
         )

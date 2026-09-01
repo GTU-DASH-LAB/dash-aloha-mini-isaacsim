@@ -198,6 +198,13 @@ _state: dict = {
     # one run landing in the first step of the next.
     "epoch": 0,
     "stale_discards": 0,
+    # Calls served in SYNCHRONOUS mode (`wait_fresh`), and how many of those returned
+    # with the generation still decoding. A synchronous timeout is not a slow call: the
+    # caller is holding the robot still, so it is a decision the robot stood there and
+    # did not get. Counted apart from `parse_failures` because the fix is different --
+    # a timeout means QVLA_GEN_TIMEOUT_S is under this thinking level's real cost.
+    "sync_calls": 0,
+    "sync_timeouts": 0,
     # THE HISTORY CHANNEL: the last few directions actually driven, as words. Bounded, and
     # bounded tightly -- six decisions is about twenty seconds, which is the span over
     # which "I keep choosing straight and nothing is happening" is a fact rather than a
@@ -256,6 +263,21 @@ class PredictRequest(BaseModel):
     # anything. One frame of a stationary robot is the same picture as one frame of a
     # moving one.
     stalled_s: float = 0.0
+    # Block until a plan generated from THESE images exists, instead of serving the
+    # cached one and regenerating behind it.
+    #
+    # False is TIC-VLA's asynchronous contract and stays the default: the fast half of a
+    # slow/fast split must never wait on the slow half. It is the right trade only while
+    # a generation is short against the plan it is spending -- the robot drives the old
+    # plan meanwhile, which is to say it drives BLIND for the length of a generation.
+    # Raise the thinking budget and that blind window grows with it, which is how a
+    # ladder can score 7/13 with no thinking and 2/13 with a lot of it while measuring
+    # nothing about the quality of thought.
+    #
+    # True inverts the trade: the caller stops the robot and waits. Costs wall-clock,
+    # buys the guarantee that every metre is driven on a plan written for the frame the
+    # robot was actually standing on. See run_navigation.py's NAV_PLAN_PERIOD_S.
+    wait_fresh: bool = False
 
 
 class PredictResponse(BaseModel):
@@ -1171,6 +1193,13 @@ def health() -> dict:
             # away. A few per run is the recovery working; a lot means the loop is
             # discarding faster than the model can generate and is driving on nothing.
             "stale_discards": _state["stale_discards"],
+            # How many decisions were taken with the robot stopped and waiting, and how
+            # many of those the model did not answer in time. `sync_calls` at 0 next to a
+            # non-zero `predictions` is the tell that a run believed to be synchronous was
+            # in fact driving blind -- the same class of silent mismatch as a ladder
+            # scored against a server still holding the previous thinking level.
+            "sync_calls": _state["sync_calls"],
+            "sync_timeouts": _state["sync_timeouts"],
             "empty_plans": _state["empty_plans"],
             "last_reasoning": _state["reasoning"],
             "has_plan": _state["plan"] is not None,
@@ -1335,7 +1364,8 @@ def predict(req: PredictRequest) -> PredictResponse:
         busy = _state["gen_thread"] is not None
         have_plan = _state["plan"] is not None
 
-    if not busy:
+    def _spawn() -> threading.Thread:
+        """Start a generation on this request's images and register it as the live one."""
         with _lock:
             epoch = _state["epoch"]
         th = threading.Thread(
@@ -1345,8 +1375,39 @@ def predict(req: PredictRequest) -> PredictResponse:
                   req.stalled_s), daemon=True)
         with _lock:
             _state["gen_thread"] = th
-        started_step = req.current_step
         th.start()
+        return th
+
+    if req.wait_fresh:
+        # --- SYNCHRONOUS: sense -> plan -> act, one decision per call ------------------
+        # The caller has stopped the robot and is holding it still until this returns, so
+        # the cached plan is not merely stale here, it is the worst possible answer: it
+        # describes a frame the robot has already driven away from, and serving it would
+        # spend a full stop on thinking that is a whole planning period out of date.
+        if busy:
+            # A generation from an EARLIER frame is still decoding. Wait it out rather
+            # than racing it -- two concurrent decodes on one card is how 28.75 GiB of
+            # FP8 weights turn into an OOM -- but do not use its answer.
+            with _lock:
+                inflight = _state["gen_thread"]
+            if inflight is not None:
+                inflight.join(timeout=GEN_TIMEOUT_S)
+        with _lock:
+            # Nothing stale may survive this call. If the generation below fails, is
+            # discarded, or runs past the timeout, the response has to be "no plan" so
+            # the robot stands still -- never the previous decision handed back wearing a
+            # fresh timestamp, which the caller has no way to tell from a real answer.
+            _state["plan"] = None
+        started_step = req.current_step
+        th = _spawn()
+        th.join(timeout=GEN_TIMEOUT_S)
+        with _lock:
+            _state["sync_calls"] += 1
+            if th.is_alive():
+                _state["sync_timeouts"] += 1
+    elif not busy:
+        started_step = req.current_step
+        th = _spawn()
         if not have_plan:
             # The very first call has nothing to be stale: acting before the model has
             # ever looked at the scene would be driving on nothing. Blocking here is

@@ -197,6 +197,33 @@ class EpisodeResult:
     # handed the same plan back -- the manoeuvre without the point of it.
     recovery_replans: int = 0
     recovery_replans_failed: int = 0
+    # The planning regime this run was measured under. 0.0 means ASYNCHRONOUS -- the
+    # model thought on a background thread while the robot kept driving the previous
+    # plan -- and anything else is the fixed period, in simulated seconds, that the robot
+    # drove between full stops. Defaulted so runs recorded before the mode existed still
+    # load, and 0.0 is the truth about those.
+    #
+    # This is not bookkeeping. The two regimes are different experiments and their
+    # numbers must never be pooled: under async, a longer thinking budget buys a longer
+    # BLIND window, so a thinking-level comparison measures how far the robot travels
+    # with its eyes shut. Under sync it measures the decision. A results directory
+    # holding both, distinguishable only by timestamp, is how a stack talks itself into
+    # believing more thinking makes a policy worse.
+    plan_period_s: float = 0.0
+    # Wall seconds the robot spent stopped, waiting for decisions. Zero under async by
+    # construction, since nothing waits there. Reported next to `wall_s` because it is
+    # the whole cost of synchronous planning and `elapsed_s` cannot show it: sim time
+    # does not advance while the loop is blocked.
+    think_wall_s: float = 0.0
+    # Vertical motion of the base over the episode: the largest single-step change in z,
+    # and the total span. The drive never commands z -- it carries through whatever the
+    # contact solver produced -- so anything here is the wheel spheres working against
+    # the floor, and the chase camera is parented to `base_link`, so it is also exactly
+    # what a viewer sees as the robot shaking. A step figure near the float32 resolution
+    # of the scene's coordinates is nothing; a millimetre-scale one at 60 Hz is a visible
+    # buzz. Defaulted, so runs recorded before this was measured still load.
+    base_z_step_max_m: float = 0.0
+    base_z_span_m: float = 0.0
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)

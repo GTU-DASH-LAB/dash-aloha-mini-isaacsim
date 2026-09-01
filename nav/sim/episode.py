@@ -197,6 +197,10 @@ class EpisodeResult:
     # handed the same plan back -- the manoeuvre without the point of it.
     recovery_replans: int = 0
     recovery_replans_failed: int = 0
+    # In-place turns executed. Defaulted, so every result recorded before the pivot menu
+    # existed still loads -- and 0 there means "the action did not exist", not "the model
+    # never wanted it", which is why `menu_pivots` is also captured from /health.
+    pivots: int = 0
     # The planning regime this run was measured under. 0.0 means ASYNCHRONOUS -- the
     # model thought on a background thread while the robot kept driving the previous
     # plan -- and anything else is the fixed period, in simulated seconds, that the robot

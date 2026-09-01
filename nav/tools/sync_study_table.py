@@ -74,6 +74,12 @@ CONDITIONS: list[tuple[str, float, str, str]] = [
     ("sync3 high", 3.0, "high", "sync"),
     ("sync1 medium", 1.0, "medium", "sync"),
     ("sync1 high", 1.0, "high", "sync"),
+    # Same regime as `sync3 *` and directly comparable to it: the ONLY difference is that
+    # the menu carries two in-place turns. `mode` here names the condition's directory,
+    # not the planning regime -- these runs record plan_mode "sync" like their control,
+    # which is the point of them.
+    ("pivot3 medium", 3.0, "medium", "pivot"),
+    ("pivot3 high", 3.0, "high", "pivot"),
 ]
 
 
@@ -103,6 +109,10 @@ def _load(path: Path) -> dict | None:
         "wall_s": raw.get("wall_s"),
         "base_z_step_max_m": raw.get("base_z_step_max_m"),
         "base_z_span_m": raw.get("base_z_span_m"),
+        # None, not 0, on every run recorded before in-place turns existed. The two mean
+        # opposite things -- "the action was not available" against "it was and the model
+        # never chose it" -- and the second is a finding while the first is just history.
+        "pivots": raw.get("pivots"),
         # Index 6 of a plan tuple is `time_delay`. The length guard is not paranoia:
         # runs recorded before the async switch have shorter tuples.
         "time_delays": [p[6] for p in plans if len(p) > 6 and p[6] is not None],
@@ -192,8 +202,8 @@ def scoreboard(data: dict[str, dict[str, dict]]) -> list[str]:
         "SCOREBOARD",
         "",
         f"{'condition':<16} {'n':>3} {'success':>8} {'closest':>9} {'spl':>6} "
-        f"{'guard':>7} {'calls':>7} {'think':>7}",
-        "-" * 74,
+        f"{'guard':>7} {'calls':>7} {'think':>7} {'turns':>7}",
+        "-" * 82,
     ]
     for label, _period, _level, _mode in CONDITIONS:
         runs = data[label]
@@ -213,11 +223,17 @@ def scoreboard(data: dict[str, dict[str, dict]]) -> list[str]:
         # decision. Zero under async by construction -- nothing ever waited.
         think = [r["think_wall_s"] / r["wall_s"] for r in rs
                  if r.get("think_wall_s") and r.get("wall_s")]
+        # Blank, not 0, where the action did not exist. A column of zeros next to a
+        # column of dashes says something true; a column of zeros everywhere would read
+        # as "nobody ever wanted to turn", which is a claim about the model and not
+        # about which code recorded the run.
+        turns = _mean([float(r["pivots"]) for r in rs if r.get("pivots") is not None])
         out.append(
             f"{label:<16} {len(rs):>3} {f'{ok}/{len(rs)}':>8} "
             f"{_fmt(closest, ' m'):>9} {_fmt(spl, '', '{:.2f}'):>6} "
             f"{_fmt(guard, '', '{:.0f}'):>7} {_fmt(calls, '', '{:.0f}'):>7} "
-            f"{_fmt(_mean(think) * 100 if _mean(think) is not None else None, '%', '{:.0f}'):>7}")
+            f"{_fmt(_mean(think) * 100 if _mean(think) is not None else None, '%', '{:.0f}'):>7} "
+            f"{_fmt(turns, '', '{:.1f}'):>7}")
     out += [
         "",
         "closest = mean closest approach to the goal (threshold 1.5 m); lower is better.",
@@ -225,6 +241,9 @@ def scoreboard(data: dict[str, dict[str, dict]]) -> list[str]:
         "calls   = mean policy calls per episode; it is a DECISION COUNT, and the period",
         "          sets it directly, so it is context for the other columns and not a",
         "          score. think = share of wall time the robot stood still deciding.",
+        "turns   = mean in-place turns per episode; blank where the menu did not offer",
+        "          them. Read it next to success: an unchanged score with turns near 0",
+        "          means the prompt failed, and with turns high means the action did.",
         "Path length and wall time are deliberately absent: neither is comparable across",
         "these regimes. See this file's docstring.",
     ]

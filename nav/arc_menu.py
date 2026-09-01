@@ -58,6 +58,44 @@ _PALETTE = [
     (51, 214, 255), (122, 51, 255), (255, 51, 195),
 ]
 
+# --------------------------------------------------------------------------------------
+# TURNING IN PLACE, and why it is a separate thing from every curvature above
+#
+# Every arc in the menu is 3 m of FORWARD travel. The tightest of them, kappa 0.60, sweeps
+# 103 degrees -- but it ends 1.63 m in front of where it started, because a curvature is a
+# shape you drive along, not a heading you adopt. So when the way ahead is blocked at 1 m,
+# the model has seven paths that all hit the obstacle and one label that means "stop". It
+# has no way at all to say "I need to be facing somewhere else before any of these is
+# usable", because that sentence does not exist in the menu.
+#
+# That is not a prompt problem and it cannot be fixed with one. The selector prompt has
+# said "do not answer STOP merely because the way ahead is tight" since the first ladder,
+# and the first ladder still answered STOP on 42 of 65 decisions from 5.5 m out while its
+# OWN describe call named an open side on the same frames. It answered the only label that
+# did not drive into something.
+#
+# Measured on the synchronous ladder, four failures against three successes:
+#
+#     frozen*  guard  recoveries          frozen*  guard  recoveries
+#     16-35%   0-299     1-4                  0%    0-61       0
+#     ^ the four failures                     ^ the three successes
+#     *share of the trace spent inside a 0.5 m circle
+#
+# Perfect separation on two variables, and neither of them is "drove to the wrong place".
+# Every failure is the robot stuck facing a direction it cannot navigate out of.
+#
+# A pivot is the missing verb. It has no curvature -- 1/kappa is zero, the radius is zero,
+# it is not on the same axis as the arcs at all -- so it cannot be drawn on the floor and
+# it cannot be expressed as waypoints either: a pure rotation is every waypoint at the
+# origin, which `plan_speed` reads as STOP. It needs its own drawn symbol and its own
+# channel back to the runner, and that is what the rest of this section builds.
+#
+# 30 degrees, not 90: the robot re-decides the moment a pivot finishes, so a bigger turn is
+# expressed by choosing it again on a fresh view rather than by committing to a sweep taken
+# blind. Three pivots make a right angle and each one is a decision.
+PIVOT_DEG = 30.0
+PIVOT_RAD = math.radians(PIVOT_DEG)
+
 
 @dataclass(frozen=True)
 class Arc:
@@ -128,8 +166,56 @@ def badge_xy(px: list[tuple[float, float]], w: float, h: float,
     return min(max(ux, r + 4), w - r - 4), min(max(uy, r + 4), h - r - 4)
 
 
+# Where the two pivot glyphs sit, as fractions of the frame. ABOVE THE HORIZON on purpose,
+# and that is a geometric guarantee rather than a layout preference: `project` puts every
+# ground point at v = h/2 + fx*cam_h/x, so with a level camera the whole floor -- and
+# therefore every arc and every arc badge -- lives strictly below h/2. Putting the pivots at
+# 0.28*h means they can never collide with a path, on any frame, without needing a
+# collision test. It also says something true about them: a pivot is not a place on the
+# floor you could drive to.
+_PIVOT_XY = ((0.115, 0.28), (0.885, 0.28))   # (left glyph, right glyph)
+_PIVOT_COLOUR = (255, 255, 255)
+
+
+def _rotation_glyph(draw, cx: float, cy: float, r: float, clockwise: bool,
+                    width: int, colour=_PIVOT_COLOUR) -> None:
+    """A ring with a gap at the top and an arrowhead, drawn at (cx, cy).
+
+    White, where every arc is saturated: the glyph has to read as "not one of the coloured
+    paths on the floor" at the 0.31x downsample the server actually feeds the model, and
+    hue is the only channel wide enough to carry that at ~30 px. The prompt still never
+    mentions a colour -- this separates the two KINDS of action, it does not identify one.
+
+    PIL's arc angles start at 3 o'clock and increase clockwise on screen (y grows
+    downward), so `arc(300, 240)` is the ring minus a 60 degree gap centred on 12 o'clock,
+    and the arrowhead goes on whichever end of that gap the sweep finishes at.
+    """
+    box = [cx - r, cy - r, cx + r, cy + r]
+    draw.arc(box, 300, 240, fill=(20, 20, 20), width=width + 6)
+    draw.arc(box, 300, 240, fill=colour, width=width)
+
+    theta = math.radians(240.0 if clockwise else 300.0)
+    px, py = cx + r * math.cos(theta), cy + r * math.sin(theta)
+    # Tangent for INCREASING angle is (-sin, cos); a counter-clockwise glyph finishes by
+    # travelling the other way, so its head points along the negation.
+    tx, ty = -math.sin(theta), math.cos(theta)
+    if not clockwise:
+        tx, ty = -tx, -ty
+    nx, ny = math.cos(theta), math.sin(theta)          # radial, for the head's base
+    # Long and narrow, and the ratio is the whole legibility of the direction cue. At
+    # 0.62 x 0.34 the head was almost as wide as it was long, which put its APEX level
+    # with one of its base corners: at the 0.31x downsample that reads as a plain triangle
+    # with no direction in it at all, and the only thing separating "turn left" from "turn
+    # right" in the picture is which way this points.
+    a, b = r * 0.85, r * 0.26
+    draw.polygon([(px + tx * a, py + ty * a),
+                  (px + nx * b, py + ny * b),
+                  (px - nx * b, py - ny * b)], fill=colour, outline=(20, 20, 20))
+
+
 def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[int],
-                width: int = 13, font_size: int = 96) -> str:
+                width: int = 13, font_size: int = 96,
+                pivot_labels: tuple[int, int] | None = None) -> str:
     """Draw the arcs and their labels onto a copy of the frame. Returns `out_path`.
 
     Each arc gets a dark outline under its colour: hallway floors in these scenes are
@@ -167,6 +253,26 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
         draw.ellipse([ux - r, uy - r, ux + r, uy + r], fill=(20, 20, 20), outline=colour,
                      width=6)
         draw.text((ux, uy), str(label), fill=colour, font=font, anchor="mm")
+
+    if pivot_labels is not None:
+        # The left glyph turns the robot to its LEFT and sits on the left of the frame.
+        # That pairing is not a shuffle-able detail like the numbers are -- a symbol for
+        # "turn left" drawn on the right is a lie about the image, and the whole reason
+        # the arcs are drawn rather than listed is that the model reads geometry off the
+        # picture. The NUMBERS are still shuffled with the arcs' numbers, which is what
+        # stops "answer the leftmost tag" from scoring.
+        # Sized against the DOWNSAMPLED image, like everything else here: the ring has
+        # to clear the number's disc so the two do not merge into one blob at ~30 px, and
+        # the arrowhead needs room outside it. Still comfortably above the horizon --
+        # `project` puts every floor point below h/2, and the glyph's furthest reach is
+        # about 1.3r from a centre at 0.28h.
+        r = font_size * 1.05
+        for (fx, fy), label, cw in zip(_PIVOT_XY, pivot_labels, (False, True)):
+            cx, cy = fx * w, fy * h
+            _rotation_glyph(draw, cx, cy, r, clockwise=cw, width=width)
+            draw.ellipse([cx - r * 0.52, cy - r * 0.52, cx + r * 0.52, cy + r * 0.52],
+                         fill=(20, 20, 20), outline=_PIVOT_COLOUR, width=6)
+            draw.text((cx, cy), str(label), fill=_PIVOT_COLOUR, font=font, anchor="mm")
 
     im.save(out_path, quality=92)
     return out_path
@@ -351,6 +457,49 @@ def direction_word(kappa: float) -> str:
             return word
     return "hard left"
 
+
+def stop_label(n_arcs: int, pivots: bool) -> int:
+    """The number STOP carries on a menu of `n_arcs` arcs, with or without the turns.
+
+    Derived, never written down twice. STOP sits after everything selectable, so it moves
+    when the menu grows, and an off-by-one here does not raise -- it silently turns "stop"
+    into "turn right", on a run that otherwise looks entirely normal.
+    """
+    return n_arcs + (2 if pivots else 0) + 1
+
+
+def allocate_labels(rng, n_arcs: int, pivots: bool
+                    ) -> tuple[list[int], tuple[int, int] | None]:
+    """One shuffle across every selectable label: (arc labels, (left, right) or None).
+
+    Arcs and pivots are numbered from the SAME permutation. A pivot that is always
+    numbered 8 is answerable without looking at the image, which is precisely the confound
+    the arc shuffle exists to remove -- and it would be the easier one to fall for, since
+    there are only two of them.
+
+    With `pivots` false the permutation is over `n_arcs` alone, so the random stream, and
+    therefore every label in every earlier run, is bit-for-bit unchanged.
+
+    The two pivot numbers come back as (left glyph, right glyph) and `render_menu` reads
+    them in that order. The SIDE is fixed while the numbers shuffle: a "turn left" symbol
+    drawn on the right of the frame would be a lie about the image, and geometry read off
+    the picture is the whole reason this format works.
+    """
+    perm = (rng.permutation(n_arcs + (2 if pivots else 0)) + 1).tolist()
+    return perm[:n_arcs], (tuple(perm[n_arcs:]) if pivots else None)
+
+
+def pivot_word(pivot_rad: float) -> str:
+    """A pivot as words, for the history line.
+
+    Deliberately not folded into `direction_word`'s scale. "hard left" and "turned left in
+    place" are different events and the history exists to let the model notice a pattern in
+    what it has been doing -- three pivots in a row is the signature of a robot spinning
+    where it stands, and it is unreadable if those entries say "hard left" like a drive.
+    """
+    return ("turned left in place" if pivot_rad > 0 else "turned right in place")
+
+
 CRUISE_MPS = 0.7      # what the trained policy asks for on these episodes
 CREEP_MPS = 0.2       # slow enough that one replan period advances well under a metre
 SLOW_FROM_M = 4.0     # where the approach starts easing off
@@ -479,7 +628,8 @@ STAGE_RULE = ("The instruction may list several moves in order; do only the earl
 
 
 def select_system(stop_label: int, stop_allowed: bool = True,
-                  speed_choice: bool = False) -> str:
+                  speed_choice: bool = False,
+                  pivot_labels: tuple[int, int] | None = None) -> str:
     """The arc-selection system prompt, with `stop_label` reserved for stopping.
 
     `stop_allowed=False` takes that choice away for one decision, and it is used on the
@@ -503,15 +653,54 @@ def select_system(stop_label: int, stop_allowed: bool = True,
     couple of metres of driving later, which is the price of not having it stand in front
     of a desk for the rest of the episode.
     """
-    stop_rule = f"""There is one extra choice, {stop_label}, which is not drawn on the \
+    # THE STOP RULE CHANGES WHEN PIVOTS EXIST, and this is the point of adding them.
+    # Without a pivot, "every drawn path runs into something" is a true statement with
+    # exactly one legal answer, so STOP has to accept it -- and the first ladder duly
+    # answered STOP on 42 of 65 decisions from 5.5 m out while its own describe call was
+    # naming an open side on those same frames. With a pivot on the menu that statement no
+    # longer implies stopping: the robot can face the open side instead. So the second
+    # reason is not softened here, it is DELETED and redirected. Leaving both in would keep
+    # the cheaper answer available for the situation the expensive one was added for.
+    if pivot_labels is None:
+        stop_rule = f"""There is one extra choice, {stop_label}, which is not drawn on the \
 image. Answer {stop_label} to stop and stay still, and only for one of two reasons: the \
 robot has arrived at the place the instruction names, or every drawn path runs into \
 something. Stopping at the right place is part of the task. Do not answer {stop_label} \
-merely because the way ahead is tight.""" if stop_allowed else """Stopping is not one of \
-your choices here. The robot has not arrived anywhere, and it has just reversed a little \
-after failing to make any progress, so standing still is the one thing already known not \
-to work. Pick the drawn path with the most open floor along it, even if none of them is \
-good."""
+merely because the way ahead is tight."""
+    else:
+        stop_rule = f"""There is one more choice, {stop_label}, which is not drawn on the \
+image. Answer {stop_label} ONLY when the robot has arrived at the place the instruction \
+names. Stopping at the right place is part of the task. Blocked is not arrived: if the way \
+ahead is tight or every drawn path runs into something, turn in place instead of \
+answering {stop_label}."""
+    if not stop_allowed:
+        stop_rule = """Stopping is not one of your choices here. The robot has not arrived \
+anywhere, and it has just reversed a little after failing to make any progress, so \
+standing still is the one thing already known not to work. Pick the drawn path with the \
+most open floor along it, even if none of them is good."""
+
+    # The pivot paragraph. Written to answer WHEN, not just what: an action the model has
+    # to infer the use of is an action it will not reach for, and the failure being fixed
+    # is precisely one of not reaching for a way out. The last sentence is the brake --
+    # turning is free of collision risk and therefore always the safe answer, and an
+    # always-safe answer with no cost attached is how a robot spends an episode pirouetting
+    # instead of arriving.
+    pivot_rule = ""
+    if pivot_labels is not None:
+        left, right = pivot_labels
+        pivot_rule = f"""Two more choices are drawn as white circular arrows in the top \
+corners: {left} on the left and {right} on the right. They are not paths. They turn the \
+robot {PIVOT_DEG:.0f} degrees in place -- {left} to its left, {right} to its right -- \
+without moving it anywhere, and then you get to look again from the new direction.
+
+Turn in place when the robot needs to be facing somewhere else before any drawn path is \
+worth taking: the description says the way ahead is blocked and names an open side, or the \
+instruction says to turn and no drawn path curves far enough to do it. Every drawn path \
+carries the robot three metres forward, so when something is close in front, all of them \
+run into it and turning is the only way out. Turning costs no ground and cannot hit \
+anything. But do not turn when a drawn path already leads onto open floor in the direction \
+you want -- a turn spends a decision without covering any distance, and repeating it \
+leaves the robot spinning where it stands."""
 
     # The speed question is asked ONLY near the target, and the prompt says so, because
     # "how fast" is a different question at 12 m and at 2 m. Far away it has one sensible
@@ -519,13 +708,17 @@ good."""
     # wrong for no gain. Close in, it is the actual difficulty: the arcs are all 3 m long,
     # so with the target 2 m off the choice is not WHERE to drive but HOW MUCH of the
     # chosen path to use before looking again.
+    # "the number you chose" rather than "of the chosen path" once pivots are on the menu:
+    # the pivot paragraph has just finished saying "they are not paths", and an answer
+    # contract that then asks for a path is an invitation to rule the turns out.
+    what = "you chose" if pivot_labels is not None else "of the chosen path"
     answer_rule = (f"""Answer with TWO whole numbers separated by a space: first the \
-number of the chosen path, then how fast to drive it, from 0 (barely creeping) to \
+number {what}, then how fast to drive it, from 0 (barely creeping) to \
 {SPEED_LEVELS} (full speed). You are close to what the instruction names, so choose the \
 speed deliberately: slow down to place the robot accurately, keep the speed up if there is \
 still ground to cover. A low number never means stopping -- it means moving gently. \
 Write nothing but the two numbers.""" if speed_choice else
-                   "Answer with the number of the chosen path and nothing else.")
+                   f"Answer with the number {what} and nothing else.")
     return f"""You are the navigation system of a small wheeled robot, looking through its \
 forward camera. The camera is {CAM_HEIGHT_M:.2f} m above the floor, level, with a \
 {CAM_FOV_DEG:.0f} degree horizontal field of view.
@@ -535,11 +728,11 @@ route the robot can drive, starting at the robot and curving away from it, and e
 in a numbered circle. The numbers are arbitrary tags, not an order: they do not run left \
 to right and carry no meaning beyond identifying a path.
 
-Your job is to choose the one path that best carries out the navigation instruction. \
+Your job is to choose the one option that best carries out the navigation instruction. \
 {STAGE_RULE} \
 Judge each path by where it actually goes on the floor in the image. Prefer a path that \
 stays on open, walkable floor and does not run into a wall, a door frame or an object.
-
+{f"{chr(10)}{pivot_rule}{chr(10)}" if pivot_rule else ""}
 {stop_rule}
 
 {answer_rule}"""

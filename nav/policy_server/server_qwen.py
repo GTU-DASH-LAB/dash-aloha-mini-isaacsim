@@ -56,6 +56,7 @@ import sys
 import threading
 import time
 import traceback
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -70,9 +71,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
     CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
     DESCRIBE_TARGET, FREE_SPACE_SYSTEM, SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY,
-    SPEED_CHOICE_FROM_M, direction_word, history_note, make_arcs,
-    parse_choice_speed, parse_target_distance, plan_from_kappa, render_menu,
-    select_system, speed_for, speed_from_level,
+    PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
+    allocate_labels, make_arcs, parse_choice_speed, parse_target_distance, pivot_word,
+    plan_from_kappa, render_menu, select_system, speed_for, speed_from_level, stop_label,
 )
 
 MODEL_PATH = os.environ.get(
@@ -185,6 +186,19 @@ _state: dict = {
     "parse_failures": 0, "empty_plans": 0, "gen_errors": 0,
     # The plan currently in force, in the body frame of the moment generation STARTED.
     "plan": None, "plan_gen_step": None, "reasoning": None,
+    # A CHOSEN PIVOT, in radians, positive to the robot's left, 0.0 for every other
+    # decision. It rides beside the plan rather than inside it because a pure rotation
+    # cannot be written as waypoints -- every point would be the origin, which
+    # `plan_speed` reads as a stop, i.e. exactly the answer the pivot exists to replace.
+    #
+    # `pivot_served` is what stops one decision from being executed several times. Async
+    # re-serves a cached plan on most calls (2294 predictions against 989 generations on
+    # the last ladder, ~2.3 serves apiece), which is harmless for a trajectory -- driving
+    # the same 3 m arc twice is driving it once, slower -- and is not harmless at all for
+    # a rotation, where it would silently turn 30 degrees into 90.
+    "pivot_rad": 0.0,
+    "pivot_served": True,
+    "pivots": 0,
     "gen_thread": None, "gen_step": None,
     "think": os.environ.get("QVLA_THINK", "0") == "1",
     # Where this episode's menus and decisions are being written; set by /reset, None
@@ -309,6 +323,11 @@ class PredictResponse(BaseModel):
     latency_s: float
     kv_cache_available: bool          # here: "a plan exists", same meaning to the caller
     vlm_generation_start_step: int | None
+    # Radians to turn IN PLACE, positive to the robot's left; 0.0 on every ordinary
+    # decision. Non-zero means the waypoints are all origin and are not a trajectory to
+    # follow -- the caller is to rotate by this much and then ask again. Defaulted so a
+    # caller that predates the field, or one talking to `server.py`, is unaffected.
+    pivot_rad: float = 0.0
 
 
 # --------------------------------------------------------------------------------------
@@ -891,15 +910,38 @@ def think_then_answer(image_paths: list[str], system: str, user: str, think_budg
 
 
 _MENU_ARCS = make_arcs()
-_STOP_LABEL = len(_MENU_ARCS) + 1
-# Four prompts from two independent flags, built once at import rather than per call, so
-# the variants can only ever differ in the ways `select_system` says they differ. The
-# alternative -- composing the strings at the call site -- is how a run ends up with the
-# no-stop rule silently paired with the one-number answer format.
-_MENU_SYSTEMS = {
-    (stop, speed): select_system(_STOP_LABEL, stop_allowed=stop, speed_choice=speed)
-    for stop in (True, False) for speed in (True, False)
-}
+
+# THE IN-PLACE TURN, off by default so every earlier measurement keeps its meaning.
+#
+# Why it exists: every arc on the menu is 3 m of FORWARD travel. Even the tightest one
+# sweeps 103 degrees but ends 1.63 m further down the corridor, so when a wall is a metre
+# ahead there is no drawn path that does not run into it and STOP is the only honest
+# answer. The synchronous ladder made that visible -- the four failures were frozen 16-35%
+# of the time with up to 45% STOP answers, the three successes 0% and <=1 -- and no
+# amount of prompting fixes it, because the menu genuinely does not contain the action.
+# Two glyphs and one extra channel do.
+MENU_PIVOTS = os.environ.get("QVLA_MENU_PIVOTS", "0").lower() in ("1", "true", "yes")
+
+_STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
+
+
+@lru_cache(maxsize=512)
+def _menu_system(stop_allowed: bool, speed_choice: bool,
+                 pivot_labels: tuple[int, int] | None) -> str:
+    """The selector system prompt for one combination of the flags that vary per call.
+
+    Built through a cache rather than precomputed at import, which is what this was
+    before pivots existed. The two pivot labels are drawn from the same per-call shuffle
+    as the arcs, so the prompt now names numbers that are not known until the call -- but
+    there are at most a few hundred distinct combinations across a whole run and each is
+    a few kilobytes, so caching turns it back into the import-time constant it was.
+
+    The point of composing it in ONE place is unchanged: a system prompt assembled at the
+    call site is how a run ends up with the no-stop rule paired with the wrong answer
+    format, and no error is raised when it does.
+    """
+    return select_system(_STOP_LABEL, stop_allowed=stop_allowed,
+                         speed_choice=speed_choice, pivot_labels=pivot_labels)
 
 # Seeded, so a benchmark run is reproducible, and shuffled per call rather than fixed,
 # because a stable numbering is the one confound that makes this whole approach look like
@@ -912,12 +954,18 @@ _menu_rng = np.random.default_rng(int(os.environ.get("QVLA_MENU_SEED", "0")))
 def menu_plan(image_paths: list[str], instruction: str,
               step: int | None,
               recovered: bool = False, kind: str = "",
-              stalled_s: float = 0.0) -> tuple[np.ndarray | None, str]:
+              stalled_s: float = 0.0) -> tuple[np.ndarray | None, str, float]:
     """The `menu` format's whole pipeline: two generations, one curvature, one plan.
 
-    Returns (plan or None, a reasoning string for the run log). None means the reply named
-    no label on the menu, which the caller counts as a parse failure and answers by reusing
-    the previous plan -- the same fallback every other format has.
+    Returns (plan or None, a reasoning string for the run log, radians to turn in place).
+    None means the reply named no label on the menu, which the caller counts as a parse
+    failure and answers by reusing the previous plan -- the same fallback every other
+    format has.
+
+    The pivot is a THIRD return value and not something encoded in the plan because it
+    cannot be: an in-place turn is every waypoint at the origin, which is bit-for-bit the
+    STOP plan and which `plan_speed` reads as "do not move". A turn and a stop are opposite
+    intentions with the same trajectory, so the distinction has to travel beside it.
 
     Only the newest frame is used. The other formats hand the model four frames at 3 s
     spacing because they have to infer their own motion; here the question is about where
@@ -927,10 +975,14 @@ def menu_plan(image_paths: list[str], instruction: str,
     out_dir.mkdir(parents=True, exist_ok=True)
     newest = image_paths[-1]
 
-    labels = (_menu_rng.permutation(len(_MENU_ARCS)) + 1).tolist()
+    labels, pivot_labels = allocate_labels(_menu_rng, len(_MENU_ARCS), MENU_PIVOTS)
     menu = str(out_dir / f"menu_{step if step is not None else 0:08d}.jpg")
-    render_menu(newest, menu, _MENU_ARCS, labels)
+    render_menu(newest, menu, _MENU_ARCS, labels, pivot_labels=pivot_labels)
     by_label = {int(lab): _MENU_ARCS[i].kappa for i, lab in enumerate(labels)}
+    # Positive is a turn to the robot's LEFT, the same sign convention as yaw and as the
+    # curvatures, so the runner can hand it straight to the base as a yaw rate.
+    by_pivot = ({int(pivot_labels[0]): PIVOT_RAD, int(pivot_labels[1]): -PIVOT_RAD}
+                if pivot_labels else {})
 
     # Call 1 is the whole reason this variant works. Asked to choose in one call, the model
     # drove into the wall 78% of the time; asked to describe first, 28%; asked to describe
@@ -988,7 +1040,7 @@ def menu_plan(image_paths: list[str], instruction: str,
         # A balk takes STOP away for the same reason a wedge does, and with a stronger
         # case: the front was measured CLEAR, so "every drawn path runs into something"
         # is not merely unlikely here, it is known false.
-        [menu], _MENU_SYSTEMS[(not kind, ask_speed)], user,
+        [menu], _menu_system(not kind, ask_speed, pivot_labels), user,
         int(LEVEL["select_think"]), int(LEVEL["answer"]))
 
     choice, level = parse_choice_speed(reply)
@@ -1020,11 +1072,21 @@ def menu_plan(image_paths: list[str], instruction: str,
         # finding, not something to paper over in the parser.
         note = note + " [STOP despite the no-stop prompt]"
 
+    pivot = 0.0
     if choice == _STOP_LABEL:
         # Cumulative positions all at the origin. `_lookahead_point` returns a distance
         # below `_EPS` for this and every controller answers Command(0, 0, 0) -- the same
         # path a "Stop. Do not move." plan already takes, not a special case bolted on.
         plan, kappa, note = np.zeros((N_WAYPOINTS, 2)), None, note + " -> STOP"
+    elif choice in by_pivot:
+        # The same all-origin plan as STOP, and that is not an oversight: during a pivot
+        # the robot must not translate, so "hold position" IS the trajectory. What makes
+        # it a turn rather than a stop is `pivot`, carried alongside, and a caller that
+        # ignores the field gets a stop -- the conservative failure, not a robot rotating
+        # for reasons the log cannot explain.
+        pivot = by_pivot[choice]
+        plan, kappa = np.zeros((N_WAYPOINTS, 2)), None
+        note = note + f" -> PIVOT {math.degrees(pivot):+.0f} deg in place"
     elif choice not in by_label:
         plan, kappa, note = None, None, note + " -> unparsed"
     else:
@@ -1043,14 +1105,16 @@ def menu_plan(image_paths: list[str], instruction: str,
     if choice is not None:
         with _lock:
             _state["recent"].append(
+                pivot_word(pivot) if pivot else
                 "stopped" if choice == _STOP_LABEL else
                 direction_word(kappa) if kappa is not None else "an unreadable answer")
 
     _record(step, menu, instruction, labels, choice, kappa, seen, reply.strip(),
             target_m, speed, recovered, kind=kind, speed_source=speed_src,
             speed_level=level if ask_speed else None, stalled_s=stalled_s,
-            thinking=(seen_think, sel_think), history=hist)
-    return plan, note
+            thinking=(seen_think, sel_think), history=hist,
+            pivot_rad=pivot, pivot_labels=pivot_labels)
+    return plan, note, pivot
 
 
 def _record(step: int | None, menu: str, instruction: str, labels: list[int],
@@ -1058,7 +1122,9 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             target_m: float | None = None, speed: float | None = None,
             recovered: bool = False, kind: str = "", speed_source: str = "ramp",
             speed_level: int | None = None, stalled_s: float = 0.0,
-            thinking: tuple[str, str] = ("", ""), history: str = "") -> None:
+            thinking: tuple[str, str] = ("", ""), history: str = "",
+            pivot_rad: float = 0.0,
+            pivot_labels: tuple[int, int] | None = None) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -1077,6 +1143,12 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 "step": step, "menu": Path(menu).name, "instruction": instruction,
                 "labels": labels, "choice": choice, "kappa": kappa,
                 "stop": choice == _STOP_LABEL, "free_space": seen, "reply": reply,
+                # Both, and for the same reason `labels` is stored: the pivot numbers are
+                # shuffled per call, so without the pair a replay cannot tell which glyph
+                # the model picked, and `pivot_rad` alone cannot say what the alternative
+                # was numbered. Null and 0.0 on every non-pivot menu.
+                "pivot_labels": list(pivot_labels) if pivot_labels else None,
+                "pivot_rad": round(float(pivot_rad), 4),
                 # Kept apart on purpose: `target_m` is what the model SAID and `speed` is
                 # what we DID with it. Storing only the speed would make a bad estimate and
                 # a bad mapping look identical afterwards, and they have different fixes.
@@ -1136,9 +1208,10 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
     rendered image that does not exist until this thread runs.
     """
     try:
+        pivot = 0.0
         if _ARC_FORMAT == "menu":
-            plan, text = menu_plan(image_paths, instruction, step, recovered,
-                                   kind, stalled_s)
+            plan, text, pivot = menu_plan(image_paths, instruction, step, recovered,
+                                          kind, stalled_s)
         else:
             text = _generate(messages, image_paths, max_new)
             ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
@@ -1160,6 +1233,12 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
             else:
                 _state["plan"] = plan
                 _state["plan_gen_step"] = step
+                # Installed together and cleared together. The pivot belongs to THIS
+                # plan, so a decision that was not a pivot must actively zero the field
+                # -- leaving the previous one in place would have the robot keep turning
+                # every time a later plan happened to be served.
+                _state["pivot_rad"] = pivot
+                _state["pivot_served"] = pivot == 0.0
     except Exception as exc:                       # never let a worker kill the server
         # Counted apart from parse_failures on purpose. Those two look identical from the
         # outside -- no plan came back -- and have nothing in common: a parse failure is
@@ -1202,6 +1281,13 @@ def health() -> dict:
             "n_waypoints": N_WAYPOINTS,
             **({"menu_speed_mps": MENU_SPEED_MPS, "menu_creep_mps": CREEP_MPS,
                 "stop_label": _STOP_LABEL,
+                # Whether the in-place turn was on the menu at all, and how often it was
+                # taken. Reported together because the second number is meaningless
+                # without the first: `pivots: 0` reads as "the model never wanted to
+                # turn" and can equally mean "the model was never offered the option".
+                "menu_pivots": MENU_PIVOTS,
+                "pivot_deg": PIVOT_DEG if MENU_PIVOTS else None,
+                "pivots": _state["pivots"],
                 "recent": list(_state["recent"])} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],
@@ -1292,6 +1378,7 @@ def reset(req: ResetRequest = ResetRequest()) -> dict:
         run_dir = MENU_DIR / f"{datetime.now():%Y%m%d-%H%M%S}_{req.run}"
         run_dir.mkdir(parents=True, exist_ok=True)
     with _lock:
+        _state.update(pivot_rad=0.0, pivot_served=True)
         _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None,
                       run_dir=run_dir, epoch=_state["epoch"] + 1)
         # Between episodes, not within them. Carrying six directions from the last run
@@ -1321,7 +1408,10 @@ def replan() -> dict:
     generation was started on the old view too.
     """
     with _lock:
-        _state.update(plan=None, plan_gen_step=None, epoch=_state["epoch"] + 1)
+        # The pivot goes with the plan. A recovery reverses the robot, which makes the
+        # view the pivot was chosen on wrong in exactly the way it makes the plan wrong.
+        _state.update(plan=None, plan_gen_step=None, pivot_rad=0.0, pivot_served=True,
+                      epoch=_state["epoch"] + 1)
         return {"ok": True, "epoch": _state["epoch"]}
 
 
@@ -1500,6 +1590,18 @@ def predict(req: PredictRequest) -> PredictResponse:
         plan = _state["plan"]
         reasoning = _state["reasoning"]
         _state["predictions"] += 1
+        # ONCE per decision, whatever the regime. Under async the same cached plan is
+        # served ~2.3 times on average, and a turn command re-issued 2.3 times is a 30
+        # degree pivot that comes out as 70 -- an error that does not raise, does not look
+        # wrong in any counter, and puts the robot at an angle nothing in the log explains.
+        # `pivot_served` is that latch; `pivots` counts turns actually handed out, which is
+        # the number worth comparing against episodes, not turns chosen.
+        pivot_rad = float(_state["pivot_rad"])
+        if pivot_rad and not _state["pivot_served"]:
+            _state["pivot_served"] = True
+            _state["pivots"] += 1
+        else:
+            pivot_rad = 0.0
 
     if plan is None:
         # Still nothing after a blocking wait. Standing still is the only honest answer;
@@ -1525,6 +1627,7 @@ def predict(req: PredictRequest) -> PredictResponse:
         latency_s=round(time.perf_counter() - t0, 3),
         kv_cache_available=plan is not None,
         vlm_generation_start_step=started_step,
+        pivot_rad=round(pivot_rad, 4),
     )
 
 

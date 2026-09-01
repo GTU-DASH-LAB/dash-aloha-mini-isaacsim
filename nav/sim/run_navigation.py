@@ -701,7 +701,22 @@ class NavigationRunner:
         # the plan that wedged it.
         replans = 0
         replans_failed = 0
+        # In-place turns actually executed. Not the same as the count the server keeps:
+        # that one is decisions the model made, this one is turns this robot performed,
+        # and they diverge if a run ever serves a pivot twice or drops one.
+        pivots = 0
         prev_pos = start_pos
+        prev_yaw = self.base.yaw
+        # How much of the current in-place turn is left, in radians, and the step by which
+        # it must be over regardless. Closed loop on the MEASURED yaw rather than open
+        # loop on a step count: the base reaches a commanded yaw rate over a few steps, so
+        # a turn timed as `angle / rate` consistently comes up short, and a 30 degree
+        # command that delivers 22 degrees is a bug with no symptom other than a robot
+        # that keeps not quite facing down the corridor. The deadline is the guard against
+        # the opposite failure -- a wheel against a wall that never accumulates the yaw --
+        # and it is generous because it exists to bound the loop, not to time it.
+        pivot_remaining = 0.0
+        pivot_deadline = 0
         step = 0
         t0 = time.time()
         success = False
@@ -732,6 +747,13 @@ class NavigationRunner:
         # period, so its delay and displacement are real and must be reported as such.
         synchronous = PLAN_MODE == "sync"
         bounded = PLAN_MODE == "bounded"
+        # The next step at which the model is called, held explicitly instead of tested
+        # with `step % replan_steps`. An in-place turn has to END the period it was chosen
+        # in -- the whole point of turning is to look again from the new direction, and a
+        # robot that turns 30 degrees and then stands still for the remaining 2.5 s of the
+        # period has spent a decision on nothing. With a modulus there is no way to say
+        # "sooner"; with a counter it is one assignment.
+        next_decision_step = 0
         think_wall_s = 0.0
         check_plan_period(self.policy, replan_steps)
 
@@ -757,7 +779,7 @@ class NavigationRunner:
             # `replan_every_steps` is not guaranteed to be a multiple of `CHASE_EVERY` --
             # tune either one and the twins would start going missing, silently, on exactly
             # the frames that carry the reasoning text.
-            if step % CHASE_EVERY == 0 or step % replan_steps == 0:
+            if step % CHASE_EVERY == 0 or step == next_decision_step:
                 self._capture_chase(step)
 
             if distance <= ep.success_threshold_m:
@@ -771,7 +793,7 @@ class NavigationRunner:
                 break
 
             # --- replan ---------------------------------------------------
-            if step % replan_steps == 0:
+            if step == next_decision_step:
                 # The third-person twin of this decision was grabbed at the top of the
                 # loop, a few lines and no simulation steps ago, so `chase_<step>.jpg` and
                 # `menu_<step>.jpg` are still the same instant seen two ways.
@@ -912,6 +934,40 @@ class NavigationRunner:
                 # run instead of across runs.
                 guidance = parse_guidance(out.get("reasoning"))
                 command = controller(waypoints, guidance)
+
+                # THE IN-PLACE TURN, and it arrives beside the waypoints rather than in
+                # them because it cannot be in them: a turn is every waypoint at the
+                # origin, which is bit-for-bit a STOP and is what `controller` just built.
+                # A server that does not know the field sends nothing and the robot stops,
+                # which is the conservative half of the ambiguity.
+                #
+                # Served at most once per decision by the policy server -- see
+                # `pivot_served` there. Under async the same cached plan is handed back
+                # ~2.3 times on average, and a 30 degree turn re-issued 2.3 times is a 70
+                # degree turn that no counter reports and no log explains.
+                pivot_rad = float(out.get("pivot_rad") or 0.0)
+                if pivot_rad:
+                    pivots += 1
+                    # Full yaw rate. The rate is already the episode's own limit and the
+                    # controller is allowed to ask for it while driving, so a stationary
+                    # turn at the same rate introduces nothing the base has not been asked
+                    # for before. At the 1.2 rad/s default, 30 degrees is 0.44 s.
+                    command = Command(
+                        0.0, 0.0, math.copysign(ep.max_yaw_rate_radps, pivot_rad))
+                    pivot_remaining = abs(pivot_rad)
+                    # 2.5x the ideal duration. Not a schedule -- the turn ends when the
+                    # measured yaw says it has -- but a bound, so a robot whose wheel is
+                    # against a wall and cannot rotate gives up and re-decides instead of
+                    # grinding until the episode times out.
+                    pivot_deadline = step + int(math.ceil(
+                        2.5 * abs(pivot_rad) / (ep.max_yaw_rate_radps * PHYSICS_DT)))
+                    next_decision_step = pivot_deadline
+                else:
+                    # A turn that was still running cannot survive a new decision: the
+                    # decision was taken on the view the turn was producing, and it says
+                    # what to do from here.
+                    pivot_remaining = 0.0
+                    next_decision_step = step + replan_steps
                 policy_calls += 1
                 # In synchronous mode this is time the robot spent stopped. It is the
                 # entire price of the mode, and it does NOT appear in `elapsed_s`,
@@ -1004,6 +1060,28 @@ class NavigationRunner:
             step += 1
             history.observe(step, new_pos, self.base.yaw)
 
+            # Close the loop on an in-place turn, using the yaw the base actually
+            # reached. Wrapped to (-pi, pi] before it is accumulated, because yaw is
+            # read as an angle and not as a winding: one step across the +/-pi seam is a
+            # few thousandths of a radian of real rotation and 6.28 of arithmetic, which
+            # would finish any turn instantly at the moment the robot happens to be
+            # facing due west.
+            if pivot_remaining > 0.0:
+                yaw_now = self.base.yaw
+                pivot_remaining -= abs((yaw_now - prev_yaw + math.pi)
+                                       % (2 * math.pi) - math.pi)
+                prev_yaw = yaw_now
+                if pivot_remaining <= 0.0 or step >= pivot_deadline:
+                    # Look again NOW, from the direction just gained. Holding the rest of
+                    # the planning period would spend it standing still on a view the
+                    # robot has already turned away from -- the exact staleness this
+                    # whole study exists to remove.
+                    pivot_remaining = 0.0
+                    command = Command(0.0, 0.0, 0.0)
+                    next_decision_step = step
+            else:
+                prev_yaw = self.base.yaw
+
             # Refresh the third-person view ~20x per simulated second. The old value
             # was every 15 steps, chosen when a replan cost ~1 s of blocking inference
             # and the argument was "at least don't tie it to the replan cadence". That
@@ -1083,6 +1161,7 @@ class NavigationRunner:
             recoveries_blocked_behind=self.recovery.blocked_behind,
             recovery_replans=replans,
             recovery_replans_failed=replans_failed,
+            pivots=pivots,
             timed_out=timed_out,
             controller=self.controller_name,
             policy=self.policy_label(),

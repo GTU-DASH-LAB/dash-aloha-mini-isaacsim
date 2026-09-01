@@ -68,7 +68,10 @@ print(",".join(names))
 PY
 )" || { echo "!! could not build the episode list" >&2; exit 1; }
 [ -n "$ONLY_OVERRIDE" ] && EPISODES="$ONLY_OVERRIDE"
-N_EP=$(printf '%s' "$EPISODES" | tr ',' '\n' | wc -l)
+# awk on the field count, not `tr | wc -l`: a comma-separated list with no trailing
+# newline has one fewer newline than it has items, so `wc -l` reports 12 for 13 episodes
+# -- a header and a mail body that undercount the campaign they are announcing.
+N_EP=$(printf '%s' "$EPISODES" | awk -F, '{print NF}')
 
 # Exported so bench_status.py's hourly mail counts against the ladder actually running
 # rather than against every episode in the config.

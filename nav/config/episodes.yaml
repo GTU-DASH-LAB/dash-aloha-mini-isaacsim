@@ -199,3 +199,99 @@ episodes:
   # Kept because a known-failing episode is a useful negative control, but do not use
   # it to judge this repo. Note how little separates it from episode_7 below, which
   # DynaNav passes with spl 1.00: start x 19.7 vs 18.7, timeout 55 s vs 65 s.
+  # ---------------------------------------------------------------------------------
+  # OUTDOOR -- the fourth DynaNav scene, and the only one this repo has never run.
+  #
+  # `benchmark_full.yaml` defines 85 episodes over four scenes: hospital 25, office 25,
+  # warehouse 25, outdoor_small 10. DynaNav's own reference run covers 49 of them, all
+  # hospital and office, so `import_benchmark.py` -- which ranks by DynaNav's measured
+  # result -- can never emit an outdoor episode. Same reason the warehouse pair above is
+  # hand-written. There is NO reference number for any of these; a failure here is not a
+  # regression against anything, and a success is not a win over anything either.
+  #
+  # Six of DynaNav's ten, chosen for two reasons. Four of the ten are duplicate tasks
+  # differing only in `timeout` and crowd size (51/52, 53/54, 55/56, 59/60), so the more
+  # generous twin is kept and the other dropped rather than scoring the same task twice.
+  # And episode_60 starts 57.7 deg off its own goal bearing, outside the +-30 deg rule
+  # this config has followed since three of the four smoke episodes turned out to spawn
+  # the robot facing away from its goal -- which looks exactly like a broken policy.
+  # Off-bearings below are computed, not eyeballed, and all six are inside 18 deg.
+  #
+  # TWO THINGS THAT MAKE THESE NOT A LIKE-FOR-LIKE COMPARISON WITH DYNANAV, both of which
+  # must be stated with any number that comes out of them:
+  #
+  #   CROWDS. Every one of these episodes carries `num_people: 100..200`, and DynaNav
+  #   spawns those as animated pedestrians. `build_nav_scene.sh` authors a static stage,
+  #   so our street is EMPTY. That makes our version of the task easier, not harder, and
+  #   in the one way that matters most for a benchmark whose name is DynaNav -- the
+  #   dynamic obstacles are the point of it.
+  #
+  #   ELEVATION. This is the first scene with real terrain: starts sit at z 6.25-8.5 and
+  #   goals at z 5.97-6.55, and episode_59's instruction is literally "go down the ramp".
+  #   The base is a KINEMATIC teleport that integrates x/y and re-syncs only past 0.25 m,
+  #   and `collision_guard.py` casts a horizontal ray fan. Neither has ever been asked to
+  #   handle a slope. Expect this to be where they break, and check the trace's z before
+  #   reading any outdoor failure as a navigation failure.
+  outdoor_umbrellas:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [26.9, 148.8, 6.85]
+    start_yaw_deg: 160
+    goal: [9.39, 154.52, 5.97]
+    instruction: "Go straight until reach the black and white striped umbrellas."
+    timeout_s: 150
+    success_threshold_m: 4.0
+    notes: "DynaNav episode_52; 1.9 deg off bearing, 18.4 m; 200 people in theirs, none in ours"
+  outdoor_pillars:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [-24.79, 173.1, 8.5]
+    start_yaw_deg: 32
+    goal: [2.2, 193.8, 6.55]
+    instruction: "Drive forward passing the pillars and stop when you reach the last pillar at the far end."
+    timeout_s: 200
+    success_threshold_m: 4.0
+    notes: "DynaNav episode_54; 5.5 deg off bearing, 34.0 m; descends 1.95 m"
+  # The one with an explicit negative in the instruction ("Do not turn right"). Worth
+  # having: the arc menu obeys a direction word hard -- measured at 103 deg of authority
+  # -- and nothing here has ever tested whether it obeys a PROHIBITION the same way.
+  outdoor_library:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [-34.0, 150.6, 6.25]
+    start_yaw_deg: 80
+    goal: [-24.02, 173.3, 6.3]
+    instruction: "Cross the street straight ahead, then proceed forward to the Northside Branch Library with the circular window at front. Do not turn right."
+    timeout_s: 250
+    success_threshold_m: 4.0
+    notes: "DynaNav episode_56; 13.7 deg off bearing, 24.8 m; tests a prohibition, not a direction"
+  # A 1 m threshold over 9.8 m. The tightest stop anywhere in this config -- the whole
+  # task is arriving precisely, which is exactly what the model-chosen approach speed
+  # was added for.
+  outdoor_upsway:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [2.26, 147.4, 8.0]
+    start_yaw_deg: -90
+    goal: [2.26, 137.6, 6.09]
+    instruction: "Cross the street and continue straight until you reach the storefront with the yellow UPSWAY sign."
+    timeout_s: 250
+    success_threshold_m: 1.0
+    notes: "DynaNav episode_57; 0.0 deg off bearing, 9.8 m; 1 m threshold, descends 1.91 m"
+  # Same destination as the one above from four times the distance and a 2 m threshold.
+  # The pair isolates approach precision from route finding: same stopping problem, very
+  # different amount of driving to get to it.
+  outdoor_upsway_far:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [-11.5, 173.4, 8.0]
+    start_yaw_deg: -54
+    goal: [2.26, 137.6, 6.09]
+    instruction: "Cross the street and continue straight until you reach the storefront with the yellow UPSWAY sign."
+    timeout_s: 300
+    success_threshold_m: 2.0
+    notes: "DynaNav episode_58; 15.0 deg off bearing, 38.4 m; same goal as outdoor_upsway"
+  outdoor_ramp_fountain:
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/outdoor_small.usd"
+    start: [-18.04, 111.52, 6.5]
+    start_yaw_deg: 60
+    goal: [-10.5, 146.22, 5.99]
+    instruction: "Continue forward, go down the ramp by the slope on the left side of the red triangular yield sign, then head toward the fountain."
+    timeout_s: 200
+    success_threshold_m: 4.0
+    notes: "DynaNav episode_59; 17.7 deg off bearing, 35.5 m; the explicit ramp episode -- the kinematic base's hardest case. DynaNav's own text reads 'slopeon'; the space is added here because a frozen Qwen reads this prose literally and a run-on word is a distractor, not part of the task. This is the only wording changed from the benchmark anywhere in this config."

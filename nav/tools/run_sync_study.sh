@@ -38,9 +38,15 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO" || exit 1
 
 ONLY_OVERRIDE=""
+# The four corners, as "<period> <level>" pairs. Overridable so a campaign that was
+# interrupted -- or deliberately reordered, which happened once when a more promising arm
+# was ready and the queue in front of it was nine hours long -- can be resumed at the
+# corner it stopped at instead of re-running the ones already archived.
+CONDITIONS=("3.0 medium" "3.0 high" "1.0 medium" "1.0 high")
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY_OVERRIDE="$2"; shift 2 ;;
+    --conditions) IFS=',' read -r -a CONDITIONS <<<"$2"; shift 2 ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -78,13 +84,11 @@ N_EP=$(printf '%s' "$EPISODES" | awk -F, '{print NF}')
 export QVLA_LADDER_ONLY="$EPISODES"
 
 echo "================================================================"
-echo "  synchronous-planning study -- 4 ladders x $N_EP episodes"
+echo "  synchronous-planning study -- ${#CONDITIONS[@]} ladders x $N_EP episodes"
 echo "  results: $STUDY"
 echo "================================================================"
 printf '  %s\n' $(printf '%s' "$EPISODES" | tr ',' ' ')
 echo
-
-CONDITIONS=("3.0 medium" "3.0 high" "1.0 medium" "1.0 high")
 
 for COND in "${CONDITIONS[@]}"; do
   read -r PERIOD LEVEL <<<"$COND"
@@ -166,7 +170,7 @@ echo "  study complete at $(date -Is)"
 echo "================================================================"
 python3 nav/tools/sync_study_table.py --verbose | tee "$STUDY/comparison.txt"
 python3 nav/tools/notify_run.py \
-  --subject "[sync-study] ALL FOUR CONDITIONS DONE" \
+  --subject "[sync-study] ALL ${#CONDITIONS[@]} CONDITIONS DONE" \
   --body "$(cat "$STUDY/comparison.txt")
 
 Full results: $STUDY" || true

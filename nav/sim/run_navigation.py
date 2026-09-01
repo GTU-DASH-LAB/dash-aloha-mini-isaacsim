@@ -38,17 +38,32 @@ hundred to over two thousand. That ladder did not measure whether more thinking 
 It measured how far a robot travels with its eyes shut, which is proportional to how
 long it thinks, and it therefore made the levels un-comparable by construction.
 
-Set `NAV_PLAN_PERIOD_S` and the loop becomes classical sense -> plan -> act: drive the
-current plan for exactly that many SIMULATED seconds, then hold still until a plan built
-on the CURRENT frame arrives. The simulation genuinely freezes while it waits, because
-the loop reaches `kit.update()` only after the call returns -- so no physics steps, no
-rendering, no sim time, and the compensation zeros above become literally true again.
-Thinking then costs wall-clock instead of costing collisions, which is the only regime in
-which "does it decide better when it thinks longer?" is a question about deciding.
+So the loop has three regimes, and they differ on ONE thing: how long the robot may drive
+on thinking that is out of date. `NAV_PLAN_MODE` picks; `NAV_PLAN_PERIOD_S` sizes.
+
+    async     blind window = one whole GENERATION, so it grows with the thinking budget.
+              Right for TIC-VLA, whose action expert re-plans on the current frame at
+              control rate; wrong here, where nothing refreshes between decisions.
+    bounded   blind window = ONE PERIOD, whatever the budget. Drive the plan generated a
+              period ago while the next decodes, and stop only for the part of a
+              generation that did not fit. When a generation is faster than a period this
+              costs nothing at all and is plain async with a guarantee bolted on.
+    sync      blind window = ZERO. Hold still until a plan built on the CURRENT frame
+              arrives. The simulation genuinely freezes while it waits, because the loop
+              reaches `kit.update()` only after the call returns -- no physics steps, no
+              rendering, no sim time -- so the compensation zeros above become literally
+              true again. Thinking costs wall-clock instead of costing collisions, which
+              is the only regime where "does it decide better when it thinks longer?" is
+              a question about deciding.
+
+`bounded` is the one to reach for. It keeps the overlap that made async worth having and
+removes the unbounded risk that made it unusable at high thinking budgets, and its cost
+is legible before you run it: compare a generation against a period.
 
 Usage:
     nav/run.sh --episode warehouse --controller braking
     NAV_PLAN_PERIOD_S=3.0 nav/run.sh --episode warehouse    # stop-and-think every 3 s
+    NAV_PLAN_PERIOD_S=3.0 NAV_PLAN_MODE=bounded nav/run.sh --episode warehouse
 """
 
 from __future__ import annotations
@@ -105,6 +120,36 @@ PHYSICS_DT = 1.0 / 60.0
 # `check_plan_period()` enforces it rather than trusting the arithmetic to stay true.
 PLAN_PERIOD_S = float(os.environ.get("NAV_PLAN_PERIOD_S", "") or 0.0)
 
+# WHICH REGIME. All three differ on exactly one thing -- how long the robot is allowed to
+# drive on thinking that is out of date -- so they form a single axis and are named for
+# where they sit on it:
+#
+#   async    the blind window is a whole GENERATION, and therefore grows with the
+#            thinking budget. This is TIC-VLA's design and it is right for TIC-VLA, whose
+#            action expert re-plans on the current frame at control rate. Here there is
+#            no action expert, so nothing refreshes between decisions.
+#   bounded  the blind window is ONE PERIOD, whatever the budget. The robot drives the
+#            plan generated one period ago while the next one decodes, and stops only for
+#            the part of a generation that did not fit inside the period. Costs nothing
+#            at all when generation is faster than the period.
+#   sync     the blind window is ZERO. The robot stops dead at every decision. Safest,
+#            slowest, and the only one where time_delay is honestly 0.
+#
+# `bounded` is the one to reach for first: it keeps async's overlap and takes async's
+# unbounded risk away, and its cost is visible up front -- if a generation fits in a
+# period, the bound never engages and it is free.
+PLAN_MODE = (os.environ.get("NAV_PLAN_MODE", "").strip().lower()
+             or ("sync" if PLAN_PERIOD_S > 0 else "async"))
+if PLAN_MODE not in ("async", "bounded", "sync"):
+    raise SystemExit(f"[nav] NAV_PLAN_MODE must be async, bounded or sync -- got "
+                     f"{PLAN_MODE!r}")
+if PLAN_MODE in ("bounded", "sync") and PLAN_PERIOD_S <= 0:
+    # Both are defined by the length of the window they bound, so neither means anything
+    # without one. Refused rather than defaulted: silently falling back to async is how a
+    # run gets labelled with a regime it did not use.
+    raise SystemExit(f"[nav] NAV_PLAN_MODE={PLAN_MODE} needs NAV_PLAN_PERIOD_S set to "
+                     f"the window it is supposed to bound")
+
 
 def plan_period_steps(episode_default: int) -> int:
     """Physics steps between decisions: the fixed period if set, else the episode's own.
@@ -118,7 +163,7 @@ def plan_period_steps(episode_default: int) -> int:
     return episode_default
 
 
-def check_plan_period(policy, replan_steps: int, synchronous: bool) -> None:
+def check_plan_period(policy, replan_steps: int) -> None:
     """Print the timing contract, and refuse a period the plan cannot cover.
 
     Printed and not merely asserted because the failure this guards against is silent:
@@ -130,13 +175,18 @@ def check_plan_period(policy, replan_steps: int, synchronous: bool) -> None:
     scoring a ladder against a server still holding the previous thinking level.
     """
     period_s = replan_steps * PHYSICS_DT
-    if not synchronous:
+    if PLAN_MODE == "async":
         print(f"[nav] planning: ASYNCHRONOUS, every {period_s:.2f} s sim "
               f"({replan_steps} steps); the robot drives the previous plan while the "
-              f"model thinks", flush=True)
+              f"model thinks, for as long as that takes", flush=True)
         return
-    print(f"[nav] planning: SYNCHRONOUS, every {period_s:.2f} s sim ({replan_steps} "
-          f"steps); the robot STOPS and waits for each decision", flush=True)
+    if PLAN_MODE == "bounded":
+        print(f"[nav] planning: BOUNDED ASYNC, every {period_s:.2f} s sim "
+              f"({replan_steps} steps); the robot drives thinking at most one period "
+              f"old and STOPS for whatever of a generation does not fit", flush=True)
+    else:
+        print(f"[nav] planning: SYNCHRONOUS, every {period_s:.2f} s sim ({replan_steps} "
+              f"steps); the robot STOPS and waits for each decision", flush=True)
     # The horizon lives in the server, so ask it rather than assuming the pairing here.
     # An unreachable or older server is not fatal -- it just cannot answer, and a run
     # that skips the check is better than one that refuses to start over a status read.
@@ -676,9 +726,14 @@ class NavigationRunner:
         # standing still, which is the price this mode pays and therefore the number that
         # has to be reported next to its result.
         replan_steps = plan_period_steps(ep.replan_every_steps)
-        synchronous = PLAN_PERIOD_S > 0
+        # `synchronous` is the only mode that freezes the sim, so it is the only one that
+        # may report zero staleness. `bounded` stops too, but only for the tail of a
+        # generation that overran its period -- the robot really did drive for that
+        # period, so its delay and displacement are real and must be reported as such.
+        synchronous = PLAN_MODE == "sync"
+        bounded = PLAN_MODE == "bounded"
         think_wall_s = 0.0
-        check_plan_period(self.policy, replan_steps, synchronous)
+        check_plan_period(self.policy, replan_steps)
 
         while True:
             # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long the
@@ -750,7 +805,21 @@ class NavigationRunner:
                     # synchronous era that preceded the async switch.
                     time_delay, dx, dy = 0.0, 0.0, 0.0
                 elif gen_starts:
-                    ref_step, ref_x, ref_y, ref_yaw = gen_starts[0]
+                    # WHICH generation produced the plan about to come back differs by
+                    # mode, and the list is the same either way -- `gen_starts` holds the
+                    # last two starts, oldest first, and this call's own start has not
+                    # been appended yet.
+                    #
+                    #   async    the server returns whatever is CACHED and starts a new
+                    #            generation only when idle. The plan in hand is therefore
+                    #            the one before the generation now running: gen_starts[0].
+                    #   bounded  the server JOINS the generation started by the previous
+                    #            call and returns exactly that: gen_starts[-1], one
+                    #            period back. Using [0] here would report two periods of
+                    #            staleness for one period of driving -- and `time_delay`
+                    #            is not a log field, the action head slices the plan by
+                    #            it, so a doubled value discards half a real plan.
+                    ref_step, ref_x, ref_y, ref_yaw = gen_starts[-1 if bounded else 0]
                     time_delay = (step - ref_step) * PHYSICS_DT
                     dxw = position[0] - ref_x
                     dyw = position[1] - ref_y
@@ -815,6 +884,12 @@ class NavigationRunner:
                         # guarantee that no metre of this episode is driven on thinking
                         # that predates the view it was driven through.
                         wait_fresh=synchronous,
+                        # Bounded async: return the plan built on the PREVIOUS call's
+                        # images, waiting for it if it is still decoding, and start the
+                        # next generation on these. Caps the blind window at one period
+                        # instead of at a whole generation, without paying synchronous
+                        # mode's full stop when the generation fits inside the period.
+                        wait_inflight=bounded,
                     )
                 except PolicyServerError as exc:
                     self._set(state="error", message=str(exc))
@@ -1011,7 +1086,8 @@ class NavigationRunner:
             timed_out=timed_out,
             controller=self.controller_name,
             policy=self.policy_label(),
-            plan_period_s=(replan_steps * PHYSICS_DT) if synchronous else 0.0,
+            plan_mode=PLAN_MODE,
+            plan_period_s=(replan_steps * PHYSICS_DT) if PLAN_MODE != "async" else 0.0,
             think_wall_s=round(think_wall_s, 1),
             base_z_step_max_m=round(self.base.z_step_max, 6),
             base_z_span_m=(round(self.base.z_max - self.base.z_min, 6)

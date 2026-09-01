@@ -209,6 +209,13 @@ class EpisodeResult:
     # with its eyes shut. Under sync it measures the decision. A results directory
     # holding both, distinguishable only by timestamp, is how a stack talks itself into
     # believing more thinking makes a policy worse.
+    # Which planning regime produced this run: "async" (the robot drives blind for a
+    # whole generation), "bounded" (blind for at most one period), or "sync" (never
+    # blind, the robot stops for every decision). Three different experiments, and the
+    # single most important field for telling them apart afterwards -- `plan_period_s`
+    # alone cannot, because bounded and sync share a period and differ entirely in what
+    # happens during it.
+    plan_mode: str = "async"
     plan_period_s: float = 0.0
     # Wall seconds the robot spent stopped, waiting for decisions. Zero under async by
     # construction, since nothing waits there. Reported next to `wall_s` because it is

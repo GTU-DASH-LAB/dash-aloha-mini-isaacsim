@@ -205,6 +205,17 @@ _state: dict = {
     # a timeout means QVLA_GEN_TIMEOUT_S is under this thinking level's real cost.
     "sync_calls": 0,
     "sync_timeouts": 0,
+    # Calls served in BOUNDED-ASYNC mode (`wait_inflight`), and what the bound cost. A
+    # stall is a decision where the planning period was not long enough to hide a
+    # generation, so the robot had to stand and wait out the remainder. These three
+    # numbers are the whole verdict on the mode: `bounded_stalls` at 0 means the bound
+    # never engaged and the run was free async with a safety guarantee; stalls on most
+    # calls means the period is shorter than this thinking level can sustain and the mode
+    # has degraded to synchronous with extra steps.
+    "bounded_calls": 0,
+    "bounded_stalls": 0,
+    "bounded_stall_s": 0.0,
+    "bounded_timeouts": 0,
     # THE HISTORY CHANNEL: the last few directions actually driven, as words. Bounded, and
     # bounded tightly -- six decisions is about twenty seconds, which is the span over
     # which "I keep choosing straight and nothing is happening" is a fact rather than a
@@ -278,6 +289,17 @@ class PredictRequest(BaseModel):
     # buys the guarantee that every metre is driven on a plan written for the frame the
     # robot was actually standing on. See run_navigation.py's NAV_PLAN_PERIOD_S.
     wait_fresh: bool = False
+    # BOUNDED ASYNC, the middle term. Keeps async's overlap of thinking with driving but
+    # caps how stale the plan under the wheels may get: the server returns the plan built
+    # on the PREVIOUS call's images, waiting for it if it is still decoding, and starts
+    # the next generation on these ones. So the blind window is exactly one planning
+    # period regardless of the thinking budget, where plain async lets it grow to a full
+    # generation and synchronous drives it to zero at the cost of a full stop.
+    #
+    # Ignored when `wait_fresh` is set -- that path guarantees a plan built on THESE
+    # images, which is strictly stronger, and taking both would be a contradiction the
+    # caller should not be able to express by accident.
+    wait_inflight: bool = False
 
 
 class PredictResponse(BaseModel):
@@ -1200,6 +1222,15 @@ def health() -> dict:
             # scored against a server still holding the previous thinking level.
             "sync_calls": _state["sync_calls"],
             "sync_timeouts": _state["sync_timeouts"],
+            # The bounded-async verdict, readable from outside the process while the run
+            # is still going. `bounded_stalls / bounded_calls` is the fraction of
+            # decisions where the planning period could not hide a generation: 0 means
+            # the mode cost nothing at all, near 1 means it has collapsed into
+            # synchronous planning and the period should be longer.
+            "bounded_calls": _state["bounded_calls"],
+            "bounded_stalls": _state["bounded_stalls"],
+            "bounded_stall_s": round(_state["bounded_stall_s"], 1),
+            "bounded_timeouts": _state["bounded_timeouts"],
             "empty_plans": _state["empty_plans"],
             "last_reasoning": _state["reasoning"],
             "has_plan": _state["plan"] is not None,
@@ -1405,6 +1436,57 @@ def predict(req: PredictRequest) -> PredictResponse:
             _state["sync_calls"] += 1
             if th.is_alive():
                 _state["sync_timeouts"] += 1
+    elif req.wait_inflight:
+        # --- BOUNDED ASYNC: pipelined, with the blind window capped at one period ------
+        # The middle term between the two regimes above, and the one that should dominate
+        # both when a generation fits inside a planning period.
+        #
+        # Plain async overlaps thinking with driving and never stops, so the robot drives
+        # blind for a whole generation and the blind window GROWS with the thinking
+        # budget -- which is why the ladder went 7/13 -> 2/13 -> 2/13. Synchronous mode
+        # caps that window at zero and pays for it with a full stop at every decision.
+        #
+        # This caps it at exactly ONE planning period instead. At call k the server hands
+        # back the plan generated from call (k-1)'s images -- joining it if it is still
+        # decoding -- and immediately starts generating from call k's images for the next
+        # call. So the robot always drives on thinking that is one period old, never
+        # older, and stalls only for whatever part of a generation did not fit inside the
+        # period. When generation is faster than the period the stall is ZERO and this is
+        # plain async with a safety bound; when it is slower, this degrades gracefully
+        # toward synchronous rather than toward blind driving.
+        #
+        # The staleness reported to the caller is honest and nonzero here, unlike the
+        # synchronous path: the robot really did move during that period, so `time_delay`
+        # and the dx,dy tail of `robot_state` carry a real signal and the action head's
+        # compensation pathway is doing the job it was built for.
+        if busy:
+            with _lock:
+                inflight = _state["gen_thread"]
+            if inflight is not None and inflight.is_alive():
+                # This is the whole safety mechanism, so it is measured rather than
+                # assumed: `bounded_stalls` counts the decisions where the period was
+                # not long enough to hide a generation, and `bounded_stall_s` is what
+                # that cost. Both zero means the bound never had to engage and the run
+                # was, in effect, free async.
+                t_stall = time.perf_counter()
+                inflight.join(timeout=GEN_TIMEOUT_S)
+                with _lock:
+                    _state["bounded_stalls"] += 1
+                    _state["bounded_stall_s"] = round(
+                        _state["bounded_stall_s"] + time.perf_counter() - t_stall, 3)
+                    if inflight.is_alive():
+                        _state["bounded_timeouts"] += 1
+        started_step = req.current_step
+        th = _spawn()
+        with _lock:
+            _state["bounded_calls"] += 1
+            # Re-read rather than reusing the `have_plan` captured before the join: the
+            # generation just waited out may be precisely the one that produced the
+            # first plan, and blocking again on the one just spawned would turn call
+            # two of every episode into a needless second full-length stop.
+            have_plan = _state["plan"] is not None
+        if not have_plan:
+            th.join(timeout=GEN_TIMEOUT_S)
     elif not busy:
         started_step = req.current_step
         th = _spawn()

@@ -59,17 +59,21 @@ STUDY = RESULTS / "sync_study"
 sys.path.insert(0, str(REPO / "nav/sim"))
 from summarize_runs import load_config, score  # noqa: E402
 
-# (label, period_s, think_level). Period 0.0 means asynchronous -- the baseline regime,
-# where the robot kept driving on a cached plan. Kept in one list so the ordering of the
-# scoreboard, the matrix columns and the narrative at the bottom cannot drift apart.
-CONDITIONS: list[tuple[str, float, str]] = [
-    ("async medium", 0.0, "medium"),
-    ("async high", 0.0, "high"),
-    ("async very_high", 0.0, "very_high"),
-    ("3.0 s medium", 3.0, "medium"),
-    ("3.0 s high", 3.0, "high"),
-    ("1.0 s medium", 1.0, "medium"),
-    ("1.0 s high", 1.0, "high"),
+# (label, period_s, level, mode). Kept in one list so the ordering of the scoreboard, the
+# matrix columns and the diagnostics cannot drift apart. Period 0.0 with mode "async" is the baseline regime,
+# recovered from the progress logs rather than from a study directory. `mode` is part of
+# the key and not decoration: "bounded" and "sync" share a period and differ entirely in
+# what the robot does during it, so a (period, level) pair does not identify a condition.
+CONDITIONS: list[tuple[str, float, str, str]] = [
+    ("async medium", 0.0, "medium", "async"),
+    ("async high", 0.0, "high", "async"),
+    ("async very_high", 0.0, "very_high", "async"),
+    ("bound3 medium", 3.0, "medium", "bounded"),
+    ("bound3 high", 3.0, "high", "bounded"),
+    ("sync3 medium", 3.0, "medium", "sync"),
+    ("sync3 high", 3.0, "high", "sync"),
+    ("sync1 medium", 1.0, "medium", "sync"),
+    ("sync1 high", 1.0, "high", "sync"),
 ]
 
 
@@ -93,6 +97,7 @@ def _load(path: Path) -> dict | None:
         return None
     plans = raw.get("plans") or []
     return scored | {
+        "plan_mode": raw.get("plan_mode"),
         "plan_period_s": raw.get("plan_period_s"),
         "think_wall_s": raw.get("think_wall_s"),
         "wall_s": raw.get("wall_s"),
@@ -140,14 +145,15 @@ def _async_runs(level: str) -> dict[str, dict]:
     return runs
 
 
-def _sync_runs(period: float, level: str) -> dict[str, dict]:
+def _sync_runs(period: float, level: str, mode: str) -> dict[str, dict]:
     """Read one synchronous condition out of its own archive directory.
 
     No timestamp matching needed here: `run_sync_study.sh` copies exactly this
     condition's results into its own folder, so the directory IS the label. Where an
     episode has more than one file -- a re-run after a crash -- the newest wins.
     """
-    d = STUDY / f"p{period:.1f}_{level}"
+    d = STUDY / (f"p{period:.1f}_{level}" if mode == "sync"
+                 else f"{mode}{period:.1f}_{level}")
     if not d.is_dir():
         return {}
     runs: dict[str, dict] = {}
@@ -159,8 +165,8 @@ def _sync_runs(period: float, level: str) -> dict[str, dict]:
     return runs
 
 
-def _runs(period: float, level: str) -> dict[str, dict]:
-    return _async_runs(level) if period == 0.0 else _sync_runs(period, level)
+def _runs(period: float, level: str, mode: str) -> dict[str, dict]:
+    return _async_runs(level) if mode == "async" else _sync_runs(period, level, mode)
 
 
 def _fmt(value, unit: str = "", spec: str = "{:.2f}", dash: str = "-") -> str:
@@ -189,7 +195,7 @@ def scoreboard(data: dict[str, dict[str, dict]]) -> list[str]:
         f"{'guard':>7} {'calls':>7} {'think':>7}",
         "-" * 74,
     ]
-    for label, _period, _level in CONDITIONS:
+    for label, _period, _level, _mode in CONDITIONS:
         runs = data[label]
         if not runs:
             out.append(f"{label:<16} {'-- not run --':>40}")
@@ -226,7 +232,7 @@ def scoreboard(data: dict[str, dict[str, dict]]) -> list[str]:
 
 
 def matrix(data: dict[str, dict[str, dict]], episodes: list[str]) -> list[str]:
-    heads = [lbl for lbl, _, _ in CONDITIONS if data[lbl]]
+    heads = [lbl for lbl, _, _, _ in CONDITIONS if data[lbl]]
     out = ["", "PER EPISODE -- closest approach in metres, * marks a success", ""]
     out.append(f"{'episode':<32}" + "".join(f"{h.replace(' ', ''):>16}" for h in heads))
     out.append("-" * (32 + 16 * len(heads)))
@@ -256,22 +262,30 @@ def diagnostics(data: dict[str, dict[str, dict]]) -> list[str]:
     moved. A nonzero max here means some episode silently fell back to async.
     """
     out = ["", "DIAGNOSTICS", ""]
-    for label, period, level in CONDITIONS:
+    for label, period, level, mode in CONDITIONS:
         runs = data[label]
-        if not runs or period == 0.0:
+        if not runs or mode == "async":
             continue
         rs = list(runs.values())
-        periods = {r.get("plan_period_s") for r in rs}
+        modes = sorted({r.get("plan_mode") or "?" for r in rs})
+        periods = sorted({x for r in rs if (x := r.get("plan_period_s")) is not None})
         stale = [t for r in rs for t in (r.get("time_delays") or [])]
         out.append(
-            f"  {label:<16} plan_period_s={sorted(x for x in periods if x is not None)}"
+            f"  {label:<16} mode={modes} period={periods}"
             f"  max time_delay={max(stale) if stale else 0.0:.3f} s"
             f"  ({len(rs)} runs)")
-    out += ["",
-            "  A plan_period_s matching the condition and a max time_delay of 0.000 s is",
-            "  what a synchronous run looks like from the outside: the robot did not move",
-            "  while the model thought, so it had nothing stale to declare.",
-            ""]
+    out += [
+        "",
+        "  The two regimes leave DIFFERENT fingerprints, and each is the proof that the",
+        "  run did what its label says:",
+        "    sync     max time_delay exactly 0.000 s. The robot did not move while the",
+        "             model thought, so it had nothing stale to declare. Anything above",
+        "             zero means an episode silently fell back to driving blind.",
+        "    bounded  max time_delay at or just under the period, and NEVER far above it.",
+        "             The robot did drive, so a real delay is expected and honest; a max",
+        "             well past the period means the bound is not holding and the run is",
+        "             async wearing the wrong label.",
+        ""]
 
     jitter = [(r.get("base_z_step_max_m"), r.get("base_z_span_m"))
               for runs in data.values() for r in runs.values()
@@ -298,7 +312,8 @@ def main() -> int:
                     help="also print the synchronicity and jitter diagnostics")
     args = ap.parse_args()
 
-    data = {label: _runs(period, level) for label, period, level in CONDITIONS}
+    data = {label: _runs(period, level, mode)
+            for label, period, level, mode in CONDITIONS}
 
     # Episode order comes from the config, which is ranked easiest-first, so the matrix
     # reads down the ladder the way the ladder ran. Anything found in a result but not in

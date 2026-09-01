@@ -116,6 +116,7 @@ class PolicyClient:
         recovery_kind: str = "",
         stalled_s: float = 0.0,
         wait_fresh: bool = False,
+        wait_inflight: bool = False,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -145,7 +146,14 @@ class PolicyClient:
         robot first -- that is the whole point of it, and returning a fresh plan to a robot
         that kept driving would buy nothing. See run_navigation.py's NAV_PLAN_PERIOD_S.
 
-        All four are ignored by `server.py`, so they are safe to send either way. That is
+        `wait_inflight` is the middle setting: return the plan built on the PREVIOUS
+        call's images, waiting for it only if it is still decoding, and start the next
+        generation on these. The robot keeps driving, but never on thinking more than one
+        planning period old -- where plain async lets that age grow to a whole generation
+        and therefore with the thinking budget. Send at most one of the two; `wait_fresh`
+        wins if both arrive, since it is the strictly stronger guarantee.
+
+        All of them are ignored by `server.py`, so they are safe to send either way. That is
         not incidental: the runner talks to whichever server is listening, and a field that
         broke the TIC-VLA baseline would make the two policies un-comparable on the same
         ladder. `wait_fresh` is the one to watch there -- TIC-VLA's own loop is genuinely
@@ -167,5 +175,6 @@ class PolicyClient:
                 "recovery_kind": recovery_kind,
                 "stalled_s": stalled_s,
                 "wait_fresh": wait_fresh,
+                "wait_inflight": wait_inflight,
             },
         )

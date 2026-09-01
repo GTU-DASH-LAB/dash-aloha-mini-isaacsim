@@ -626,6 +626,32 @@ STAGE_RULE = ("The instruction may list several moves in order; do only the earl
               "not yet done. Where it names a direction the description does not call "
               "open, follow the description.")
 
+# THE ANSWER IS FORCED, not requested. `select_system` already ends with "Answer with the
+# number and nothing else", and 392 of 6673 decisions across the campaign ignored it and
+# wrote prose instead -- "Based on the navigation instruction to", "Looking at the image
+# and the" -- truncated mid-sentence by the 8-token answer budget, naming no label at all.
+# `menu_plan` then returns None and the robot reuses the plan it already had.
+#
+# The rate is what makes this structural rather than cosmetic. It is 0.3% on a clean
+# prompt and 9.2% once the robot is stalled, 20-22% on the decision right after a recovery
+# manoeuvre: the prompts that carry an extra paragraph are the prompts the model
+# summarises instead of answering, so the decision channel goes missing exactly in the
+# situations the extra paragraph was added to handle. And it latches -- no answer means
+# reusing the plan that was already not working, which keeps the robot stalled, which
+# keeps the note in the prompt.
+#
+# Ending the prompt mid-sentence makes the point structurally: after "The number is " the
+# next token cannot be "Based"; it has to be a digit. This is the same device the waypoint
+# formats have always used (`ANSWER_PREFIX = "<answer>("`) and `think_then_answer` already
+# takes a `prefill` argument for it -- the menu's select call was simply the one caller
+# that never passed one.
+#
+# NO DIGIT MAY APPEAR IN EITHER STRING. The prefill is prepended to the reply the parser
+# sees, and `parse_choice_speed` takes the FIRST integer as the path label, so a digit
+# here would become the robot's steering choice.
+SELECT_PREFILL = "The number is "
+SELECT_PREFILL_SPEED = "The two numbers are "
+
 
 def select_system(stop_label: int, stop_allowed: bool = True,
                   speed_choice: bool = False,

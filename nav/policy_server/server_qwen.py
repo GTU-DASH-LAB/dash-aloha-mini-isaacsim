@@ -71,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
     CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
     DESCRIBE_TARGET, FREE_SPACE_SYSTEM, SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY,
+    SELECT_PREFILL, SELECT_PREFILL_SPEED,
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
     allocate_labels, make_arcs, parse_choice_speed, parse_target_distance, pivot_word,
     plan_from_kappa, render_menu, select_system, speed_for, speed_from_level, stop_label,
@@ -1036,12 +1037,19 @@ def menu_plan(image_paths: list[str], instruction: str,
             + f"Navigation instruction: {instruction}\n\n"
             + ("Which numbered path do you take, and how fast?" if ask_speed
                else "Which numbered path do you take?"))
+    # The prefill is what makes the next token a digit instead of "Based". Without it this
+    # call answered with prose on 5.9% of the campaign's decisions and on 20-22% of the
+    # ones right after a recovery -- see SELECT_PREFILL for the numbers and the mechanism.
+    # It varies with `ask_speed` for the same reason the answer rule does: the contract is
+    # one number or two, and a prefill that promises the wrong count is a prompt arguing
+    # with itself.
+    prefill = SELECT_PREFILL_SPEED if ask_speed else SELECT_PREFILL
     reply, sel_think, _ = think_then_answer(
         # A balk takes STOP away for the same reason a wedge does, and with a stronger
         # case: the front was measured CLEAR, so "every drawn path runs into something"
         # is not merely unlikely here, it is known false.
         [menu], _menu_system(not kind, ask_speed, pivot_labels), user,
-        int(LEVEL["select_think"]), int(LEVEL["answer"]))
+        int(LEVEL["select_think"]), int(LEVEL["answer"]), prefill=prefill)
 
     choice, level = parse_choice_speed(reply)
     if ask_speed and level is not None:
@@ -1052,9 +1060,13 @@ def menu_plan(image_paths: list[str], instruction: str,
         # close, so a model that declines to answer gets a slow approach, not a fast one.
         speed, speed_src = speed_for(target_m, MENU_SPEED_MPS), "ramp"
 
+    # The log shows what the MODEL wrote, not the prefill written for it. `reply` keeps the
+    # prefill because that is the string the parser was handed, but a 20-character window
+    # spent on our own words would push the answer off the end of every line.
+    said = reply[len(prefill):] if reply.startswith(prefill) else reply
     note = ((f"[after {kind}] " if kind else "")
             + (f"[history] {hist}\n" if hist else "")
-            + f"[free space] {seen}\n[menu] {labels} -> {reply.strip()[:20]!r}")
+            + f"[free space] {seen}\n[menu] {labels} -> {said.strip()[:20]!r}")
     if seen_think or sel_think:
         # The reasoning is kept in the note, which is what `/health` returns as
         # `last_reasoning` and what the video prints. At `medium` both are empty strings

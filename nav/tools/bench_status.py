@@ -41,9 +41,18 @@ def _health() -> dict | None:
 
 
 def _ladder() -> list[str]:
+    """The episodes this run is actually driving, not every episode that exists.
+
+    `bench.sh --only` narrows the ladder and nothing downstream used to know it, so a
+    13-episode run against a 19-episode config reported "6 of 19 scored" and looked
+    stalled at 3 a.m. when it was half done. QVLA_LADDER_ONLY carries the same list the
+    ladder was given; unset, this is every episode, exactly as before.
+    """
     import yaml
     cfg = yaml.safe_load((REPO / "nav/config/episodes.yaml").read_text())
-    return list(cfg["episodes"])
+    names = list(cfg["episodes"])
+    only = [s for s in os.environ.get("QVLA_LADDER_ONLY", "").split(",") if s.strip()]
+    return [n for n in names if n in only] if only else names
 
 
 def status() -> str:

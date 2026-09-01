@@ -37,6 +37,13 @@ running() {
   fi
 }
 
+# Names this ladder in the SUBJECT, for the same reason on_episode.sh does it: a campaign
+# that runs the same thirteen episodes under four configurations puts four sets of hourly
+# mails in one inbox, and "hourly update #2" appears in all four. The body has carried the
+# tag all along (bench_status.py prints it first), but a subject you have to open to
+# disambiguate is a subject that does not work on a phone.
+TAG="${QVLA_RUN_TAG:-}"
+
 n=0
 while :; do
   # Sleep FIRST. This starts right after the ladder does, and a status mail sent before
@@ -46,10 +53,10 @@ while :; do
   BODY="$(python3 nav/tools/bench_status.py 2>&1)"
   if running; then
     python3 nav/tools/notify_run.py \
-      --subject "[qvla ladder] hourly update #$n -- $(date +%H:%M)" --body "$BODY"
+      --subject "[qvla${TAG:+ $TAG}] hourly update #$n -- $(date +%H:%M)" --body "$BODY"
   else
     python3 nav/tools/notify_run.py \
-      --subject "[qvla ladder] FINISHED -- $(date +%H:%M)" \
+      --subject "[qvla${TAG:+ $TAG}] LADDER FINISHED -- $(date +%H:%M)" \
       --body "The benchmark process is no longer running.
 
 $BODY

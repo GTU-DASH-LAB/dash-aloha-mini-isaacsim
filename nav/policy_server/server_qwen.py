@@ -71,7 +71,8 @@ from scipy.interpolate import PchipInterpolator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
     ARC_SET, CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
-    DESCRIBE_TARGET, DESCRIBE_MEMORY, FREE_SPACE_SYSTEM, FREE_SPACE_SYSTEM_2,
+    DESCRIBE_OPEN_SET, DESCRIBE_TARGET, DESCRIBE_TARGET_DIR, DESCRIBE_MEMORY,
+    parse_heading_word, FREE_SPACE_SYSTEM, FREE_SPACE_SYSTEM_2,
     SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY, SELECT_PREFILL, SELECT_PREFILL_SPEED,
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
     allocate_labels, make_arcs, parse_choice_speed, parse_target_distance, pivot_word,
@@ -932,12 +933,20 @@ MENU_PIVOTS = os.environ.get("QVLA_MENU_PIVOTS", "0").lower() in ("1", "true", "
 # a path that is not there.
 MENU_FRAMES = max(1, int(os.environ.get("QVLA_MENU_FRAMES", "1")))
 
+# Whether the describe call reports a goal DIRECTION and a set of open directions, in
+# place of the single "most open" superlative every arm so far has run on. See the block
+# above `DESCRIBE_OPEN_SET` in arc_menu.py for the 840-decision cross-tab that motivates
+# it. Off by default: every result in `nav/results/hard_study/` was measured under the
+# superlative, and changing the prompt in place would leave the reference arm
+# unreproducible -- the same class of mistake as the shared label RNG.
+MENU_GOAL_DIR = os.environ.get("QVLA_GOAL_DIR", "0").lower() in ("1", "true", "yes")
+
 _STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
 
 
 @lru_cache(maxsize=512)
 def _menu_system(stop_allowed: bool, speed_choice: bool,
-                 pivot_labels: tuple[int, int] | None) -> str:
+                 pivot_labels: tuple[int, int] | None, goal_dir: bool = False) -> str:
     """The selector system prompt for one combination of the flags that vary per call.
 
     Built through a cache rather than precomputed at import, which is what this was
@@ -951,7 +960,8 @@ def _menu_system(stop_allowed: bool, speed_choice: bool,
     format, and no error is raised when it does.
     """
     return select_system(_STOP_LABEL, stop_allowed=stop_allowed,
-                         speed_choice=speed_choice, pivot_labels=pivot_labels)
+                         speed_choice=speed_choice, pivot_labels=pivot_labels,
+                         goal_dir=goal_dir)
 
 # Shuffled per call rather than fixed, because a stable numbering is the one confound that
 # makes this whole approach look like it works when it does not: number the arcs left to
@@ -1053,19 +1063,38 @@ def menu_plan(image_paths: list[str], instruction: str,
     # the SECOND image, and there is no second image to describe.
     frames = image_paths[-MENU_FRAMES:] if MENU_FRAMES > 1 else [newest]
     remembering = len(frames) > 1
-    describe = (DESCRIBE_SIDED + after_note
-                + DESCRIBE_TARGET.format(instruction=instruction)
+    # The goal-direction variant swaps BOTH halves or neither. Asking for the open SET while
+    # still asking only for the target's distance would drop the one channel the change
+    # exists to add; asking for a HEADING while the free-space sentence still reports a
+    # single superlative would put two answers to the same question in one reply, and
+    # `STAGE_RULE_GOAL` tells the selector to use both. They are one change with two
+    # sentences, not two independent knobs.
+    describe = ((DESCRIBE_OPEN_SET if MENU_GOAL_DIR else DESCRIBE_SIDED) + after_note
+                + (DESCRIBE_TARGET_DIR if MENU_GOAL_DIR
+                   else DESCRIBE_TARGET).format(instruction=instruction)
                 + (DESCRIBE_MEMORY if remembering else ""))
     # 110 tokens at medium was sized for two sentences plus the TARGET line. The recovery
     # note asks for no extra output -- it changes what the model looks at, not what it
     # writes -- so the budget does not rise with it, only with the thinking level. The
     # memory sentence DOES ask for more output, so it gets its own allowance rather than
     # eating the TARGET line, which is the part the speed channel depends on.
+    #
+    # The goal-direction variant gets the same allowance for the same reason, and here it is
+    # load-bearing rather than prudent: HEADING is the LAST line of the reply, so a budget
+    # that runs out truncates precisely the channel this arm exists to add -- and it fails
+    # silently, as a `parse_heading_word` of None that reads exactly like a model declining
+    # to answer. It also asks for a list where the old question asked for one word.
     seen, seen_think, _ = think_then_answer(
         frames, FREE_SPACE_SYSTEM_2 if remembering else FREE_SPACE_SYSTEM, describe,
-        int(LEVEL["describe_think"]), int(LEVEL["describe"]) + (40 if remembering else 0))
+        int(LEVEL["describe_think"]),
+        int(LEVEL["describe"]) + (40 if remembering else 0) + (40 if MENU_GOAL_DIR else 0))
     seen = seen.strip().replace("\n", " ")
     target_m = parse_target_distance(seen)
+    # None here is not an error and must not be filled in. It means the describe call gave
+    # no heading, and the honest response is to fall back to the reference behaviour --
+    # choose on free space alone -- rather than to invent a direction that would then steer
+    # with the full authority of the menu on no evidence.
+    heading = parse_heading_word(seen) if MENU_GOAL_DIR else None
 
     # THE SPEED CHANNEL. Near the target the model is offered the choice; far from it, or
     # with no estimate at all, the ramp decides exactly as before. Opening the question
@@ -1077,7 +1106,13 @@ def menu_plan(image_paths: list[str], instruction: str,
         recent = list(_state["recent"])
     hist = history_note(recent, stalled_s)
 
+    # The heading is repeated as its own line even though `seen` already contains it. Call
+    # 2 reads the description as prose, and the whole reason CHAIN scored 72% where SIDED
+    # scored 100% is that a fact buried in a sentence is a fact the second call does not act
+    # on. `STAGE_RULE_GOAL` names HEADING explicitly, so it has to be findable.
     user = (f"What the robot can see ahead of it: {seen}\n\n"
+            + (f"The direction the task needs to go next -- HEADING: {heading}\n\n"
+               if heading else "")
             + (f"{hist}\n\n" if hist else "")
             + ({"wedge": f"{SELECT_AFTER_RECOVERY}\n\n",
                 "balk": f"{SELECT_AFTER_BALK}\n\n"}.get(kind, ""))
@@ -1095,7 +1130,7 @@ def menu_plan(image_paths: list[str], instruction: str,
         # A balk takes STOP away for the same reason a wedge does, and with a stronger
         # case: the front was measured CLEAR, so "every drawn path runs into something"
         # is not merely unlikely here, it is known false.
-        [menu], _menu_system(not kind, ask_speed, pivot_labels), user,
+        [menu], _menu_system(not kind, ask_speed, pivot_labels, MENU_GOAL_DIR), user,
         int(LEVEL["select_think"]), int(LEVEL["answer"]), prefill=prefill)
 
     choice, level = parse_choice_speed(reply)
@@ -1202,6 +1237,7 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 "step": step, "menu": Path(menu).name, "instruction": instruction,
                 "labels": labels, "choice": choice, "kappa": kappa,
                 "stop": choice == _STOP_LABEL, "free_space": seen, "reply": reply,
+                "heading": heading,
                 # Both, and for the same reason `labels` is stored: the pivot numbers are
                 # shuffled per call, so without the pair a replay cannot tell which glyph
                 # the model picked, and `pivot_rad` alone cannot say what the alternative

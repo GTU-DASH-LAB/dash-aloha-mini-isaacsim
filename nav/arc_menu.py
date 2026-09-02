@@ -400,6 +400,121 @@ DESCRIBE_SIDED = (
     "robot could drive along -- far left, left, straight ahead, right, or far right.")
 
 # --------------------------------------------------------------------------------------
+# WHY THE SUPERLATIVE ABOVE IS THE CEILING ON THIS WHOLE POLICY
+# --------------------------------------------------------------------------------------
+# `DESCRIBE_SIDED` asks for an ARGMAX over open floor, and `STAGE_RULE` below tells the
+# select call to follow it. Cross-tabulating the two over 840 decisions from four
+# reference ladders shows what that combination actually built:
+#
+#   describe said     n     chose straight   mean kappa
+#   far left         36           11%           +0.533
+#   left             38           21%           +0.326
+#   straight        668           94%           -0.008
+#   right            96            6%           -0.373
+#   far right         2            0%           -0.600
+#
+# The selector is a lookup table on one word. That would be fine if the word tracked the
+# task, and it does not: holding the word fixed, the correlation between the bearing error
+# to the goal and the chosen curvature is +0.042 for `straight` (n=668), +0.09 and +0.11
+# for `left` and `right`. And the word itself does not point at the goal either -- the
+# `right` bucket has the goal a mean 6.2 degrees to the LEFT. So the goal-to-action channel
+# carries essentially no information, and the closed loop reduces to "follow the corridor
+# you are in". Whether an episode succeeds is then a property of the MAP -- does the
+# corridor's medial axis pass within 1.5 m of the goal -- rather than of the policy.
+#
+# That single fact explains the campaign. All thirteen episodes have been solved at least
+# once and none is solved reliably; every intervention tried so far (11 arcs instead of 7,
+# 15-degree pivots, a second frame) changed the ACTION space and moved nothing, because the
+# bottleneck is the OBSERVATION. A better actuator cannot steer to a goal that is not in
+# the input.
+#
+# Two things are wrong with the question and they are separate:
+#
+#   1. A SUPERLATIVE DESTROYS THE FEASIBLE SET. In a corridor, straight is always more open
+#      than the side hallway you are supposed to take, so the correct turn is never named.
+#      What the decision needs is which directions are DRIVABLE -- a set -- so that the goal
+#      can pick within it. An argmax over safety pre-empts the choice that belongs to the
+#      task.
+#   2. THERE IS NO GOAL DIRECTION ANYWHERE. `DESCRIBE_TARGET` asks how FAR the target is and
+#      never which WAY, so when the target is not visible -- 142 of 243 frames on
+#      `warehouse_aisle6` -- free space is the only directional signal in the system.
+#
+# These two constants address exactly those two things and nothing else, and they are
+# selected by `QVLA_GOAL_DIR=1` rather than replacing the originals, because every number in
+# `nav/results/hard_study/` was measured under the wording above and an in-place edit would
+# leave the reference arm unreproducible -- the same mistake the shared label RNG made.
+#
+# THEY DO NOT WORK, AND THEY ARE KEPT BECAUSE THE IDEA IS TOO GOOD TO NOT BE RE-TRIED.
+# `probe_goal_direction.py` asks both questions of the same pixels, on the exact decisions
+# where the reference policy said `straight` while the goal was 40+ degrees off the nose and
+# the run went on to fail:
+#
+#   on 20 such moments               old question   new question
+#   named a side at all                 5/20            3/20
+#   named the RIGHT side                  --            2/20
+#   control (goal really ahead):
+#   said straight ahead                18/20           19/20
+#
+# So HEADING collapses to `straight ahead` on 17 of the 20 moments that needed a turn. The
+# control holds, which rules out the cheap explanation -- this is not a variant that has
+# merely failed to acquire a turning bias.
+#
+# The OPEN SET half fails differently and the failure is easy to mistake for a win: it
+# names the needed side on 15/20 against the superlative's 2/20, but 10 of those 20 answers
+# list ALL FIVE directions, which is recall of 100% at a precision of zero. Scored only on
+# the answers that could have been wrong -- a real subset, mean 2.6 of 5 directions -- it is
+# 4/7, which is what a set that size scores by construction. The headline is an artifact of
+# the word "EVERY" in the question.
+#
+# WHY, and this is the finding that matters, because it is not about wording at all. The
+# describe call is asked which way the task needs to go, and on these frames it genuinely
+# cannot know. Across all 844 reference decisions the model reports `TARGET: not visible`
+# on 65% of them, and the rate rises monotonically with the size of the turn required:
+#
+#   bearing error to goal      0-15 deg   15-40   40-90   90-180
+#   target not visible            42%      55%     81%      92%
+#
+# A turn is needed exactly when the goal is behind a wall. So a policy that decides from the
+# current frame alone is structurally incapable of these episodes, and no phrasing repairs
+# that -- `straight ahead` was the model being honest. What is missing is STATE: which
+# clause of the instruction is in progress, whether the doorway it names has been passed
+# yet, and how far and how much the robot has turned since it was told. Two frames three
+# seconds apart is not that, which is also why the `memory` arm moved nothing.
+DESCRIBE_OPEN_SET = (
+    "Answer in two short sentences. First: is there a wall, a door, a doorframe or a large "
+    "object straight ahead of the robot within about 3 metres? Name it, or say the way "
+    "ahead is open. Second: list EVERY direction in which the robot could drive at least a "
+    "few metres over open, walkable floor -- any of far left, left, straight ahead, right, "
+    "far right -- not only the most open one. A side corridor, an open doorway or a gap "
+    "between shelves counts as open even when the way straight ahead is wider.")
+
+# The goal-direction question, and the reason it is safe to ask. Naming where a thing is is
+# perception, which this model is good at and which was measured separately: forced choice
+# between a blocked and an open frame scored 70/70, and the free text named the obstacle
+# with a distance on 6/6 frames. It is emphatically NOT `bearing_to_goal` -- that is scoring
+# only and is never fed to the policy. The model is being asked what it can see, exactly as
+# it is already asked for the distance.
+#
+# The TARGET line keeps its wording and its position character for character, because
+# `parse_target_distance` anchors on it and losing it is a silent regression in the speed
+# channel rather than a failure. The HEADING line is asked for in the SAME sentence so that
+# "finish your answer with these two lines" is still the last thing the model reads --
+# appending a second request after the TARGET instruction is what would break it.
+#
+# The `not visible` branch is the half that matters. It is where a corridor-follower is
+# indistinguishable from a navigator, and it is the state the failing episodes spend most
+# of their decisions in, so the question has to keep producing a direction when the answer
+# is a guess from the layout rather than a sighting.
+DESCRIBE_TARGET_DIR = (
+    " Third: the robot has been told \"{instruction}\". Finish your answer with exactly "
+    "these two lines:\n"
+    "TARGET: <number> m   (roughly how far away the place or object that instruction names "
+    "is, or exactly 'TARGET: not visible' if you cannot see it)\n"
+    "HEADING: <far left | left | straight ahead | right | far right>   (which way the robot "
+    "must go NEXT to carry out that instruction -- toward the target if you can see it, and "
+    "otherwise the way the room or corridor leads toward where it must be)")
+
+# --------------------------------------------------------------------------------------
 # GIVING THE DESCRIBE CALL A MEMORY
 # --------------------------------------------------------------------------------------
 # The menu format has always shown the model ONE frame, and the reason was good: the
@@ -665,6 +780,41 @@ def parse_target_distance(reply: str) -> float | None:
     return min(lo, float(m.group(3))) if m.group(3) else lo
 
 
+# Anchored on the HEADING label rather than searched for anywhere, and the reason is the
+# same one that gave the TARGET line its own label: by the time this runs, the reply already
+# contains the words "left" and "right" in the free-space sentence, so a bare direction
+# search reads the OPEN SET and calls it the goal. The two channels exist precisely to
+# disagree -- open floor is not where the goal is, and if it were, none of this would be
+# needed.
+#
+# Longest-first alternation, because Python's `|` is first-match, not longest-match: with
+# "left" before "far left" every "far left" parses as "left" and the widest turn on the
+# menu becomes unreachable.
+_HEADING_RE = re.compile(
+    r"HEADING\s*[:\-]?\s*\**\s*"
+    r"(far\s*left|far\s*right|hard\s*left|hard\s*right|left|right|"
+    r"straight\s*ahead|straight|ahead|forward)", re.IGNORECASE)
+
+_HEADING_WORDS = {"far left": "far left", "hard left": "far left",
+                  "far right": "far right", "hard right": "far right",
+                  "left": "left", "right": "right",
+                  "straight ahead": "straight ahead", "straight": "straight ahead",
+                  "ahead": "straight ahead", "forward": "straight ahead"}
+
+
+def parse_heading_word(reply: str) -> str | None:
+    """The direction the describe call says the task needs next, or None if it did not say.
+
+    None is a real answer and must stay cheap. It means the select call runs on free space
+    alone -- exactly the reference policy -- rather than on a direction invented to fill the
+    field. A fabricated heading is worse than no heading: it steers with full authority
+    (the cross-tab above shows one word moving mean kappa across the whole menu span) on no
+    evidence at all.
+    """
+    m = _HEADING_RE.search(reply)
+    return _HEADING_WORDS[" ".join(m.group(1).lower().split())] if m else None
+
+
 def speed_for(target_m: float | None, cruise: float = CRUISE_MPS) -> float:
     """Plan speed from the model's estimate of how far the target is.
 
@@ -749,6 +899,35 @@ STAGE_RULE = ("The instruction may list several moves in order; do only the earl
               "not yet done. Where it names a direction the description does not call "
               "open, follow the description.")
 
+# THE SECOND SENTENCE OF `STAGE_RULE` IS WHAT MAKES THIS A CORRIDOR-FOLLOWER, and it is
+# worth being precise about, because it was added for a real failure and it did fix that
+# failure. `hospital_exit_room` turned right before the doorway instead of after it, so the
+# rule was written to stop a commanded direction being spent early. It does that by making
+# free space OUTRANK the instruction whenever the two disagree -- and since
+# `DESCRIBE_SIDED` reports a superlative, and a corridor is always more open than the side
+# hallway leading off it, the two disagree at exactly the junctions where the turn is
+# needed. The measured consequence is in the cross-tab beside `DESCRIBE_OPEN_SET`: 668 of
+# 840 decisions ran under "straight", and 94% of those went straight.
+#
+# The right fix for turning early is a STAGE condition -- turn once you are through the
+# doorway -- not a blanket override, and the first sentence already says that. So this
+# version keeps sentence one verbatim and replaces sentence two with a lexicographic rule:
+# feasibility filters, the task orders. That is the standard shape for a constrained
+# choice, and it is what the original wording collapsed into a single argmax.
+#
+# On length: `probe_instruction_stage.py` rejected a longer candidate because the model
+# answered "Based on the..." instead of a digit on 3 of 9 calls. That constraint is gone --
+# `SELECT_PREFILL` now ends the prompt mid-sentence, so the next token cannot be "Based",
+# and the prose rate it was protecting against went from 5.9% of the campaign to a
+# structural zero. Three sentences are affordable now; nine would still not be.
+STAGE_RULE_GOAL = (
+    "The instruction may list several moves in order; do only the earliest one not yet "
+    "done. The description ends with a HEADING, which is the direction the task needs to "
+    "go next, and it separately lists which directions are open: choose the drawn path "
+    "that goes closest to the HEADING among the paths that stay on open floor. Only when "
+    "no open path leads that way should you go elsewhere, and then pick the one that keeps "
+    "the HEADING reachable rather than the one with the most room.")
+
 # THE ANSWER IS FORCED, not requested. `select_system` already ends with "Answer with the
 # number and nothing else", and 392 of 6673 decisions across the campaign ignored it and
 # wrote prose instead -- "Based on the navigation instruction to", "Looking at the image
@@ -778,8 +957,16 @@ SELECT_PREFILL_SPEED = "The two numbers are "
 
 def select_system(stop_label: int, stop_allowed: bool = True,
                   speed_choice: bool = False,
-                  pivot_labels: tuple[int, int] | None = None) -> str:
+                  pivot_labels: tuple[int, int] | None = None,
+                  goal_dir: bool = False) -> str:
     """The arc-selection system prompt, with `stop_label` reserved for stopping.
+
+    `goal_dir=True` swaps `STAGE_RULE` for `STAGE_RULE_GOAL` and rewrites the path-judging
+    sentence, and the two go together: the rule tells the model to rank open paths by the
+    HEADING, and leaving "prefer the path with the most open floor" standing underneath it
+    would be a prompt arguing with itself over the exact question at issue. It is off by
+    default so that every arm already on disk keeps running under the words it was measured
+    under.
 
     `stop_allowed=False` takes that choice away for one decision, and it is used on the
     calls immediately after a recovery manoeuvre -- either kind, a wedge or a balk. The
@@ -878,9 +1065,14 @@ in a numbered circle. The numbers are arbitrary tags, not an order: they do not 
 to right and carry no meaning beyond identifying a path.
 
 Your job is to choose the one option that best carries out the navigation instruction. \
-{STAGE_RULE} \
-Judge each path by where it actually goes on the floor in the image. Prefer a path that \
-stays on open, walkable floor and does not run into a wall, a door frame or an object.
+{STAGE_RULE_GOAL if goal_dir else STAGE_RULE} \
+Judge each path by where it actually goes on the floor in the image. {
+"A path is usable when it stays on open, walkable floor and does not run into a wall, a \
+door frame or an object; among the usable ones, the one that goes where the task needs to \
+go wins, and going straight because it is roomier is how a robot drives past its turning."
+if goal_dir else
+"Prefer a path that stays on open, walkable floor and does not run into a wall, a door \
+frame or an object."}
 {f"{chr(10)}{pivot_rule}{chr(10)}" if pivot_rule else ""}
 {stop_rule}
 

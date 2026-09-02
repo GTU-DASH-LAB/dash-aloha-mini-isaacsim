@@ -55,14 +55,22 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO" || exit 1
 
-# name  arc_set  pivots  frames
-ARMS_ALL="ref:coarse:0:1 all:fine:1:2 pivot15:coarse:1:1 memory:coarse:0:2 fine11:fine:0:1"
+# name : arc_set : pivots : frames [: seeds]
+#
+# `refrep` is `ref` a second time at seed 0 and nothing else, and it runs SECOND rather
+# than last. It is the determinism check, and a determinism check that arrives after the
+# results it licenses has arrived too late: if the same configuration run twice does not
+# give the same six verdicts, then no arm below it has been shown to differ from any
+# other, and the remaining eleven hours should be spent on that instead.
+ARMS_ALL="ref:coarse:0:1 refrep:coarse:0:1:0 all:fine:1:2 pivot15:coarse:1:1 \
+memory:coarse:0:2 fine11:fine:0:1"
 SEEDS="0 1 2"
+SEEDS_FROM_CLI=0
 ARM_FILTER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --arms)  ARM_FILTER="$2"; shift 2 ;;
-    --seeds) SEEDS="$(printf '%s' "$2" | tr ',' ' ')"; shift 2 ;;
+    --seeds) SEEDS="$(printf '%s' "$2" | tr ',' ' ')"; SEEDS_FROM_CLI=1; shift 2 ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -106,17 +114,42 @@ export QVLA_LADDER_ONLY="$EPISODES"
 N_ARM=$(printf '%s' "$ARMS" | wc -w)
 N_SEED=$(printf '%s' "$SEEDS" | wc -w)
 N_EP=$(printf '%s' "$EPISODES" | awk -F, '{print NF}')
+# Counted by walking the arms rather than multiplying, because an arm may pin its own
+# seeds. A header that says 18 ladders when 16 will run is the kind of small lie that
+# makes somebody think the campaign died early.
+N_LADDER=0
+for spec in $ARMS; do
+  IFS=: read -r _ _ _ _ S_ <<<"$spec"
+  if [ -n "${S_:-}" ] && [ "$SEEDS_FROM_CLI" = 0 ]; then
+    N_LADDER=$((N_LADDER + $(printf '%s' "$S_" | tr ',' ' ' | wc -w)))
+  else
+    N_LADDER=$((N_LADDER + N_SEED))
+  fi
+done
 echo "================================================================"
-echo "  hard-episode study -- $N_ARM arms x $N_SEED seeds x $N_EP episodes"
-echo "  = $((N_ARM * N_SEED)) ladders, $((N_ARM * N_SEED * N_EP)) runs, ~6 min each"
+echo "  hard-episode study -- $N_ARM arms, $N_EP episodes each"
+echo "  = $N_LADDER ladders, $((N_LADDER * N_EP)) runs, ~9 min each"
 echo "  results: $STUDY"
 echo "================================================================"
 printf '  %s\n' $(printf '%s' "$EPISODES" | tr ',' ' ')
 echo
 
 python3 nav/tools/notify_run.py \
-  --subject "[hard] study started -- $((N_ARM * N_SEED * N_EP)) runs on the 6 unsolved episodes" \
+  --subject "[hard] study restarted -- $((N_LADDER * N_EP)) runs on the 6 unsolved episodes" \
   --body "Focusing on the episodes that stayed broken, as asked.
+
+RESTARTED after one ladder, because that ladder's own reproducibility check failed and
+found a real defect. The label generator was built once per server process and drawn from
+across a whole ladder, so an episode's permutation depended on how many decisions the
+episodes BEFORE it had consumed. hospital_exit_room at seed 0 drew [5,6,1,2,7,4,3] in the
+13-episode ladder and [6,7,1,2,5,4,3] in the 6-episode one -- a different menu, a
+different answer, from the same seed.
+
+That is worse than an irreproducible re-run. The decision count differs between ARMS too,
+so an arm whose first episode finished in 30 decisions handed its second episode a
+different permutation than an arm that took 45: part of every arm-to-arm difference in
+this campaign was a different draw rather than a different policy. The generator is now
+reseeded per episode from (seed, episode name), so a permutation depends on nothing else.
 
 The six, and their record across the six arms measured so far:
 
@@ -132,6 +165,7 @@ Everything above 50% flips with the configuration, so it measures noise. These d
 $N_ARM arms, each run at three label seeds, all at think level medium:
 
   ref       coarse 7 arcs,  no turns,       one frame     the current best
+  refrep    ref again at seed 0                           the determinism check
   all       fine 11 arcs,   15 deg turns,   two frames    what was asked for
   pivot15   coarse 7 arcs,  15 deg turns,   one frame     the turn alone
   memory    coarse 7 arcs,  no turns,       two frames    the memory alone
@@ -139,13 +173,18 @@ $N_ARM arms, each run at three label seeds, all at think level medium:
 
 Three seeds because decoding is greedy -- the only thing drawn is the label permutation,
 and a policy that only works under one arrangement of the digits is not a policy that
-works. It also gives a free check: ref at seed 0 is the configuration that already ran as
-p3.0_medium, so if those six do not reproduce, something outside the seed is moving.
+works.
+
+refrep runs SECOND, not last. It is ref again with identical settings at the same seed,
+and it asks the only question that licenses everything below it: is this stack a function
+of its inputs? If the same configuration run twice does not give the same six verdicts,
+then no arm has been shown to differ from any other and the remaining hours belong to
+that instead. It is now answerable at all only because of the reseeding fix above.
 
 Mail follows at every arm boundary. log: /tmp/hard_study.log" || echo "!! start mail failed"
 
 for spec in $ARMS; do
-  IFS=: read -r ARM ARCSET PIV FRAMES <<<"$spec"
+  IFS=: read -r ARM ARCSET PIV FRAMES ARM_SEEDS <<<"$spec"
   export QVLA_MENU_ARCS="$ARCSET"
   export QVLA_MENU_PIVOTS="$PIV"
   export QVLA_MENU_FRAMES="$FRAMES"
@@ -154,7 +193,14 @@ for spec in $ARMS; do
   # from the previous arm is exactly the failure `run_level_ladder.sh` now refuses to
   # drive through, and the cheapest place to not have it is here.
 
-  for SEED in $SEEDS; do
+  # An arm may pin its own seeds. Only `refrep` does: repeating a determinism check at
+  # three seeds would answer the same question three times at three times the cost.
+  # `--seeds` on the command line still wins, so a deliberate re-run is not overridden.
+  ARM_SEED_LIST="$SEEDS"
+  [ -n "${ARM_SEEDS:-}" ] && [ "$SEEDS_FROM_CLI" = 0 ] && \
+    ARM_SEED_LIST="$(printf '%s' "$ARM_SEEDS" | tr ',' ' ')"
+
+  for SEED in $ARM_SEED_LIST; do
     export QVLA_MENU_SEED="$SEED"
     NAME="${ARM}_s${SEED}"
     DEST="$STUDY/$NAME"

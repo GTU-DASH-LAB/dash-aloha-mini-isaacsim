@@ -49,9 +49,10 @@ _CFG = load_config()
 # order they finish in. Arms absent from disk are skipped rather than shown empty: a study
 # stopped after two arms should read as two arms, not as five with three blanks that look
 # like failures.
-ARM_ORDER = ["ref", "all", "pivot15", "memory", "fine11"]
+ARM_ORDER = ["ref", "refrep", "all", "pivot15", "memory", "fine11"]
 ARM_WHAT = {
     "ref":     "coarse 7, no turns, 1 frame",
+    "refrep":  "ref again, seed 0 -- the determinism check, not a policy",
     "all":     "fine 11, 15 deg turns, 2 frames",
     "pivot15": "coarse 7, 15 deg turns, 1 frame",
     "memory":  "coarse 7, no turns, 2 frames",
@@ -154,31 +155,53 @@ def scoreboard(arms: dict[str, dict[int, dict]]) -> None:
 
 
 def reproducibility(arms: dict[str, dict[int, dict]], eps: list[str]) -> None:
-    """Does `ref` at seed 0 reproduce the archived p3.0_medium run of the same episodes?"""
-    ref = arms.get("ref", {}).get(0)
-    if not ref:
+    """Does the same configuration, run twice, produce the same six results?
+
+    `refrep` is `ref` again: identical arcs, identical everything, seed 0 both times. The
+    only question it asks is whether this stack is a function of its inputs.
+
+    IT USED TO ASK THIS AGAINST THE ARCHIVED p3.0_medium, and that comparison is now
+    permanently impossible rather than merely failed. The label generator was built once
+    per process and drawn from across a whole ladder, so an episode's permutation depended
+    on how many decisions the episodes before it had consumed -- the archive was recorded
+    under the 13-episode stream and nothing will ever reproduce it from a 6-episode one.
+    The generator is now reseeded per episode from (seed, episode name), which makes the
+    question answerable, and this is where it gets answered.
+    """
+    a_runs, b_runs = arms.get("ref", {}).get(0), arms.get("refrep", {}).get(0)
+    if not a_runs or not b_runs:
+        print("\n\n(no refrep arm yet -- run `--arms refrep --seeds 0` for the "
+              "determinism check)")
         return
-    old = max(STUDY.parent.glob("sync_study/p3.0_medium"), default=None)
-    if old is None or not old.is_dir():
-        print("\n\n(no archived p3.0_medium to check reproducibility against)")
-        return
-    prev = _runs(old)
-    rows = [(e, prev[e]["success"], ref[e]["success"])
-            for e in eps if e in prev and e in ref]
-    agree = sum(a == b for _, a, b in rows)
-    print(f"\n\nREPRODUCIBILITY  --  ref/seed 0 against the archived p3.0_medium\n")
-    print(f"  same configuration, same seed, same six episodes: {agree}/{len(rows)} agree")
-    for e, a, b in rows:
-        if a != b:
-            print(f"    {e:<30} p3.0_medium {'Y' if a else '.'}  "
-                  f"ref/s0 {'Y' if b else '.'}   <- differs")
-    if agree == len(rows):
-        print("  Nothing outside the label seed is moving between runs, so a difference"
-              "\n  between arms below is a difference in the policy.")
+    rows = [(e, a_runs[e], b_runs[e]) for e in eps if e in a_runs and e in b_runs]
+    agree = sum(x["success"] == y["success"] for _, x, y in rows)
+    print("\n\nREPRODUCIBILITY  --  the same configuration run twice, seed 0 both times\n")
+    print(f"  identical settings, identical seed, same six episodes: "
+          f"{agree}/{len(rows)} agree")
+    for e, x, y in rows:
+        if x["success"] != y["success"]:
+            print(f"    {e:<30} ref {'Y' if x['success'] else '.'}  "
+                  f"refrep {'Y' if y['success'] else '.'}   <- differs")
+    # Success is a threshold on a distance, so two runs can agree on every verdict and
+    # still have driven different paths. The closest-approach spread is what says whether
+    # they were the SAME RUN or merely landed on the same side of 1.5 m.
+    drift = [abs(x["closest_m"] - y["closest_m"]) for _, x, y in rows
+             if x["closest_m"] == x["closest_m"] and y["closest_m"] == y["closest_m"]]
+    if drift:
+        print(f"\n  closest-approach difference: max {max(drift):.3f} m, "
+              f"mean {sum(drift) / len(drift):.3f} m")
+    if agree == len(rows) and drift and max(drift) < 0.01:
+        print("  The stack is deterministic. A difference between arms below is a"
+              "\n  difference in the policy and nothing else.")
+    elif agree == len(rows):
+        print("  Every verdict agrees, but the trajectories do not: the runs are close"
+              "\n  rather than identical. Differences between arms of one or two episodes"
+              "\n  are within that, and only a consistent shift across seeds means"
+              "\n  anything.")
     else:
-        print("  SOMETHING OUTSIDE THE SEED IS MOVING. Until that is explained, an arm"
-              "\n  that differs by fewer episodes than this line does has not been shown"
-              "\n  to differ at all.")
+        print("  SOMETHING OUTSIDE THE SEED IS STILL MOVING. Until it is explained, an"
+              "\n  arm that differs by fewer episodes than this line does has not been"
+              "\n  shown to differ at all.")
 
 
 def verbose(arms: dict[str, dict[int, dict]], eps: list[str]) -> None:

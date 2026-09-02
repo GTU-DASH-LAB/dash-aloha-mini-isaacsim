@@ -56,6 +56,7 @@ import sys
 import threading
 import time
 import traceback
+import zlib
 from functools import lru_cache
 from pathlib import Path
 
@@ -952,12 +953,35 @@ def _menu_system(stop_allowed: bool, speed_choice: bool,
     return select_system(_STOP_LABEL, stop_allowed=stop_allowed,
                          speed_choice=speed_choice, pivot_labels=pivot_labels)
 
-# Seeded, so a benchmark run is reproducible, and shuffled per call rather than fixed,
-# because a stable numbering is the one confound that makes this whole approach look like
-# it works when it does not: number the arcs left to right and a model can answer "1" for
-# left without ever looking at the image. Every measurement behind this format was taken
-# under a shuffle and the policy has to run under one too.
-_menu_rng = np.random.default_rng(int(os.environ.get("QVLA_MENU_SEED", "0")))
+# Shuffled per call rather than fixed, because a stable numbering is the one confound that
+# makes this whole approach look like it works when it does not: number the arcs left to
+# right and a model can answer "1" for left without ever looking at the image. Every
+# measurement behind this format was taken under a shuffle and the policy has to run under
+# one too.
+#
+# RESEEDED PER EPISODE, and it was not, and that cost a campaign. One generator built at
+# import and drawn from until the process exits makes an episode's labels depend on how
+# many decisions every episode BEFORE it consumed. Re-running one episode is then not a
+# repeat of it: `hospital_exit_room` at seed 0 drew [5,6,1,2,7,4,3] in a 13-episode ladder
+# and [6,7,1,2,5,4,3] in a 6-episode one, so it saw a different menu and answered
+# differently. Worse for a study of several policies, because the count differs BETWEEN
+# ARMS too: an arm whose first episode finishes in 30 decisions hands its second episode a
+# different permutation than an arm that took 45, so part of every arm-to-arm difference
+# was a different draw rather than a different policy.
+#
+# Keyed on the episode NAME so a permutation depends only on (seed, episode) -- not on
+# order, not on which other episodes ran, not on how long any of them took. crc32 and not
+# `hash()`: Python salts string hashing per process, which would put the irreproducibility
+# straight back where it was and make it harder to find.
+_MENU_SEED = int(os.environ.get("QVLA_MENU_SEED", "0"))
+_menu_rng = np.random.default_rng(_MENU_SEED)
+
+
+def _reseed_menu(episode: str) -> None:
+    """Restart the label stream for one episode. Called by /reset, nothing else."""
+    global _menu_rng
+    key = zlib.crc32(episode.encode()) if episode else 0
+    _menu_rng = np.random.default_rng([_MENU_SEED, key])
 
 
 def menu_plan(image_paths: list[str], instruction: str,
@@ -1424,6 +1448,10 @@ def reset(req: ResetRequest = ResetRequest()) -> dict:
         _state.update(pivot_rad=0.0, pivot_served=True)
         _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None,
                       run_dir=run_dir, epoch=_state["epoch"] + 1)
+        # Inside the lock and before the first decision of the new episode, for the same
+        # reason `recent` is cleared here: everything that makes this episode this episode
+        # has to be in place before a plan can be asked for.
+        _reseed_menu(req.run)
         # Between episodes, not within them. Carrying six directions from the last run
         # into the first decision of the next would tell the model it had "recently
         # chosen" things it chose in a different building.

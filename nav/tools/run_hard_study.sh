@@ -29,22 +29,26 @@
 # produced so far: single runs cannot resolve a 9-against-7, and six arms of single runs
 # produced ten episodes out of thirteen that flipped at least once.
 #
-# It buys one free check as well. Arm `ref` at seed 0 is bit-for-bit the configuration that
-# already ran as p3.0_medium. If those six episodes do not reproduce, then something
-# outside the seed is moving between runs, and every comparison in this file -- and in the
-# campaign before it -- is measuring that instead.
-#
 # THE ARMS are one factor at a time, plus the combination:
 #
 #     ref       coarse 7 arcs,  no turns,       one frame     the current best
+#     refrep    ref again at seed 0                           the determinism check
 #     all       fine 11 arcs,   15 deg turns,   two frames    what was asked for
 #     pivot15   coarse 7 arcs,  15 deg turns,   one frame     the turn alone
 #     memory    coarse 7 arcs,  no turns,       two frames    the memory alone
 #     fine11    fine 11 arcs,   no turns,       one frame     the finer menu alone
 #
-# `ref` runs first because nothing else is readable without it, and `all` second because it
-# is the question -- so an interrupted study still answers "did it help" even if it cannot
-# yet say which part helped.
+# `ref` runs first because nothing else is readable without it, `refrep` second because it
+# says whether anything below it can be read at all, and `all` third because it is the
+# question -- so an interrupted study still answers "did it help" even if it cannot yet say
+# which part helped.
+#
+# The first version of this file claimed a free check here: that `ref` at seed 0 was
+# bit-for-bit the archived p3.0_medium and would reproduce it. It ran, it did not
+# reproduce, and the cause was a shared label generator rather than any drift in the sim
+# (see `_reseed_menu` in server_qwen.py). The archive can now never be reproduced from a
+# six-episode ladder, so the check costs a real ladder instead of being free -- which is
+# what `refrep` is.
 #
 # Level is `medium` throughout and that is a result, not a shortcut: `high` cost 5x the
 # thinking time for identical decision counts and 3.5x the collisions, because 89-93% of

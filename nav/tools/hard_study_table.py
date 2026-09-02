@@ -1,4 +1,4 @@
-"""Score the hard-episode study: five menus x three label seeds on the six unsolved runs.
+"""Score the hard-episode study: five menus x three label seeds on the six unsolved episodes.
 
     python3 nav/tools/hard_study_table.py            # the matrix and the scoreboard
     python3 nav/tools/hard_study_table.py --verbose  # + every run, one line each
@@ -17,11 +17,19 @@ once. Six arms of single runs already produced ten episodes out of thirteen that
 at least once, and reading those single runs as rates is what made the campaign look like
 it was measuring configuration when it was measuring the label permutation.
 
-THE REPRODUCIBILITY LINE at the bottom is the check that licenses everything above it.
-Arm `ref` at seed 0 is the same configuration, same seed, same episodes as the archived
-`p3.0_medium` condition. If it does not reproduce, the seed is not the only thing moving
-between runs, and no comparison in this file -- or in the campaign before it -- separates
-a policy change from run-to-run drift. It is printed whether it agrees or not.
+THE REPRODUCIBILITY LINE at the bottom is the check that licenses everything above it: the
+`refrep` arm is `ref` run a second time at the same seed, so it asks whether this stack is
+a function of its inputs. If it is not, no comparison in this file separates a policy
+change from run-to-run drift, and the line is printed whether it agrees or not.
+
+It cost something to learn that this has to be its own ladder. The first version compared
+`ref` against the archived `p3.0_medium` -- same settings, same seed, free -- and got 4/6.
+The cause was not drift in the simulator: the label generator was built once per server
+process and drawn from across a whole ladder, so an episode's permutation depended on how
+many decisions the episodes before it had consumed. The archive was recorded under a
+13-episode stream and a 6-episode ladder will never reproduce it. `_reseed_menu` in
+server_qwen.py fixed the generator; this file stopped trying to reuse an old run as a
+control.
 """
 
 from __future__ import annotations

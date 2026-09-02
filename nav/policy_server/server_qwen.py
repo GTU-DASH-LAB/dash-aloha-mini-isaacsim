@@ -70,8 +70,8 @@ from scipy.interpolate import PchipInterpolator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
     CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
-    DESCRIBE_TARGET, FREE_SPACE_SYSTEM, SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY,
-    SELECT_PREFILL, SELECT_PREFILL_SPEED,
+    DESCRIBE_TARGET, DESCRIBE_MEMORY, FREE_SPACE_SYSTEM, FREE_SPACE_SYSTEM_2,
+    SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY, SELECT_PREFILL, SELECT_PREFILL_SPEED,
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
     allocate_labels, make_arcs, parse_choice_speed, parse_target_distance, pivot_word,
     plan_from_kappa, render_menu, select_system, speed_for, speed_from_level, stop_label,
@@ -923,6 +923,14 @@ _MENU_ARCS = make_arcs()
 # Two glyphs and one extra channel do.
 MENU_PIVOTS = os.environ.get("QVLA_MENU_PIVOTS", "0").lower() in ("1", "true", "yes")
 
+# How many frames the DESCRIBE call sees, oldest first. 1 is what every measurement so far
+# was taken under; 2 gives it a memory -- see DESCRIBE_MEMORY in arc_menu.py for what that
+# buys and why the text history line does not already provide it. The SELECT call is
+# untouched at any setting: it looks at the rendered menu and nothing else, because the
+# arcs are drawn on one frame and a second image beside them is a second place to look for
+# a path that is not there.
+MENU_FRAMES = max(1, int(os.environ.get("QVLA_MENU_FRAMES", "1")))
+
 _STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
 
 
@@ -1009,14 +1017,29 @@ def menu_plan(image_paths: list[str], instruction: str,
     kind = kind or ("wedge" if recovered else "")
     after_note = {"wedge": DESCRIBE_AFTER_RECOVERY, "balk": DESCRIBE_AFTER_BALK}.get(
         kind, "")
+    # THE MEMORY FRAME. With MENU_FRAMES=2 the describe call sees the previous frame as
+    # well as the current one, oldest first, and is asked one extra thing: is the robot
+    # closing on what the instruction names, past it, or going nowhere. A single frame
+    # cannot answer that, and it is the failure the campaign kept producing -- an episode
+    # that overshoots and mills reads, frame by frame, as "the way ahead is open".
+    #
+    # `image_paths` is whatever the caller sent, so this degrades rather than crashes: a
+    # request carrying one frame gets the one-frame prompt no matter what MENU_FRAMES says.
+    # The two must agree, because the two-frame system prompt tells the model to describe
+    # the SECOND image, and there is no second image to describe.
+    frames = image_paths[-MENU_FRAMES:] if MENU_FRAMES > 1 else [newest]
+    remembering = len(frames) > 1
     describe = (DESCRIBE_SIDED + after_note
-                + DESCRIBE_TARGET.format(instruction=instruction))
+                + DESCRIBE_TARGET.format(instruction=instruction)
+                + (DESCRIBE_MEMORY if remembering else ""))
     # 110 tokens at medium was sized for two sentences plus the TARGET line. The recovery
     # note asks for no extra output -- it changes what the model looks at, not what it
-    # writes -- so the budget does not rise with it, only with the thinking level.
+    # writes -- so the budget does not rise with it, only with the thinking level. The
+    # memory sentence DOES ask for more output, so it gets its own allowance rather than
+    # eating the TARGET line, which is the part the speed channel depends on.
     seen, seen_think, _ = think_then_answer(
-        [newest], FREE_SPACE_SYSTEM, describe,
-        int(LEVEL["describe_think"]), int(LEVEL["describe"]))
+        frames, FREE_SPACE_SYSTEM_2 if remembering else FREE_SPACE_SYSTEM, describe,
+        int(LEVEL["describe_think"]), int(LEVEL["describe"]) + (40 if remembering else 0))
     seen = seen.strip().replace("\n", " ")
     target_m = parse_target_distance(seen)
 
@@ -1300,6 +1323,12 @@ def health() -> dict:
                 "menu_pivots": MENU_PIVOTS,
                 "pivot_deg": PIVOT_DEG if MENU_PIVOTS else None,
                 "pivots": _state["pivots"],
+                # The other two things that change what "the menu format" means, for the
+                # same reason `think_level` is reported: three runs of the same thirteen
+                # episodes under a different arc set or a different frame count are three
+                # different measurements, and a result file cannot tell them apart.
+                "n_arcs": len(_MENU_ARCS),
+                "menu_frames": MENU_FRAMES,
                 "recent": list(_state["recent"])} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],

@@ -33,6 +33,7 @@ it works when it does not. Callers pass their own permutation; the probe randomi
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass
 
@@ -43,19 +44,50 @@ CAM_HEIGHT_M = 0.346
 CAM_FOV_DEG = 90.1
 CAM_W, CAM_H = 1920, 1080
 
-# Seven is a legible menu: enough to express "hard left" through "hard right" with a
-# distinguishable straight-ahead, few enough that the labels stay readable at 1920x1080
-# and the model is choosing rather than searching.
-DEFAULT_CURVATURES = (-0.60, -0.35, -0.15, 0.0, 0.15, 0.35, 0.60)
+# HOW MANY ARCS THE MENU MAY HOLD, and why the answer is not "as many as you like".
+#
+# The arcs fan out from one point, so their endpoints crowd together near straight ahead
+# in the IMAGE even where they are far apart on the floor. What limits the menu is
+# therefore not the geometry, it is whether two labels can be told apart after the
+# model's own downsample: frames are capped at QVLA_MAX_PIXELS (200704 px = 448x448),
+# which is 0.31x, so a 96 px label arrives about 30 px across.
+#
+# Measured, at 3 m, against a label disc ~115 px wide at full resolution:
+#
+#     set       n    smallest gap between adjacent labels    colliding pairs
+#     coarse    7          219 px                                  0
+#     fine     11          158 px                                  0
+#     (13)     13          108 px                                  4   <- rejected
+#
+# So 11 is the densest menu whose labels still separate, and 13 is not a finer menu, it
+# is the same menu with two pairs of labels drawn on top of each other. The extra
+# resolution goes where there was a real gap -- between "gentle" (0.15) and "medium"
+# (0.35), a 26-to-60 degree jump with nothing in between. Nothing is added inside +-0.15:
+# those endpoints are 108 px apart and would collide, and a 3 m arc at 0.075 differs from
+# straight by 0.33 m, which the next replan three seconds later can express anyway.
+CURVATURE_SETS: dict[str, tuple[float, ...]] = {
+    "coarse": (-0.60, -0.35, -0.15, 0.0, 0.15, 0.35, 0.60),
+    "fine":   (-0.60, -0.45, -0.35, -0.25, -0.15, 0.0, 0.15, 0.25, 0.35, 0.45, 0.60),
+}
+_ARC_SET = os.environ.get("QVLA_MENU_ARCS", "coarse").strip().lower()
+if _ARC_SET not in CURVATURE_SETS:
+    # Loudly, for the reason QVLA_THINK_LEVEL is: a typo that fell back to the default
+    # would run the seven-arc menu and label the results as the eleven-arc one.
+    raise SystemExit(
+        f"QVLA_MENU_ARCS must be one of {sorted(CURVATURE_SETS)}, got {_ARC_SET!r}")
+DEFAULT_CURVATURES = CURVATURE_SETS[_ARC_SET]
 # 3.0 m matches the horizon both policies were compared on, so a chosen arc is directly
 # comparable to a predicted trajectory.
 DEFAULT_LENGTH_M = 3.0
 
 # Colours are per-arc and fixed by index so the same arc looks the same across frames,
 # but they are never mentioned in the prompt -- the model must use position, not hue.
+# Eleven entries because the `fine` set needs eleven; the index wraps, so a shorter set
+# simply uses the first few and keeps the colours it always had.
 _PALETTE = [
     (255, 87, 51), (255, 189, 51), (163, 255, 51), (51, 255, 128),
     (51, 214, 255), (122, 51, 255), (255, 51, 195),
+    (255, 140, 90), (200, 255, 90), (90, 255, 220), (190, 120, 255),
 ]
 
 # --------------------------------------------------------------------------------------
@@ -90,10 +122,21 @@ _PALETTE = [
 # origin, which `plan_speed` reads as STOP. It needs its own drawn symbol and its own
 # channel back to the runner, and that is what the rest of this section builds.
 #
-# 30 degrees, not 90: the robot re-decides the moment a pivot finishes, so a bigger turn is
-# expressed by choosing it again on a fresh view rather than by committing to a sweep taken
-# blind. Three pivots make a right angle and each one is a decision.
-PIVOT_DEG = 30.0
+# The turn is small on purpose: the robot re-decides the moment a pivot finishes, so a
+# bigger turn is expressed by choosing it AGAIN on a fresh view rather than by committing
+# to a sweep taken blind. What the right size is, is an open question and therefore a knob.
+#
+# 30 degrees was the first guess and it cut collisions five-fold (guard 956 -> 195 over a
+# 13-episode ladder) without moving success. The suspicion behind lowering it: a 30 degree
+# step is coarse next to the arcs it competes with -- the whole menu spans about 60 degrees
+# of heading change -- so a turn aimed at an opening can carry the robot's heading PAST it,
+# and the correction is another turn in the other direction. 15 degrees costs one extra
+# decision to cover the same angle and cannot overshoot by more than half as much.
+#
+# Kept as a constant read once at import, not a per-call argument, because the runner sizes
+# the pivot's step deadline from the SAME number and the two disagreeing would leave the
+# robot re-deciding mid-rotation.
+PIVOT_DEG = float(os.environ.get("QVLA_PIVOT_DEG", "15"))
 PIVOT_RAD = math.radians(PIVOT_DEG)
 
 
@@ -176,6 +219,23 @@ def badge_xy(px: list[tuple[float, float]], w: float, h: float,
 _PIVOT_XY = ((0.115, 0.28), (0.885, 0.28))   # (left glyph, right glyph)
 _PIVOT_COLOUR = (255, 255, 255)
 
+# How much dark to put UNDER the white glyph, as extra total stroke width -- so half of it
+# shows on each side. This was 6, and 6 is the number that made the turn option disappear.
+#
+# The glyph is white because it must not read as one of the coloured floor arcs, but the
+# pivots sit at 0.28h, which in an indoor scene is ceiling and upper wall, which in these
+# scenes is WHITE. On the frame this was caught on, the right glyph over a dark vending
+# machine read perfectly and the left glyph over a plain wall collapsed into a faint
+# outline of its own halo. Both were drawn identically; only the background differed.
+#
+# The arithmetic says it had to: 6 px of extra width is 3 px of dark on each side, and the
+# server hands the model a 0.31x downsample, so that halo arrives 0.9 px wide and JPEG
+# takes what bilinear leaves. 16 gives 8 px a side, ~2.5 px to the model -- thick enough to
+# survive both. Judge any change to this on the DOWNSAMPLED image over a white wall, which
+# is the only place the failure is visible at all.
+_HALO = (20, 20, 20)
+_HALO_PAD = 16
+
 
 def _rotation_glyph(draw, cx: float, cy: float, r: float, clockwise: bool,
                     width: int, colour=_PIVOT_COLOUR) -> None:
@@ -186,12 +246,15 @@ def _rotation_glyph(draw, cx: float, cy: float, r: float, clockwise: bool,
     hue is the only channel wide enough to carry that at ~30 px. The prompt still never
     mentions a colour -- this separates the two KINDS of action, it does not identify one.
 
+    Every white stroke is laid over a dark one so the shape reads on a white ceiling as a
+    dark line drawing and on a dark wall as a white one; see `_HALO_PAD`.
+
     PIL's arc angles start at 3 o'clock and increase clockwise on screen (y grows
     downward), so `arc(300, 240)` is the ring minus a 60 degree gap centred on 12 o'clock,
     and the arrowhead goes on whichever end of that gap the sweep finishes at.
     """
     box = [cx - r, cy - r, cx + r, cy + r]
-    draw.arc(box, 300, 240, fill=(20, 20, 20), width=width + 6)
+    draw.arc(box, 300, 240, fill=_HALO, width=width + _HALO_PAD)
     draw.arc(box, 300, 240, fill=colour, width=width)
 
     theta = math.radians(240.0 if clockwise else 300.0)
@@ -208,9 +271,22 @@ def _rotation_glyph(draw, cx: float, cy: float, r: float, clockwise: bool,
     # with no direction in it at all, and the only thing separating "turn left" from "turn
     # right" in the picture is which way this points.
     a, b = r * 0.85, r * 0.26
-    draw.polygon([(px + tx * a, py + ty * a),
-                  (px + nx * b, py + ny * b),
-                  (px - nx * b, py - ny * b)], fill=colour, outline=(20, 20, 20))
+    head = [(px + tx * a, py + ty * a),
+            (px + nx * b, py + ny * b),
+            (px - nx * b, py - ny * b)]
+    # The head's halo is a second, larger triangle underneath rather than `outline=`: an
+    # outline straddles the edge, so half of any width thick enough to survive the
+    # downsample is eaten out of a head that is only 0.52r wide at its base. Pushing each
+    # vertex out along its ray from the centroid moves the EDGES out by less than the
+    # vertices, which is why the push is 1.6x the pad rather than the pad.
+    gx, gy = sum(p[0] for p in head) / 3.0, sum(p[1] for p in head) / 3.0
+    grown = []
+    for hx, hy in head:
+        dx, dy = hx - gx, hy - gy
+        d = math.hypot(dx, dy) or 1.0
+        grown.append((hx + dx / d * _HALO_PAD * 1.6, hy + dy / d * _HALO_PAD * 1.6))
+    draw.polygon(grown, fill=_HALO)
+    draw.polygon(head, fill=colour)
 
 
 def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[int],
@@ -270,8 +346,16 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
         for (fx, fy), label, cw in zip(_PIVOT_XY, pivot_labels, (False, True)):
             cx, cy = fx * w, fy * h
             _rotation_glyph(draw, cx, cy, r, clockwise=cw, width=width)
-            draw.ellipse([cx - r * 0.52, cy - r * 0.52, cx + r * 0.52, cy + r * 0.52],
-                         fill=(20, 20, 20), outline=_PIVOT_COLOUR, width=6)
+            # Sized from the text, not from `r`. This was a flat `r * 0.52` -- a 105 px
+            # disc, which fits one digit and not two, and the pivots take the LAST two
+            # labels, so with seven arcs they were 8 and 9 and with eleven they are 12
+            # and 13. The 0.52 disc did not grow with the menu and the digits spilled
+            # over its rim onto the wall behind, where dark-on-dark is unreadable.
+            # Floored at the old value so a one-digit menu renders exactly as before.
+            tb = draw.textbbox((0, 0), str(label), font=font, anchor="mm")
+            dr = max(r * 0.52, max(tb[2] - tb[0], tb[3] - tb[1]) / 2.0 + 14)
+            draw.ellipse([cx - dr, cy - dr, cx + dr, cy + dr],
+                         fill=_HALO, outline=_PIVOT_COLOUR, width=6)
             draw.text((cx, cy), str(label), fill=_PIVOT_COLOUR, font=font, anchor="mm")
 
     im.save(out_path, quality=92)
@@ -311,6 +395,42 @@ DESCRIBE_SIDED = (
     "object straight ahead of the robot within about 3 metres? Name it, or say the way "
     "ahead is open. Second: say which direction has the most open, walkable floor the "
     "robot could drive along -- far left, left, straight ahead, right, or far right.")
+
+# --------------------------------------------------------------------------------------
+# GIVING THE DESCRIBE CALL A MEMORY
+# --------------------------------------------------------------------------------------
+# The menu format has always shown the model ONE frame, and the reason was good: the
+# question is "where is the floor open right now", the arcs are drawn on that frame, and
+# the other formats only carry four frames because they have to infer their own motion.
+#
+# What the campaign then showed is a failure that one frame cannot see. The episodes that
+# lose do not crash -- they OVERSHOOT and mill. warehouse drove 28.6 m of path to end
+# 13.1 m from a goal it started 16.5 m from; hospital_forward_staircase ends 19-24 m out in
+# every arm ever run. From a single frame, "the way ahead is open, drive straight" is the
+# correct description of a robot that passed its goal thirty seconds ago and is still
+# accelerating away from it. There is a text history line, but it lists CHOICES ("straight,
+# straight, left"), not consequences -- it can say what the robot did and never that the
+# scene stopped getting closer.
+#
+# Two frames make that visible without asking the model to track anything: same place
+# growing larger means progress, same place shrinking means it is behind the robot now.
+#
+# The older frame goes FIRST and the prompt says which is which, because the arcs are drawn
+# on the newest one and a model that describes the wrong image is worse than a model with
+# no memory at all. The second sentence of the measured question is untouched -- the memory
+# is an extra sentence, not a rewrite of the part that was scored.
+FREE_SPACE_SYSTEM_2 = (
+    f"You are looking through the forward camera of a small wheeled robot. The camera is "
+    f"{CAM_HEIGHT_M:.2f} m above the floor, level, with a {CAM_FOV_DEG:.0f} degree "
+    f"horizontal field of view. You are given two frames from that camera: the FIRST is "
+    f"where the robot was a few seconds ago, the SECOND is where it is now. Describe the "
+    f"SECOND image. Use the first only to judge whether the robot is getting closer to "
+    f"things or has driven past them. Answer briefly and literally.")
+
+DESCRIBE_MEMORY = (
+    " Also: comparing the two frames, say in a few words whether the robot is approaching "
+    "the place the instruction names, has already driven past it, or is not making "
+    "progress at all.")
 
 # The two sentences above are verbatim what was measured; this is appended, not merged, so
 # the validated part of the question is still being asked in the same words.

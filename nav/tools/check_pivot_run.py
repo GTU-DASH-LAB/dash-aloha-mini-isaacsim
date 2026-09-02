@@ -81,12 +81,19 @@ def main() -> int:
         if not info.get("menu_pivots"):
             fails.append("server reports menu_pivots=false -- QVLA_MENU_PIVOTS never "
                          "reached it, so the model was never offered a turn")
+        # Derived from what the server says it drew, NOT hardcoded. This was `!= 10`, which
+        # was right for exactly one menu (seven arcs plus two turns plus STOP) and became a
+        # false alarm the moment the arc set grew -- a check that fails when the thing it
+        # checks is merely CONFIGURED differently teaches people to ignore it.
+        n_arcs = info.get("n_arcs")
+        want = (n_arcs + 3) if isinstance(n_arcs, int) else None
         arcs_plus = info.get("stop_label")
-        if arcs_plus != 10:
-            fails.append(f"server reports stop_label={arcs_plus}, expected 10 "
-                         f"(7 arcs + 2 turns + 1)")
+        if want is not None and arcs_plus != want:
+            fails.append(f"server reports stop_label={arcs_plus} with n_arcs={n_arcs}, "
+                         f"expected {want} ({n_arcs} arcs + 2 turns + 1)")
         print(f"   menu             pivots={info.get('menu_pivots')} "
-              f"angle={info.get('pivot_deg')} deg stop_label={arcs_plus}")
+              f"angle={info.get('pivot_deg')} deg arcs={n_arcs} "
+              f"frames={info.get('menu_frames')} stop_label={arcs_plus}")
 
     # --- the turns crossed the wire ---------------------------------------------------
     # `pivots` is absent, not zero, on a runner that predates the field. The two mean

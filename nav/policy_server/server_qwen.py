@@ -69,7 +69,7 @@ from scipy.interpolate import PchipInterpolator
 # but not `nav/`, where the shared code lives. The `menu` format needs it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
-    CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
+    ARC_SET, CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
     DESCRIBE_TARGET, DESCRIBE_MEMORY, FREE_SPACE_SYSTEM, FREE_SPACE_SYSTEM_2,
     SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY, SELECT_PREFILL, SELECT_PREFILL_SPEED,
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
@@ -1327,8 +1327,10 @@ def health() -> dict:
                 # same reason `think_level` is reported: three runs of the same thirteen
                 # episodes under a different arc set or a different frame count are three
                 # different measurements, and a result file cannot tell them apart.
+                "arc_set": ARC_SET,
                 "n_arcs": len(_MENU_ARCS),
                 "menu_frames": MENU_FRAMES,
+                "menu_seed": int(os.environ.get("QVLA_MENU_SEED", "0")),
                 "recent": list(_state["recent"])} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             "predictions": _state["predictions"],

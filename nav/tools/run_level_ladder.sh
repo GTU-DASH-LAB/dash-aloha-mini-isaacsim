@@ -77,12 +77,44 @@ if [ -z "$HEALTH" ]; then
   exit 1
 fi
 
-GOT="$(printf '%s' "$HEALTH" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("think_level",""))')"
-if [ "$GOT" != "$LEVEL" ]; then
-  echo "!! server reports think_level=$GOT, asked for $LEVEL -- refusing to run" >&2
-  exit 1
-fi
-echo "-- server up and reporting think_level=$GOT"
+# Every field the ENVIRONMENT claims to have set, checked against what the server says it
+# actually loaded. It began as the think_level check alone and grew for the same reason
+# that one exists: each of these lives in the server, none of them is visible in a result
+# file, and every one of them fails by producing a complete and plausible ladder that
+# measured something else. The arc SET is checked by name rather than by counting arcs, so
+# the sizes stay in `CURVATURE_SETS` and nowhere else.
+CHECK="$(printf '%s' "$HEALTH" | EXPECT_LEVEL="$LEVEL" python3 -c '
+import json, os, sys
+h = json.load(sys.stdin)
+want = {"think_level": os.environ["EXPECT_LEVEL"]}
+# The menu keys are only on /health when the server is serving a menu at all; under the
+# waypoint formats their absence is correct and must not read as a mismatch.
+if "arc_set" in h:
+    want["arc_set"]     = os.environ.get("QVLA_MENU_ARCS", "coarse").strip().lower()
+    want["menu_frames"] = max(1, int(os.environ.get("QVLA_MENU_FRAMES", "1")))
+    want["menu_seed"]   = int(os.environ.get("QVLA_MENU_SEED", "0"))
+    want["menu_pivots"] = os.environ.get("QVLA_MENU_PIVOTS", "0").lower() in (
+        "1", "true", "yes")
+    if want["menu_pivots"]:
+        want["pivot_deg"] = float(os.environ.get("QVLA_PIVOT_DEG", "15"))
+def agrees(got, exp):
+    # `pivot_deg` is a float on one side and null on a server without the pivots, so this
+    # cannot be a bare subtraction: a missing key has to read as a MISMATCH and not as a
+    # TypeError, which would fail the ladder with a traceback instead of a diagnosis.
+    if isinstance(exp, float):
+        return isinstance(got, (int, float)) and abs(float(got) - exp) < 1e-6
+    return got == exp
+
+bad = [f"{k}: server says {h.get(k)!r}, environment asked for {v!r}"
+       for k, v in want.items() if not agrees(h.get(k), v)]
+print("\n".join(bad) if bad else "OK " + "  ".join(f"{k}={h.get(k)}" for k in want))
+' 2>&1)"
+case "$CHECK" in
+  OK\ *) echo "-- server up, configuration verified: ${CHECK#OK }" ;;
+  *) echo "!! the running server is not the one asked for -- refusing to drive:" >&2
+     printf '   %s\n' "$CHECK" >&2
+     exit 1 ;;
+esac
 echo
 
 nav/bench.sh ${ONLY:+--only "$ONLY"} --on-episode nav/tools/on_episode.sh

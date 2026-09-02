@@ -69,13 +69,16 @@ CURVATURE_SETS: dict[str, tuple[float, ...]] = {
     "coarse": (-0.60, -0.35, -0.15, 0.0, 0.15, 0.35, 0.60),
     "fine":   (-0.60, -0.45, -0.35, -0.25, -0.15, 0.0, 0.15, 0.25, 0.35, 0.45, 0.60),
 }
-_ARC_SET = os.environ.get("QVLA_MENU_ARCS", "coarse").strip().lower()
-if _ARC_SET not in CURVATURE_SETS:
+# Public, and reported on /health, so a ladder can refuse to drive against a server that
+# loaded a different menu than the one the campaign is about to record. Checking the NAME
+# rather than the arc count keeps the sizes in this table and nowhere else.
+ARC_SET = os.environ.get("QVLA_MENU_ARCS", "coarse").strip().lower()
+if ARC_SET not in CURVATURE_SETS:
     # Loudly, for the reason QVLA_THINK_LEVEL is: a typo that fell back to the default
     # would run the seven-arc menu and label the results as the eleven-arc one.
     raise SystemExit(
-        f"QVLA_MENU_ARCS must be one of {sorted(CURVATURE_SETS)}, got {_ARC_SET!r}")
-DEFAULT_CURVATURES = CURVATURE_SETS[_ARC_SET]
+        f"QVLA_MENU_ARCS must be one of {sorted(CURVATURE_SETS)}, got {ARC_SET!r}")
+DEFAULT_CURVATURES = CURVATURE_SETS[ARC_SET]
 # 3.0 m matches the horizon both policies were compared on, so a chosen arc is directly
 # comparable to a predicted trajectory.
 DEFAULT_LENGTH_M = 3.0

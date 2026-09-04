@@ -125,6 +125,10 @@ def score(path: Path, cfg: dict) -> dict | None:
         "closed_frac": closed,
         "calls": d.get("policy_calls", 0),
         "guard": d.get("guard_interventions", 0),
+        # "" on every run recorded before the sensor existed. Those were all the
+        # 7-ray fan, but the field says so nowhere, so it stays "" rather than being
+        # backfilled -- a filter must not silently claim provenance it does not have.
+        "lidar": d.get("lidar", ""),
         "elapsed_s": d.get("elapsed_s") or 0.0,
         "asked_mean": (sum(asked) / len(asked)) if asked else float("nan"),
         "guide_mean": (sum(guide) / len(guide)) if guide else float("nan"),
@@ -144,6 +148,10 @@ def main() -> None:
     ap.add_argument("--controller", help="only runs with this controller")
     ap.add_argument("--policy", help="only runs whose policy label contains this "
                                      "substring, e.g. 'menu' or 'InternVL'")
+    ap.add_argument("--lidar", help="only runs whose sensor label matches exactly, "
+                                    "e.g. 'fan' or 'c1@0.30'. The two arms of the lidar "
+                                    "ladder share everything else, so without this a "
+                                    "mixed directory scores them as one experiment.")
     ap.add_argument("--latest", metavar="EPISODE", help="only the newest run of it")
     ap.add_argument("--oneline", action="store_true", help="one terse line, for scripts")
     args = ap.parse_args()
@@ -154,6 +162,8 @@ def main() -> None:
         rows = [r for r in rows if r["controller"] == args.controller]
     if args.policy:
         rows = [r for r in rows if args.policy in r["policy"]]
+    if args.lidar is not None:
+        rows = [r for r in rows if r["lidar"] == args.lidar]
     if args.latest:
         rows = [r for r in rows if r["episode"] == args.latest]
         rows = rows[-1:]

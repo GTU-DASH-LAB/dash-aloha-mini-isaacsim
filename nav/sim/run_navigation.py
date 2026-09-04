@@ -1219,6 +1219,7 @@ class NavigationRunner:
             policy=self.policy_label(),
             plan_mode=PLAN_MODE,
             plan_period_s=(replan_steps * PHYSICS_DT) if PLAN_MODE != "async" else 0.0,
+            lidar=(f"c1@{NAV_LIDAR_HEIGHT_M:.2f}" if self.lidar is not None else "fan"),
             think_wall_s=round(think_wall_s, 1),
             base_z_step_max_m=round(self.base.z_step_max, 6),
             base_z_span_m=(round(self.base.z_max - self.base.z_min, 6)

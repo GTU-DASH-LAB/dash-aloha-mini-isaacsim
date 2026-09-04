@@ -221,6 +221,17 @@ class EpisodeResult:
     # happens during it.
     plan_mode: str = "async"
     plan_period_s: float = 0.0
+    # Which sensor the collision guard drove on, and what the policy was sent with it.
+    # "fan" is the original 7 rays over +-35 degrees; "c1@0.30" is the simulated RPLIDAR
+    # C1 at that mount height, feeding both the guard's wedge and the menu filter.
+    #
+    # Here for exactly the reason `plan_mode` is: the two arms of the lidar ladder share
+    # an episode, a controller, a policy and a scene, so a results directory holding both
+    # would be separable only by timestamp -- and this harness has already once scored a
+    # ladder off two-week-old files and printed a plausible 6/13. Defaulted so every run
+    # recorded before the sensor existed still loads; "" means the field did not exist,
+    # which is the truth about those and must not be read as "fan" even though it was.
+    lidar: str = ""
     # Wall seconds the robot spent stopped, waiting for decisions. Zero under async by
     # construction, since nothing waits there. Reported next to `wall_s` because it is
     # the whole cost of synchronous planning and `elapsed_s` cannot show it: sim time

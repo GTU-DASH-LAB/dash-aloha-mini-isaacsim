@@ -105,6 +105,22 @@ from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
 
+# THE 2D LIDAR, off by default so every result already on disk stays reproducible by
+# re-running the same command. `NAV_LIDAR=1` turns it on and changes two things at once,
+# which is why the ladder has to be run both ways before either is believed:
+#
+#   * the collision guard reads the sensor's rolling buffer instead of casting seven rays
+#     -- 16x the angular density across the same wedge, at the cost of up to 100 ms of
+#     age, which `CollisionGuard`'s stop distance is raised to absorb;
+#   * the arc menu drops paths the robot cannot drive, so the model chooses among
+#     options that are all executable rather than being asked not to pick the bad ones.
+#
+# The height is not a preference. `check_lidar_2d.py` sweeps 0.20-1.50 m against this
+# robot's own colliders and finds a 0% blind sector everywhere except 0.80 m, which loses
+# a 39.6 degree arc to the arm bases; 0.30 is the lowest clear mount and needs no mast.
+NAV_LIDAR = os.environ.get("NAV_LIDAR", "0").lower() in ("1", "true", "yes")
+NAV_LIDAR_HEIGHT_M = float(os.environ.get("NAV_LIDAR_HEIGHT", "0.30"))
+
 # Fixed planning period in SIMULATED seconds, or 0.0 for the paper's asynchronous mode.
 #
 # When set, this replaces the episode's own `replan_every_steps` and switches the loop to
@@ -565,6 +581,7 @@ class NavigationRunner:
         from base_drive import KinematicBase
         from camera_source import NavCameraSource
         from collision_guard import CollisionGuard
+        from lidar_2d import SweepingLidar2D
 
         self._set(state="loading", message=f"opening {self.scene_path.name}")
 
@@ -596,7 +613,21 @@ class NavigationRunner:
 
         self.camera = NavCameraSource(scratch_dir=self.scratch_dir)
         self.camera.warmup(self.kit)
-        self.guard = CollisionGuard()
+        # The sensor serves BOTH loops, which is the whole reason it is one object rather
+        # than two ray fans: the guard reads its forward wedge every physics step, the
+        # policy reads a whole revolution every decision, and they are looking at the same
+        # returns taken at the same instants. Two independent sensors would be two
+        # different pictures of the world and any disagreement between the layers would be
+        # unexplainable from the logs.
+        self.lidar = (SweepingLidar2D(mount_height_m=NAV_LIDAR_HEIGHT_M)
+                      if NAV_LIDAR else None)
+        # Raising the stop distance is not tuning, it is paying for the latency the real
+        # device has. The fan is cast now; the buffer holds up to one revolution, 100 ms,
+        # which at the 1.5 m/s cap is 15 cm the old threshold never had to absorb.
+        self.guard = CollisionGuard(
+            scan=self.lidar,
+            stop_distance_m=0.6 + (0.15 if NAV_LIDAR else 0.0),
+        )
         self.recovery = StuckRecovery(self.guard)
 
         self._set(state="ready", message="waiting for policy server")
@@ -912,6 +943,21 @@ class NavigationRunner:
                         # instead of at a whole generation, without paying synchronous
                         # mode's full stop when the generation fits inside the period.
                         wait_inflight=bounded,
+                        # One revolution of the 2D lidar, in the body frame the decision
+                        # is being taken in. Sent as POINTS rather than ranges because a
+                        # range vector means nothing without the bearing convention and
+                        # mount offset it was taken under, and the server would need a
+                        # second copy of both to undo it.
+                        #
+                        # The server owns the arc set, so the server computes clearance:
+                        # a client-side "which arcs are drivable" would be a duplicate of
+                        # the curvature table that fails silently the moment one of them
+                        # is edited. None when NAV_LIDAR=0, which is the arm that keeps
+                        # the whole menu and every earlier ladder number comparable.
+                        scan_points=(
+                            self.lidar.points_body(position, self.base.yaw).tolist()
+                            if self.lidar is not None else None
+                        ),
                     )
                 except PolicyServerError as exc:
                     self._set(state="error", message=str(exc))
@@ -1038,6 +1084,12 @@ class NavigationRunner:
                     # robot keeps driving either way and the count says what happened.
                     replans_failed += 1
                     print(f"[nav] replan after recovery failed: {exc}", flush=True)
+            # Spin the beam BEFORE the guard reads it, so a step's decision is taken on
+            # that step's returns. The order is not cosmetic: with it reversed the guard
+            # would consistently see the world one step -- 2.5 cm at the speed cap -- older
+            # than it needs to, for no reason and invisibly.
+            if self.lidar is not None:
+                self.lidar.step(position, self.base.yaw, PHYSICS_DT, sim_time)
             guard = self.guard.check(position, self.base.yaw, drive.vx, drive.vy)
             self.base.apply(
                 # Already guarded, and directionally: what survives is the part of the

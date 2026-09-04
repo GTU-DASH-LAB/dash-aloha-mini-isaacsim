@@ -180,6 +180,79 @@ def make_arcs(curvatures=DEFAULT_CURVATURES, length_m: float = DEFAULT_LENGTH_M,
     return out
 
 
+CHASSIS_RADIUS_M = 0.35
+
+
+def arc_clearance(arcs: list[Arc], points, radius_m: float = CHASSIS_RADIUS_M,
+                  length_m: float = DEFAULT_LENGTH_M) -> list[float]:
+    """How far along each arc the chassis gets before it touches a lidar return.
+
+    A SWEPT-DISC TEST, not a bearing test, and the difference is the entire value of the
+    thing. Asking "is the bearing at the end of arc 3 clear" answers a question about a
+    ray; the robot is 0.7 m wide and follows a curve, so what has to be clear is a 0.35 m
+    tube along the path. A gap the beam slips through between two rack legs is not a
+    corridor, and the bearing test calls it one.
+
+    This is what the camera structurally cannot supply. `gate_lidar_blindside.py` measured
+    the other candidate channel -- openings outside the 90 degree frame -- and it carries
+    nothing: the goal is outside the frame on 96% of failure moments, the scan contains it
+    54% of the time, and the blind arc is open 65% of the time anyway, so the lift is
+    -11pp. That channel reports that a room is a room. THIS one answers a question the
+    model demonstrably gets wrong: asked to pick a drawn arc with an obstacle in view, it
+    chose one that runs into the wall on 89% of blocked frames, and 0 of 18 choices
+    negated when the frame was mirrored. Perception was never the problem there -- forced
+    to choose between a blocked and an open frame it scored 70/70 -- so the fix does not
+    need better eyes, it needs the geometry the eyes cannot measure.
+
+    Returns metres per arc, capped at the arc's own length: `length_m` means "clear all
+    the way", NOT "clear forever", and a caller comparing against a threshold above
+    `length_m` would reject every arc on a completely empty floor.
+    """
+    if points is None or len(points) == 0:
+        return [length_m] * len(arcs)
+    P = np.asarray(points, dtype=float).reshape(-1, 2)
+    out = []
+    for arc in arcs:
+        A = arc.points
+        # (n_arc, n_points) -- 7 x 40 x 500 for the coarse menu and a full revolution,
+        # which is 140k distances and takes microseconds. No need to be clever.
+        near = ((A[:, None, 0] - P[None, :, 0]) ** 2
+                + (A[:, None, 1] - P[None, :, 1]) ** 2) <= radius_m ** 2
+        idx = np.flatnonzero(near.any(axis=1))
+        # The first blocked sample, not the count: an arc clear for 2 m and blocked after
+        # is drivable for 2 m, and taking the whole arc as blocked would throw away the
+        # part the robot can actually use before its next decision.
+        out.append(length_m if idx.size == 0
+                   else float(length_m * idx[0] / (len(A) - 1)))
+    return out
+
+
+def drivable(arcs: list[Arc], labels: list[int], clearance: list[float],
+             min_clear_m: float) -> tuple[list[Arc], list[int], list[int]]:
+    """Split the menu into what may be offered and what may not.
+
+    Returns (kept arcs, kept labels, dropped labels). The LABELS ARE NOT REALLOCATED and
+    that is deliberate on two counts. `stop_label()` derives STOP's number from the arc
+    count, so renumbering a shrunken menu would move STOP -- silently turning "stop" into
+    "turn right", which is the exact failure that function's docstring warns about. And
+    the permutation is drawn from the same RNG stream every earlier run used, so leaving
+    it untouched keeps the shuffle bit-for-bit comparable with every arm already on disk.
+    The menu simply has holes in it, which is what a menu of drivable paths should look
+    like.
+
+    An empty menu is never returned. If nothing clears the threshold the single roomiest
+    arc is kept, because the alternative is a decision where the only answers are STOP and
+    a pivot -- and STOP-as-"everything is blocked" is a measured pathology on this stack,
+    42 of 65 decisions on one episode, not a hypothetical.
+    """
+    keep = [i for i, c in enumerate(clearance) if c >= min_clear_m]
+    if not keep:
+        keep = [max(range(len(clearance)), key=lambda i: clearance[i])]
+    kept = set(keep)
+    return ([arcs[i] for i in keep], [labels[i] for i in keep],
+            [labels[i] for i in range(len(arcs)) if i not in kept])
+
+
 def project(x_forward: float, y_left: float, w: int = CAM_W, h: int = CAM_H,
             fov_deg: float = CAM_FOV_DEG,
             cam_h: float = CAM_HEIGHT_M) -> tuple[float, float] | None:

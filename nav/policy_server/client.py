@@ -117,6 +117,7 @@ class PolicyClient:
         stalled_s: float = 0.0,
         wait_fresh: bool = False,
         wait_inflight: bool = False,
+        scan_points: list[list[float]] | None = None,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -153,6 +154,12 @@ class PolicyClient:
         and therefore with the thinking budget. Send at most one of the two; `wait_fresh`
         wins if both arrive, since it is the strictly stronger guarantee.
 
+        `scan_points` is one revolution of the 2D lidar as body-frame (x_forward, y_left)
+        metres. The arc-menu server uses it to drop menu arcs the robot cannot actually
+        drive; it is the one thing on this list the camera structurally cannot supply,
+        since a 90 degree frame cannot measure the width of a gap it is looking at. Sent
+        as points rather than ranges so the frame convention travels with the data.
+
         All of them are ignored by `server.py`, so they are safe to send either way. That is
         not incidental: the runner talks to whichever server is listening, and a field that
         broke the TIC-VLA baseline would make the two policies un-comparable on the same
@@ -176,5 +183,6 @@ class PolicyClient:
                 "stalled_s": stalled_s,
                 "wait_fresh": wait_fresh,
                 "wait_inflight": wait_inflight,
+                "scan_points": scan_points,
             },
         )

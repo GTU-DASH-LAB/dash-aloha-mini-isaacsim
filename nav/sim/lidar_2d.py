@@ -242,3 +242,161 @@ class Lidar2D:
         self.scans += 1
         return Scan(ranges=ranges, hit=hit, self_hit=self_hit,
                     bearings_body=self.bearings_body, yaw=yaw, origin=origin)
+
+
+class SweepingLidar2D:
+    """The same device read at CONTROL rate, where the spin stops being ignorable.
+
+    `Lidar2D.scan()` returns a whole revolution at one instant, and the module docstring
+    argues that is faithful for a consumer running at 1 Hz. The collision guard is not
+    that consumer: it runs every physics step, ~60 Hz, and a snapshot there would hand it
+    a fresh 360 degree view six times per revolution -- a sensor six times better than the
+    one we are pinning the design to. That is the same failure as casting an elevation
+    loop and calling it a 2D unit, just in time instead of space.
+
+    So the beam is modelled. A C1 emits 5000 points/s in a fixed rotation, which at 60 Hz
+    is ~83 points per step covering ~60 degrees; a given bearing is refreshed once per
+    revolution, every 100 ms. Rays cost 2-3 us (measured), so casting the arc the beam
+    would really have swept costs ~0.28 ms/step against an 8.65 ms bare step -- the honest
+    model is affordable and there is no reason to take the optimistic one.
+
+    RETURNS ARE STORED IN WORLD COORDINATES, WITH A TIMESTAMP, and that is what makes the
+    staleness a latency rather than a smear. A point measured 90 ms ago is still a true
+    statement about where a wall is; what has changed is where the ROBOT is, and the
+    odometry knows that exactly. Reading the buffer back into the current body frame is
+    therefore ordinary motion compensation -- the same de-skewing a real stack does with
+    a worse pose estimate than ours. What survives is the genuine cost of a spinning
+    sensor: an obstacle that appeared 50 ms ago in a bearing the beam has not reached yet
+    is simply not in the buffer.
+    """
+
+    def __init__(
+        self,
+        spec: LidarSpec = RPLIDAR_C1,
+        mount_height_m: float = 0.30,
+        mount_forward_m: float = 0.0,
+        robot_prim_prefix: str = "/World/Aloha",
+    ):
+        # 0.30 m is measured, not assumed: `check_lidar_2d.py` sweeps 0.20-1.50 m against
+        # this robot's own colliders and finds a 0% blind sector at every height except
+        # 0.80 m, which loses a 39.6 degree arc to the arm bases. The lowest clear mount
+        # wins because a mast is weight, wiring and something to catch on doorframes.
+        self.spec = spec
+        self.mount_height_m = mount_height_m
+        self.mount_forward_m = mount_forward_m
+        self.robot_prim_prefix = robot_prim_prefix
+
+        n = spec.points_per_rev
+        self.bearings_body = np.linspace(0.0, 2.0 * math.pi, n, endpoint=False
+                                         ).astype(np.float32)
+        self._wx = np.zeros(n, dtype=np.float64)
+        self._wy = np.zeros(n, dtype=np.float64)
+        self._stamp = np.full(n, -np.inf)      # -inf = this bearing has never been swept
+        self._hit = np.zeros(n, dtype=bool)
+        self._self = np.zeros(n, dtype=bool)
+        self._prim = [""] * n
+        self._cursor = 0
+        self._carry = 0.0
+        self._query = None
+        self.rays_cast = 0
+        self.revolutions = 0.0
+
+    def _scene_query(self):
+        if self._query is None:
+            from omni.physx import get_physx_scene_query_interface
+
+            self._query = get_physx_scene_query_interface()
+        return self._query
+
+    def step(self, position: tuple[float, float, float], yaw: float, dt: float,
+             now: float) -> int:
+        """Advance the beam by however far it turned in `dt`. Returns rays cast.
+
+        The fractional remainder is carried rather than rounded away: at 60 Hz the beam
+        covers 83.33 points per step, and dropping the third of a point every time would
+        run the sensor 0.4% slow forever -- small, but it is the kind of error that is
+        invisible in one episode and shows up as a phase drift over a long one.
+        """
+        self._carry += self.spec.points_per_rev * self.spec.scan_rate_hz * dt
+        count = int(self._carry)
+        self._carry -= count
+        if count <= 0:
+            return 0
+        count = min(count, self.spec.points_per_rev)   # never re-sweep past a full turn
+
+        query = self._scene_query()
+        n = self.spec.points_per_rev
+        ox = position[0] + self.mount_forward_m * math.cos(yaw)
+        oy = position[1] + self.mount_forward_m * math.sin(yaw)
+        origin = (ox, oy, position[2] + self.mount_height_m)
+
+        for _ in range(count):
+            i = self._cursor
+            self._cursor = (i + 1) % n
+            angle = float(self.bearings_body[i]) + yaw
+            dx, dy = math.cos(angle), math.sin(angle)
+            result = query.raycast_closest(origin, (dx, dy, 0.0), self.spec.max_range_m)
+            self._stamp[i] = now
+            if not result or not result.get("hit"):
+                self._hit[i] = False
+                self._self[i] = False
+                continue
+            distance = float(result.get("distance", self.spec.max_range_m))
+            if distance < self.spec.min_range_m:
+                self._hit[i] = False
+                self._self[i] = False
+                continue
+            prim = str(result.get("collision", ""))
+            self._hit[i] = True
+            self._self[i] = prim.startswith(self.robot_prim_prefix)
+            self._prim[i] = prim
+            self._wx[i] = ox + distance * dx
+            self._wy[i] = oy + distance * dy
+
+        self.rays_cast += count
+        self.revolutions += count / n
+        return count
+
+    def _keep(self, now: float | None, max_age_s: float | None) -> np.ndarray:
+        keep = self._hit & ~self._self & np.isfinite(self._stamp)
+        if max_age_s is not None:
+            if now is None:
+                raise ValueError("max_age_s needs a timestamp")
+            keep &= (now - self._stamp) <= max_age_s
+        return keep
+
+    def points_body(self, position: tuple[float, float, float], yaw: float,
+                    now: float | None = None,
+                    max_age_s: float | None = None) -> np.ndarray:
+        """(M, 2) body-frame XY of external returns, motion-compensated to now.
+
+        Self-hits are dropped, as in `Scan.world_points`: they are the robot, and to a
+        consumer asking "what is in my way" the robot's own arm is never the answer.
+
+        No age filter by default, and that is not laziness -- every bearing is overwritten
+        exactly once per revolution, so the buffer cannot hold anything older than 100 ms
+        once the beam has been round. Filtering would only ever discard the freshest
+        picture available of a bearing the beam has not returned to yet.
+        """
+        keep = self._keep(now, max_age_s)
+        if not keep.any():
+            return np.zeros((0, 2), dtype=np.float64)
+        rx = self._wx[keep] - position[0]
+        ry = self._wy[keep] - position[1]
+        c, s = math.cos(-yaw), math.sin(-yaw)
+        return np.stack([rx * c - ry * s, rx * s + ry * c], axis=1)
+
+    def prims(self, now: float | None = None,
+              max_age_s: float | None = None) -> list[str]:
+        """Prim path per row of `points_body`, same order. For telemetry only."""
+        keep = self._keep(now, max_age_s)
+        return [self._prim[i] for i in np.flatnonzero(keep)]
+
+    def max_age_s(self, now: float) -> float:
+        """Age of the STALEST bearing in the buffer, seconds.
+
+        Reported rather than assumed to be one revolution: it is one revolution only once
+        the beam has been round once, and it is what the stop distance has to absorb.
+        """
+        seen = self._stamp[np.isfinite(self._stamp)]
+        return float(now - seen.min()) if seen.size else float("inf")

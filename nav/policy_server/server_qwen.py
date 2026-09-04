@@ -75,8 +75,9 @@ from arc_menu import (  # noqa: E402
     parse_heading_word, FREE_SPACE_SYSTEM, FREE_SPACE_SYSTEM_2,
     SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY, SELECT_PREFILL, SELECT_PREFILL_SPEED,
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
-    allocate_labels, make_arcs, parse_choice_speed, parse_target_distance, pivot_word,
-    plan_from_kappa, render_menu, select_system, speed_for, speed_from_level, stop_label,
+    allocate_labels, arc_clearance, drivable, make_arcs, parse_choice_speed,
+    parse_target_distance, pivot_word, plan_from_kappa, render_menu, select_system,
+    speed_for, speed_from_level, stop_label,
 )
 
 MODEL_PATH = os.environ.get(
@@ -291,6 +292,19 @@ class PredictRequest(BaseModel):
     # anything. One frame of a stationary robot is the same picture as one frame of a
     # moving one.
     stalled_s: float = 0.0
+    # One revolution of the 2D lidar, as body-frame (x_forward, y_left) metres, already
+    # motion-compensated by the caller. None means "no scan", which is what every existing
+    # caller sends and which leaves the menu exactly as it was.
+    #
+    # POINTS RATHER THAN RANGES, on purpose. A range vector is only meaningful next to the
+    # bearing convention and the mount offset it was taken under, so shipping one makes
+    # the server and the runner agree about three things instead of one; points are the
+    # same information with the frame already applied. And the server owns the arcs, so it
+    # must be the side that computes clearance -- the alternative is the runner deriving
+    # per-arc numbers from its own copy of the curvature set, which is a second copy of a
+    # constant that fails silently when the two drift apart. `QVLA_MENU_ARCS` already
+    # exists precisely because that class of drift has bitten this repo before.
+    scan_points: list[list[float]] | None = None
     # Block until a plan generated from THESE images exists, instead of serving the
     # cached one and regenerating behind it.
     #
@@ -941,6 +955,37 @@ MENU_FRAMES = max(1, int(os.environ.get("QVLA_MENU_FRAMES", "1")))
 # unreproducible -- the same class of mistake as the shared label RNG.
 MENU_GOAL_DIR = os.environ.get("QVLA_GOAL_DIR", "0").lower() in ("1", "true", "yes")
 
+# LIDAR-FILTERED MENU: how far an arc must be drivable to be offered at all, metres.
+#
+# Off unless the caller actually sends a scan, so every arm on disk is untouched and the
+# TIC-VLA baseline cannot be affected at all. Set to 0 to receive a scan and draw the
+# whole menu anyway -- that is the control arm, and it is the one that says whether any
+# improvement came from the filtering rather than from some other difference in the run.
+#
+# 1.0 m, because the question the threshold answers is "will this arc still be a path
+# when the next decision is taken". A planning period is ~1 s and the cruise speed is
+# 0.7 m/s, so an arc with less than a metre of room is one the robot cannot finish
+# committing to. Lower and blocked arcs come back onto the menu; much higher and a
+# legitimately tight doorway stops being offered, which is how a guard turns into a cage.
+MENU_MIN_CLEAR_M = float(os.environ.get("QVLA_MENU_MIN_CLEAR", "1.0"))
+
+# How many returns the buffer has to hold before its silence counts as evidence.
+#
+# An empty buffer makes `arc_clearance` answer "every arc is clear to 3 m", which is the
+# same sentence a genuinely open room produces and is the wrong failure mode: a lidar that
+# is dead, unstepped, or has not completed its first revolution would silently pass the
+# whole menu while the record showed a tidy row of 3.0s. Measured for real --
+# `check_guard_scan.py` on office_nearest_elevator drove out of the building and the count
+# fell 498 -> 0 over ~900 steps with the clearance row reading 3.0 throughout.
+#
+# BEHAVIOURALLY THIS GATE COSTS NOTHING, and that is why 50 is not a tuned number. A
+# buffer too thin to be evidence is also too thin to drop an arc, so declining to filter
+# there removes nothing the filter would have removed. Its entire value is in the log:
+# `clearance_m` comes back null, so a reader can tell "the sensor said the room is open"
+# from "the sensor said nothing". 50 is a tenth of a C1 revolution, which is the point
+# where a 90 degree wedge could hold roughly one return per arc.
+MENU_MIN_SCAN_POINTS = int(os.environ.get("QVLA_MENU_MIN_POINTS", "50"))
+
 _STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
 
 
@@ -997,7 +1042,9 @@ def _reseed_menu(episode: str) -> None:
 def menu_plan(image_paths: list[str], instruction: str,
               step: int | None,
               recovered: bool = False, kind: str = "",
-              stalled_s: float = 0.0) -> tuple[np.ndarray | None, str, float]:
+              stalled_s: float = 0.0,
+              scan_points: list[list[float]] | None = None
+              ) -> tuple[np.ndarray | None, str, float]:
     """The `menu` format's whole pipeline: two generations, one curvature, one plan.
 
     Returns (plan or None, a reasoning string for the run log, radians to turn in place).
@@ -1019,9 +1066,24 @@ def menu_plan(image_paths: list[str], instruction: str,
     newest = image_paths[-1]
 
     labels, pivot_labels = allocate_labels(_menu_rng, len(_MENU_ARCS), MENU_PIVOTS)
+
+    # THE LIDAR FILTER. Drawn arcs are what the model may choose, so an arc that runs into
+    # a wall is not a bad option -- it is an option that should not have been on the menu.
+    # The shuffle above is drawn BEFORE this, from the full arc count, so the random
+    # stream and therefore every label in every earlier run is unchanged; the filter only
+    # decides which of those labels get drawn. See `drivable()` for why nothing is
+    # renumbered.
+    clearance = None
+    arcs, drawn, dropped = _MENU_ARCS, labels, []
+    if (scan_points and len(scan_points) >= MENU_MIN_SCAN_POINTS
+            and MENU_MIN_CLEAR_M > 0.0):
+        clearance = arc_clearance(_MENU_ARCS, scan_points)
+        arcs, drawn, dropped = drivable(_MENU_ARCS, labels, clearance,
+                                        MENU_MIN_CLEAR_M)
+
     menu = str(out_dir / f"menu_{step if step is not None else 0:08d}.jpg")
-    render_menu(newest, menu, _MENU_ARCS, labels, pivot_labels=pivot_labels)
-    by_label = {int(lab): _MENU_ARCS[i].kappa for i, lab in enumerate(labels)}
+    render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels)
+    by_label = {int(lab): arcs[i].kappa for i, lab in enumerate(drawn)}
     # Positive is a turn to the robot's LEFT, the same sign convention as yaw and as the
     # curvatures, so the runner can hand it straight to the base as a yaw rate.
     by_pivot = ({int(pivot_labels[0]): PIVOT_RAD, int(pivot_labels[1]): -PIVOT_RAD}
@@ -1148,7 +1210,13 @@ def menu_plan(image_paths: list[str], instruction: str,
     said = reply[len(prefill):] if reply.startswith(prefill) else reply
     note = ((f"[after {kind}] " if kind else "")
             + (f"[history] {hist}\n" if hist else "")
-            + f"[free space] {seen}\n[menu] {labels} -> {said.strip()[:20]!r}")
+            + f"[free space] {seen}\n"
+            # Both lists, not just the survivors. Reading a log that says the model chose
+            # from [3, 5, 7] gives no way to tell a clear corridor from a filter that took
+            # four arcs away, and those are opposite situations.
+            + (f"[lidar] kept {drawn} dropped {dropped} "
+               f"(clear {[round(c, 1) for c in clearance]} m)\n" if clearance else "")
+            + f"[menu] {drawn} -> {said.strip()[:20]!r}")
     if seen_think or sel_think:
         # The reasoning is kept in the note, which is what `/health` returns as
         # `last_reasoning` and what the video prints. At `medium` both are empty strings
@@ -1207,7 +1275,8 @@ def menu_plan(image_paths: list[str], instruction: str,
             target_m, speed, recovered, kind=kind, speed_source=speed_src,
             speed_level=level if ask_speed else None, stalled_s=stalled_s,
             thinking=(seen_think, sel_think), history=hist,
-            pivot_rad=pivot, pivot_labels=pivot_labels)
+            pivot_rad=pivot, pivot_labels=pivot_labels,
+            drawn=drawn if clearance else None, clearance=clearance)
     return plan, note, pivot
 
 
@@ -1218,7 +1287,9 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             speed_level: int | None = None, stalled_s: float = 0.0,
             thinking: tuple[str, str] = ("", ""), history: str = "",
             pivot_rad: float = 0.0,
-            pivot_labels: tuple[int, int] | None = None) -> None:
+            pivot_labels: tuple[int, int] | None = None,
+            drawn: list[int] | None = None,
+            clearance: list[float] | None = None) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -1236,6 +1307,13 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             fh.write(json.dumps({
                 "step": step, "menu": Path(menu).name, "instruction": instruction,
                 "labels": labels, "choice": choice, "kappa": kappa,
+                # `labels` stays the FULL permutation so a replay can still redraw the
+                # menu that would have been shown; `drawn` is the subset that actually
+                # was. Null on an unfiltered run, which is how a reader tells "no lidar"
+                # from "lidar, nothing dropped" -- those look identical in `labels` alone.
+                "drawn": list(drawn) if drawn is not None else None,
+                "clearance_m": ([round(float(c), 3) for c in clearance]
+                                if clearance is not None else None),
                 "stop": choice == _STOP_LABEL, "free_space": seen, "reply": reply,
                 "heading": heading,
                 # Both, and for the same reason `labels` is stored: the pivot numbers are
@@ -1290,7 +1368,8 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
 def _generation_worker(messages: list[dict], image_paths: list[str],
                        step: int | None, max_new: int, instruction: str = "",
                        recovered: bool = False, epoch: int = 0, kind: str = "",
-                       stalled_s: float = 0.0) -> None:
+                       stalled_s: float = 0.0,
+                       scan_points: list[list[float]] | None = None) -> None:
     """Runs on a background thread so the control loop never waits on decode.
 
     This is the same two-rate idea as TIC-VLA's `predict_async`, one level up: there the
@@ -1306,7 +1385,7 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
         pivot = 0.0
         if _ARC_FORMAT == "menu":
             plan, text, pivot = menu_plan(image_paths, instruction, step, recovered,
-                                          kind, stalled_s)
+                                          kind, stalled_s, scan_points)
         else:
             text = _generate(messages, image_paths, max_new)
             ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
@@ -1600,7 +1679,7 @@ def predict(req: PredictRequest) -> PredictResponse:
             target=_generation_worker,
             args=(messages, list(req.image_paths), req.current_step, max_new,
                   req.instruction, req.recovered, epoch, req.recovery_kind,
-                  req.stalled_s), daemon=True)
+                  req.stalled_s, req.scan_points), daemon=True)
         with _lock:
             _state["gen_thread"] = th
         th.start()

@@ -120,7 +120,15 @@ def main() -> int:
         spread([r["heading_deg"] for r in v]) for v in results.values()
     )
     between = spread(list(per_instr_mean_heading.values()))
-    ratio = (between / within) if within > 1e-9 else float("inf")
+    # `inf` here is a divide-by-zero, not a result. TIC-VLA measured a within-instruction
+    # spread of exactly 0.000 deg over 4 repeats: both entry points do sample, but at
+    # temperature 0.1 / top_p 0.1 / top_k 10 (DynaNav/ticvla.py:584, :945), which is
+    # effectively greedy -- and that turned a 0.6 deg spread across six contradictory
+    # commands into "PASS, well beyond sampling noise". The ratio
+    # is only meaningful when there IS noise to be beyond, so when there is none, fall back
+    # to judging the between-spread on its own scale.
+    deterministic = within <= 1e-9
+    ratio = float("inf") if deterministic else between / within
 
     print("=" * 74)
     print("mean heading by instruction (FLU: +left / -right)")
@@ -129,10 +137,25 @@ def main() -> int:
     print()
     print(f"  between-instruction spread : {between:.3f} deg")
     print(f"  within-instruction spread  : {within:.3f} deg  (sampling noise)")
-    print(f"  ratio                      : {ratio:.2f}")
+    print(f"  ratio                      : {ratio:.2f}"
+          + ("  <- divide-by-zero, ignore; policy is deterministic" if deterministic else ""))
     print()
 
-    if ratio > 3.0:
+    # 15 deg is the smallest heading change that survives contact with a real corridor:
+    # the pure-pursuit controller's own lookahead washes out less than that, so a policy
+    # that "responds to language" by a few degrees responds to nothing that can be driven.
+    MIN_MEANINGFUL_DEG = 15.0
+    if deterministic:
+        if between >= MIN_MEANINGFUL_DEG:
+            verdict = (f"PASS - deterministic policy, and the instruction moves the heading "
+                       f"by {between:.1f} deg, which is drivable")
+        else:
+            verdict = (f"FAIL - deterministic policy whose heading moves only {between:.1f} "
+                       f"deg across contradictory instructions (< {MIN_MEANINGFUL_DEG:.0f} "
+                       f"deg). Not language understanding. Compare against the SCENE axis "
+                       f"before concluding the policy is broken outright: if varying the "
+                       f"frames does move it, vision is being carried and language is not.")
+    elif ratio > 3.0:
         verdict = "PASS - waypoints depend on the instruction well beyond sampling noise"
     elif ratio > 1.5:
         verdict = "WEAK - some dependence on the instruction, but close to sampling noise"

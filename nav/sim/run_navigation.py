@@ -28,14 +28,49 @@ the model being able to correct for it.
 This was synchronous until the async switch, and the zeros were correct then: a frozen
 robot really has moved nowhere. If you ever put `predict` back, put the zeros back too.
 
+**And that is exactly what `NAV_PLAN_PERIOD_S` does.** Asynchronous inference is the
+right trade only while a generation is cheap against the plan it is spending. It stops
+being right the moment thinking gets expensive, because "the robot keeps driving" and
+"the robot drives blind" are the same sentence: the blind window IS the generation. The
+13-episode ladder measured the cost and it is not subtle -- 7/13 with no thinking, 2/13
+with a moderate budget, 2/13 with a large one, guard interventions rising from a few
+hundred to over two thousand. That ladder did not measure whether more thinking helps.
+It measured how far a robot travels with its eyes shut, which is proportional to how
+long it thinks, and it therefore made the levels un-comparable by construction.
+
+So the loop has three regimes, and they differ on ONE thing: how long the robot may drive
+on thinking that is out of date. `NAV_PLAN_MODE` picks; `NAV_PLAN_PERIOD_S` sizes.
+
+    async     blind window = one whole GENERATION, so it grows with the thinking budget.
+              Right for TIC-VLA, whose action expert re-plans on the current frame at
+              control rate; wrong here, where nothing refreshes between decisions.
+    bounded   blind window = ONE PERIOD, whatever the budget. Drive the plan generated a
+              period ago while the next decodes, and stop only for the part of a
+              generation that did not fit. When a generation is faster than a period this
+              costs nothing at all and is plain async with a guarantee bolted on.
+    sync      blind window = ZERO. Hold still until a plan built on the CURRENT frame
+              arrives. The simulation genuinely freezes while it waits, because the loop
+              reaches `kit.update()` only after the call returns -- no physics steps, no
+              rendering, no sim time -- so the compensation zeros above become literally
+              true again. Thinking costs wall-clock instead of costing collisions, which
+              is the only regime where "does it decide better when it thinks longer?" is
+              a question about deciding.
+
+`bounded` is the one to reach for. It keeps the overlap that made async worth having and
+removes the unbounded risk that made it unusable at high thinking budgets, and its cost
+is legible before you run it: compare a generation against a period.
+
 Usage:
     nav/run.sh --episode warehouse --controller braking
+    NAV_PLAN_PERIOD_S=3.0 nav/run.sh --episode warehouse    # stop-and-think every 3 s
+    NAV_PLAN_PERIOD_S=3.0 NAV_PLAN_MODE=bounded nav/run.sh --episode warehouse
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 import queue
 import sys
 import threading
@@ -65,15 +100,191 @@ from episode import (  # noqa: E402
 )
 from frame_history import FrameHistory  # noqa: E402
 from guidance import guidance_heading, parse_guidance  # noqa: E402
+from stuck_recovery import StuckRecovery  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
 
 PHYSICS_DT = 1.0 / 60.0
+
+# THE 2D LIDAR, off by default so every result already on disk stays reproducible by
+# re-running the same command. `NAV_LIDAR=1` turns it on and changes two things at once,
+# which is why the ladder has to be run both ways before either is believed:
+#
+#   * the collision guard reads the sensor's rolling buffer instead of casting seven rays
+#     -- 16x the angular density across the same wedge, at the cost of up to 100 ms of
+#     age, which `CollisionGuard`'s stop distance is raised to absorb;
+#   * the arc menu drops paths the robot cannot drive, so the model chooses among
+#     options that are all executable rather than being asked not to pick the bad ones.
+#
+# The height is not a preference. `check_lidar_2d.py` sweeps 0.20-1.50 m against this
+# robot's own colliders and finds a 0% blind sector everywhere except 0.80 m, which loses
+# a 39.6 degree arc to the arm bases; 0.30 is the lowest clear mount and needs no mast.
+NAV_LIDAR = os.environ.get("NAV_LIDAR", "0").lower() in ("1", "true", "yes")
+NAV_LIDAR_HEIGHT_M = float(os.environ.get("NAV_LIDAR_HEIGHT", "0.30"))
+
+# Fixed planning period in SIMULATED seconds, or 0.0 for the paper's asynchronous mode.
+#
+# When set, this replaces the episode's own `replan_every_steps` and switches the loop to
+# sense -> plan -> act: the robot drives one plan for exactly this long, then stops dead
+# and waits for a plan generated from the frame it is standing on. See the module
+# docstring for why -- in one line, an asynchronous loop drives blind for the length of a
+# generation, so raising the thinking budget raises the distance travelled blind, and the
+# thinking levels stop being comparable.
+#
+# The period is the ACTING window, so it must not exceed the plan horizon or the robot
+# runs off the end of its own plan before the next decision: `HORIZON_S` is 10.0 at
+# medium and 16.0 at high, against periods of 3.0 and 1.0 here, so there is a wide margin.
+# `check_plan_period()` enforces it rather than trusting the arithmetic to stay true.
+PLAN_PERIOD_S = float(os.environ.get("NAV_PLAN_PERIOD_S", "") or 0.0)
+
+# WHICH REGIME. All three differ on exactly one thing -- how long the robot is allowed to
+# drive on thinking that is out of date -- so they form a single axis and are named for
+# where they sit on it:
+#
+#   async    the blind window is a whole GENERATION, and therefore grows with the
+#            thinking budget. This is TIC-VLA's design and it is right for TIC-VLA, whose
+#            action expert re-plans on the current frame at control rate. Here there is
+#            no action expert, so nothing refreshes between decisions.
+#   bounded  the blind window is ONE PERIOD, whatever the budget. The robot drives the
+#            plan generated one period ago while the next one decodes, and stops only for
+#            the part of a generation that did not fit inside the period. Costs nothing
+#            at all when generation is faster than the period.
+#   sync     the blind window is ZERO. The robot stops dead at every decision. Safest,
+#            slowest, and the only one where time_delay is honestly 0.
+#
+# `bounded` is the one to reach for first: it keeps async's overlap and takes async's
+# unbounded risk away, and its cost is visible up front -- if a generation fits in a
+# period, the bound never engages and it is free.
+PLAN_MODE = (os.environ.get("NAV_PLAN_MODE", "").strip().lower()
+             or ("sync" if PLAN_PERIOD_S > 0 else "async"))
+if PLAN_MODE not in ("async", "bounded", "sync"):
+    raise SystemExit(f"[nav] NAV_PLAN_MODE must be async, bounded or sync -- got "
+                     f"{PLAN_MODE!r}")
+if PLAN_MODE in ("bounded", "sync") and PLAN_PERIOD_S <= 0:
+    # Both are defined by the length of the window they bound, so neither means anything
+    # without one. Refused rather than defaulted: silently falling back to async is how a
+    # run gets labelled with a regime it did not use.
+    raise SystemExit(f"[nav] NAV_PLAN_MODE={PLAN_MODE} needs NAV_PLAN_PERIOD_S set to "
+                     f"the window it is supposed to bound")
+
+
+def plan_period_steps(episode_default: int) -> int:
+    """Physics steps between decisions: the fixed period if set, else the episode's own.
+
+    Kept as a function so the two places that need it (the chase-camera pairing and the
+    replan test) cannot drift apart -- they must fire on the same steps or the recorded
+    `chase_<step>.jpg` stops being the third-person twin of `menu_<step>.jpg`.
+    """
+    if PLAN_PERIOD_S > 0:
+        return max(1, round(PLAN_PERIOD_S / PHYSICS_DT))
+    return episode_default
+
+
+def check_plan_period(policy, replan_steps: int) -> None:
+    """Print the timing contract, and refuse a period the plan cannot cover.
+
+    Printed and not merely asserted because the failure this guards against is silent:
+    a period longer than the plan horizon leaves the robot driving off the end of its
+    own trajectory for the remainder of every window, which looks like a policy that
+    stops steering rather than like a misconfiguration. And a run that was MEANT to be
+    synchronous but was launched without the variable produces a complete, plausible set
+    of numbers measured under the other regime entirely -- the same class of mistake as
+    scoring a ladder against a server still holding the previous thinking level.
+    """
+    period_s = replan_steps * PHYSICS_DT
+    if PLAN_MODE == "async":
+        print(f"[nav] planning: ASYNCHRONOUS, every {period_s:.2f} s sim "
+              f"({replan_steps} steps); the robot drives the previous plan while the "
+              f"model thinks, for as long as that takes", flush=True)
+        return
+    if PLAN_MODE == "bounded":
+        print(f"[nav] planning: BOUNDED ASYNC, every {period_s:.2f} s sim "
+              f"({replan_steps} steps); the robot drives thinking at most one period "
+              f"old and STOPS for whatever of a generation does not fit", flush=True)
+    else:
+        print(f"[nav] planning: SYNCHRONOUS, every {period_s:.2f} s sim ({replan_steps} "
+              f"steps); the robot STOPS and waits for each decision", flush=True)
+    # The horizon lives in the server, so ask it rather than assuming the pairing here.
+    # An unreachable or older server is not fatal -- it just cannot answer, and a run
+    # that skips the check is better than one that refuses to start over a status read.
+    horizon = None
+    try:
+        horizon = float(policy.health()["horizon_s"])
+    except Exception:
+        # Includes the TIC-VLA server, which serves the same route with a different
+        # schema and has no `horizon_s` at all. Never subscript a payload this process
+        # does not own -- doing exactly that once turned a whole 13-episode ladder into
+        # a KeyError inside setup() that scored as thirteen ordinary failures.
+        pass
+    if horizon is None:
+        print("[nav] could not read horizon_s from the policy server; period unchecked",
+              flush=True)
+    elif period_s > horizon:
+        raise SystemExit(
+            f"[nav] plan period {period_s:.2f} s exceeds the policy's {horizon:.2f} s "
+            f"horizon -- the robot would run off the end of every plan before the next "
+            f"decision. Lower NAV_PLAN_PERIOD_S or raise the thinking level's horizon.")
+    else:
+        print(f"[nav] plan horizon {horizon:.1f} s covers the {period_s:.2f} s period",
+              flush=True)
+
 
 # Which of the three guidance horizons (3/6/9 s) gets logged in `plans`. Logged for
 # every controller even though only `guided` steers on it, so the two channels can be
 # compared within one run. Kept here rather than at the call site so the logged column
 # always describes the same horizon the controller would have used.
 GUIDANCE_HORIZON_S = 6.0
+
+# How often a third-person frame is written to disk during a recorded run, in physics
+# steps. 2 steps = 30 frames per simulated second.
+#
+# This used to fire only on decision steps, and a decision is taken every ~3 s, so the
+# recorded third-person track was ~0.3 fps: a slideshow of a robot teleporting between
+# poses, which is unreadable as motion. The video is the only way anyone but the runner
+# sees what happened, so a track that cannot show HOW the robot moved cannot answer the
+# question it is watched to answer.
+#
+# WHAT IT COSTS, measured rather than assumed, because "render every frame" sounds
+# expensive and mostly is not: Kit renders this camera's render product every frame
+# whether or not anything reads it (see camera_source.py), so the render is already paid
+# for. What a capture actually costs is the readback plus the JPEG encode, measured at
+# 1.70 ms against a 34.6 ms physics step. Every 2 steps is therefore ~2.5% of sim time,
+# plus ~25 kB per frame on disk -- about 90 MB for a 100 s episode, deleted with the
+# frames once the video is built.
+#
+# Overridable because that trade is different on a long episode than on a short one, and
+# because the honest answer to "is this slowing the benchmark" is a number the operator
+# can change, not a constant they have to trust.
+CHASE_EVERY = max(1, int(os.environ.get("NAV_CHASE_EVERY", "2")))
+
+
+def ready_message(info: dict) -> str:
+    """Describe whichever policy server answered, without assuming which one it is.
+
+    This line used to subscript the health payload directly for `num_action_chunks`
+    and `device`. Those are `server.py`'s keys. `server_qwen.py` serves the same three
+    ROUTES with a different payload, so pointing the runner at it raised KeyError
+    inside `setup()` -- before a single step had been driven.
+
+    That crash cost more than its size, because of how it was reported. An uncaught
+    exception exits Python with status 1, and `bench.sh` reads 1 as "the episode
+    failed", not "the process died". So the 13-episode ladder ran to completion in
+    four minutes, scored every episode off the PREVIOUS run's result file, and printed
+    a perfectly plausible 6/13 -- the exact "plausible number" failure the one-process-
+    per-episode design exists to prevent. `bench.sh` now also requires a NEW result
+    file per run, so the two guards are independent.
+
+    Rule for anything reached over HTTP: match on routes AND payload, or use `.get`.
+    """
+    bits = []
+    if info.get("num_action_chunks") is not None:
+        bits.append(f"{info['num_action_chunks']} chunks")
+    if info.get("mode"):        # the qvla-direct server names itself here
+        bits.append(str(info["mode"]))
+    if info.get("format"):
+        bits.append(f"format={info['format']}")
+    if info.get("device"):
+        bits.append(f"on {info['device']}")
+    return "policy ready" + (f" ({', '.join(bits)})" if bits else "")
 
 
 class NavigationRunner:
@@ -136,6 +347,10 @@ class NavigationRunner:
         # watching. `chase_wanted` is set from the UI thread; the main thread acts on it.
         self.chase_jpeg: bytes | None = None
         self.chase_wanted = False
+        # Where this run's chase frames go, alongside the server's menus. Set per
+        # episode from /reset's answer; None means the server is not recording, so
+        # there is nothing to build a video out of and no reason to pay for the camera.
+        self.record_dir: Path | None = None
         self.chase_available: bool | None = None  # None = not tried yet
         self._chase: object | None = None
         self._preview_t = 0.0  # throttles the between-runs camera refresh
@@ -144,6 +359,7 @@ class NavigationRunner:
         self.art = None
         self.camera = None
         self.guard = None
+        self.recovery = None
         self.base = None
         self._abort = threading.Event()
         self._reset = threading.Event()
@@ -168,6 +384,19 @@ class NavigationRunner:
         snap["chase_enabled"] = self.chase_wanted
         snap["chase_available"] = self.chase_available
         return snap
+
+    def policy_label(self) -> str:
+        """Identify the server that answered, for the run record.
+
+        Read off `/health` rather than from our own flags: the port is what we chose, the
+        model and format are what actually loaded, and it is the second pair that decides
+        what the number means. A stale server left running in the wrong format is exactly
+        the mistake this is here to make visible afterwards.
+        """
+        info = getattr(self, "_policy_info", None) or {}
+        model = str(info.get("model", "?")).rsplit("/", 1)[-1]
+        fmt = info.get("format")
+        return f"{model}{f' [{fmt}]' if fmt else ''} @{self.policy.base.rsplit(':', 1)[-1]}"
 
     def request_stop(self) -> None:
         self._abort.set()
@@ -215,6 +444,21 @@ class NavigationRunner:
         frame = self._chase.grab_jpeg()
         if frame:
             self.chase_jpeg = frame
+
+    def _capture_chase(self, step: int) -> None:
+        """Grab a third-person frame and, if this run is recording, write it to disk.
+
+        Best-effort throughout: a missing third-person frame costs a panel in a video and
+        must never cost a benchmark episode. That is why the whole body is wrapped rather
+        than just the write -- `_update_chase` creates the camera on first use, and a scene
+        without one has already been seen to raise from inside Kit rather than return None.
+        """
+        try:
+            self._update_chase()
+            if self.record_dir is not None and self.chase_jpeg:
+                (self.record_dir / f"chase_{step:08d}.jpg").write_bytes(self.chase_jpeg)
+        except Exception as exc:
+            print(f"[nav] chase capture failed at step {step}: {exc}", flush=True)
 
     def _update_idle_views(self) -> None:
         """Main thread only. Keep both camera panels live between runs.
@@ -337,6 +581,7 @@ class NavigationRunner:
         from base_drive import KinematicBase
         from camera_source import NavCameraSource
         from collision_guard import CollisionGuard
+        from lidar_2d import SweepingLidar2D
 
         self._set(state="loading", message=f"opening {self.scene_path.name}")
 
@@ -368,14 +613,29 @@ class NavigationRunner:
 
         self.camera = NavCameraSource(scratch_dir=self.scratch_dir)
         self.camera.warmup(self.kit)
-        self.guard = CollisionGuard()
+        # The sensor serves BOTH loops, which is the whole reason it is one object rather
+        # than two ray fans: the guard reads its forward wedge every physics step, the
+        # policy reads a whole revolution every decision, and they are looking at the same
+        # returns taken at the same instants. Two independent sensors would be two
+        # different pictures of the world and any disagreement between the layers would be
+        # unexplainable from the logs.
+        self.lidar = (SweepingLidar2D(mount_height_m=NAV_LIDAR_HEIGHT_M)
+                      if NAV_LIDAR else None)
+        # Raising the stop distance is not tuning, it is paying for the latency the real
+        # device has. The fan is cast now; the buffer holds up to one revolution, 100 ms,
+        # which at the 1.5 m/s cap is 15 cm the old threshold never had to absorb.
+        self.guard = CollisionGuard(
+            scan=self.lidar,
+            stop_distance_m=0.6 + (0.15 if NAV_LIDAR else 0.0),
+        )
+        self.recovery = StuckRecovery(self.guard)
 
         self._set(state="ready", message="waiting for policy server")
         info = self.policy.wait_until_ready()
-        self._set(
-            state="idle",
-            message=f"policy ready ({info['num_action_chunks']} chunks on {info['device']})",
-        )
+        # Kept, not just printed: it is the only place the run learns which brain it is
+        # about to drive, and `EpisodeResult.policy` records it alongside the result.
+        self._policy_info = info
+        self._set(state="idle", message=ready_message(info))
 
     # --------------------------------------------------------------- execution
     def run_episode(
@@ -403,7 +663,23 @@ class NavigationRunner:
             self.controller_name, ep.max_speed_mps, ep.max_yaw_rate_radps
         )
         controller.reset()
-        self.policy.reset()  # clear the KV cache between episodes
+        # Clears the KV cache between episodes, and names the episode so the arc-menu
+        # server files this run's menus and decisions under it.
+        reset_info = self.policy.reset(run=ep.name)
+
+        # Where the server is filing this run's menus and decisions. The chase frames go
+        # in the SAME directory, keyed on the same step number, so the video tool can
+        # pair "what the robot saw and chose" with "what it looked like from outside"
+        # without a second index that could drift out of step with the first.
+        # None whenever the server is not recording, which is also exactly when there is
+        # no video to build -- so no separate switch for this.
+        rec_dir = reset_info.get("run_dir") if isinstance(reset_info, dict) else None
+        self.record_dir = Path(rec_dir) if rec_dir else None
+        if self.record_dir is not None:
+            # Turning this on creates the camera, and once an Isaac Sim `Camera` exists
+            # Kit renders its render product every frame whether or not anything reads
+            # it -- so a run that is not being recorded must not pay for it.
+            self.set_chase_enabled(True)
 
         # Put the robot on the start line. This is now REQUIRED, not a convenience:
         # nav stages are built per environment, so the stage opens at whatever pose it
@@ -417,6 +693,7 @@ class NavigationRunner:
 
         self.base.sync_from_sim()
         self.guard.interventions = 0
+        self.recovery.reset()
 
         start_pos = self.base.position()
         initial_distance = math.dist(start_pos[:2], ep.goal[:2])
@@ -449,7 +726,28 @@ class NavigationRunner:
         plans: list[tuple[float, float, float, float, float | None, float, float]] = []
         path_length = 0.0
         policy_calls = 0
+        # Forced re-decisions after a reverse, and the ones the server refused. Counted
+        # apart because they mean different things: the first is the recovery working,
+        # the second is a server that has no /replan route and a robot still being handed
+        # the plan that wedged it.
+        replans = 0
+        replans_failed = 0
+        # In-place turns actually executed. Not the same as the count the server keeps:
+        # that one is decisions the model made, this one is turns this robot performed,
+        # and they diverge if a run ever serves a pivot twice or drops one.
+        pivots = 0
         prev_pos = start_pos
+        prev_yaw = self.base.yaw
+        # How much of the current in-place turn is left, in radians, and the step by which
+        # it must be over regardless. Closed loop on the MEASURED yaw rather than open
+        # loop on a step count: the base reaches a commanded yaw rate over a few steps, so
+        # a turn timed as `angle / rate` consistently comes up short, and a 30 degree
+        # command that delivers 22 degrees is a bug with no symptom other than a robot
+        # that keeps not quite facing down the corridor. The deadline is the guard against
+        # the opposite failure -- a wheel against a wall that never accumulates the yaw --
+        # and it is generous because it exists to bound the loop, not to time it.
+        pivot_remaining = 0.0
+        pivot_deadline = 0
         step = 0
         t0 = time.time()
         success = False
@@ -468,6 +766,28 @@ class NavigationRunner:
         # would make the reported delay grow without bound.
         gen_starts: list[tuple[int, float, float, float]] = []
 
+        # Physics steps between decisions, and whether the robot waits for each one. In
+        # synchronous mode the wait is a real stop -- `kit.update()` is not reached while
+        # the HTTP call blocks -- so `think_wall_s` accumulates time the robot spent
+        # standing still, which is the price this mode pays and therefore the number that
+        # has to be reported next to its result.
+        replan_steps = plan_period_steps(ep.replan_every_steps)
+        # `synchronous` is the only mode that freezes the sim, so it is the only one that
+        # may report zero staleness. `bounded` stops too, but only for the tail of a
+        # generation that overran its period -- the robot really did drive for that
+        # period, so its delay and displacement are real and must be reported as such.
+        synchronous = PLAN_MODE == "sync"
+        bounded = PLAN_MODE == "bounded"
+        # The next step at which the model is called, held explicitly instead of tested
+        # with `step % replan_steps`. An in-place turn has to END the period it was chosen
+        # in -- the whole point of turning is to look again from the new direction, and a
+        # robot that turns 30 degrees and then stands still for the remaining 2.5 s of the
+        # period has spent a decision on nothing. With a modulus there is no way to say
+        # "sooner"; with a counter it is one assignment.
+        next_decision_step = 0
+        think_wall_s = 0.0
+        check_plan_period(self.policy, replan_steps)
+
         while True:
             # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long the
             # robot has to do the task, not how long the hardware takes to decide. That
@@ -481,6 +801,18 @@ class NavigationRunner:
             position = self.base.position()
             distance = math.dist(position[:2], ep.goal[:2])
 
+            # Third-person capture, BEFORE the exit checks so the last frame written is
+            # the robot at the goal rather than a metre short of it -- the arrival is the
+            # one moment of an episode a viewer most wants to see.
+            #
+            # The `or` is not redundant with the modulus. A decision frame must ALWAYS have
+            # a third-person twin, because that pairing is what the video is built on, and
+            # `replan_every_steps` is not guaranteed to be a multiple of `CHASE_EVERY` --
+            # tune either one and the twins would start going missing, silently, on exactly
+            # the frames that carry the reasoning text.
+            if step % CHASE_EVERY == 0 or step == next_decision_step:
+                self._capture_chase(step)
+
             if distance <= ep.success_threshold_m:
                 success = True
                 break
@@ -492,7 +824,10 @@ class NavigationRunner:
                 break
 
             # --- replan ---------------------------------------------------
-            if step % ep.replan_every_steps == 0:
+            if step == next_decision_step:
+                # The third-person twin of this decision was grabbed at the top of the
+                # loop, a few lines and no simulation steps ago, so `chase_<step>.jpg` and
+                # `menu_<step>.jpg` are still the same instant seen two ways.
                 frame_path = self.camera.grab_to_file()
                 if frame_path is None:
                     # An empty render means the sensor pipeline is not up. Driving on
@@ -513,8 +848,31 @@ class NavigationRunner:
                 # form of DynaNav's `R_start.T @ delta_world`
                 # (nova_carter_test_ticvla.py:815-822); we have a yaw where they have a
                 # quaternion, so the matrix collapses to a sin/cos pair.
-                if gen_starts:
-                    ref_step, ref_x, ref_y, ref_yaw = gen_starts[0]
+                if synchronous:
+                    # Nothing to compensate for. The call below blocks, and the loop does
+                    # not reach `kit.update()` until it returns, so the simulation is
+                    # frozen for the whole generation: no steps, no sim time, and a robot
+                    # that has not moved a millimetre since the frame it is being asked
+                    # about. These zeros are not a simplification, they are the
+                    # measurement -- exactly as this file's header says of the
+                    # synchronous era that preceded the async switch.
+                    time_delay, dx, dy = 0.0, 0.0, 0.0
+                elif gen_starts:
+                    # WHICH generation produced the plan about to come back differs by
+                    # mode, and the list is the same either way -- `gen_starts` holds the
+                    # last two starts, oldest first, and this call's own start has not
+                    # been appended yet.
+                    #
+                    #   async    the server returns whatever is CACHED and starts a new
+                    #            generation only when idle. The plan in hand is therefore
+                    #            the one before the generation now running: gen_starts[0].
+                    #   bounded  the server JOINS the generation started by the previous
+                    #            call and returns exactly that: gen_starts[-1], one
+                    #            period back. Using [0] here would report two periods of
+                    #            staleness for one period of driving -- and `time_delay`
+                    #            is not a log field, the action head slices the plan by
+                    #            it, so a doubled value discards half a real plan.
+                    ref_step, ref_x, ref_y, ref_yaw = gen_starts[-1 if bounded else 0]
                     time_delay = (step - ref_step) * PHYSICS_DT
                     dxw = position[0] - ref_x
                     dyw = position[1] - ref_y
@@ -555,6 +913,51 @@ class NavigationRunner:
                         # DynaNav treats an empty value here as a hard error.
                         previous_waypoints_text=history.prompt_text(sim_time),
                         robot_type=ep.robot_type,
+                        # The one thing about the last few seconds the camera cannot
+                        # show. After a reverse the view is the same obstacle from a
+                        # metre further back, which looks like an ordinary approach and
+                        # is not -- it is the approach that already failed. True for a
+                        # few seconds after the manoeuvre, and it stops the moment the
+                        # robot has driven clear of where it was released.
+                        recovered=self.recovery.memory_live(sim_time, position),
+                        # ...and WHICH manoeuvre, because the two need opposite
+                        # sentences. After a wedge, something was in the way; after a
+                        # balk, nothing was and the robot stopped anyway. Telling the
+                        # model the wrong one of those is worse than telling it neither.
+                        recovery_kind=self.recovery.memory_kind(sim_time, position) or "",
+                        # The other half of "give it some history", and the half no
+                        # prompt can supply: one frame of a stationary robot is the same
+                        # picture as one frame of a moving one, so without a number from
+                        # here the model cannot know that the last four decisions
+                        # achieved nothing. Measured where the position is known.
+                        stalled_s=self.recovery.stalled_s(sim_time, position),
+                        # Do not hand back the cached plan: block until one exists for
+                        # the frame grabbed a few lines above. The robot is already
+                        # stopped -- this call is what stops it -- so the wait buys the
+                        # guarantee that no metre of this episode is driven on thinking
+                        # that predates the view it was driven through.
+                        wait_fresh=synchronous,
+                        # Bounded async: return the plan built on the PREVIOUS call's
+                        # images, waiting for it if it is still decoding, and start the
+                        # next generation on these. Caps the blind window at one period
+                        # instead of at a whole generation, without paying synchronous
+                        # mode's full stop when the generation fits inside the period.
+                        wait_inflight=bounded,
+                        # One revolution of the 2D lidar, in the body frame the decision
+                        # is being taken in. Sent as POINTS rather than ranges because a
+                        # range vector means nothing without the bearing convention and
+                        # mount offset it was taken under, and the server would need a
+                        # second copy of both to undo it.
+                        #
+                        # The server owns the arc set, so the server computes clearance:
+                        # a client-side "which arcs are drivable" would be a duplicate of
+                        # the curvature table that fails silently the moment one of them
+                        # is edited. None when NAV_LIDAR=0, which is the arm that keeps
+                        # the whole menu and every earlier ladder number comparable.
+                        scan_points=(
+                            self.lidar.points_body(position, self.base.yaw).tolist()
+                            if self.lidar is not None else None
+                        ),
                     )
                 except PolicyServerError as exc:
                     self._set(state="error", message=str(exc))
@@ -577,7 +980,47 @@ class NavigationRunner:
                 # run instead of across runs.
                 guidance = parse_guidance(out.get("reasoning"))
                 command = controller(waypoints, guidance)
+
+                # THE IN-PLACE TURN, and it arrives beside the waypoints rather than in
+                # them because it cannot be in them: a turn is every waypoint at the
+                # origin, which is bit-for-bit a STOP and is what `controller` just built.
+                # A server that does not know the field sends nothing and the robot stops,
+                # which is the conservative half of the ambiguity.
+                #
+                # Served at most once per decision by the policy server -- see
+                # `pivot_served` there. Under async the same cached plan is handed back
+                # ~2.3 times on average, and a 30 degree turn re-issued 2.3 times is a 70
+                # degree turn that no counter reports and no log explains.
+                pivot_rad = float(out.get("pivot_rad") or 0.0)
+                if pivot_rad:
+                    pivots += 1
+                    # Full yaw rate. The rate is already the episode's own limit and the
+                    # controller is allowed to ask for it while driving, so a stationary
+                    # turn at the same rate introduces nothing the base has not been asked
+                    # for before. At the 1.2 rad/s default, 30 degrees is 0.44 s.
+                    command = Command(
+                        0.0, 0.0, math.copysign(ep.max_yaw_rate_radps, pivot_rad))
+                    pivot_remaining = abs(pivot_rad)
+                    # 2.5x the ideal duration. Not a schedule -- the turn ends when the
+                    # measured yaw says it has -- but a bound, so a robot whose wheel is
+                    # against a wall and cannot rotate gives up and re-decides instead of
+                    # grinding until the episode times out.
+                    pivot_deadline = step + int(math.ceil(
+                        2.5 * abs(pivot_rad) / (ep.max_yaw_rate_radps * PHYSICS_DT)))
+                    next_decision_step = pivot_deadline
+                else:
+                    # A turn that was still running cannot survive a new decision: the
+                    # decision was taken on the view the turn was producing, and it says
+                    # what to do from here.
+                    pivot_remaining = 0.0
+                    next_decision_step = step + replan_steps
                 policy_calls += 1
+                # In synchronous mode this is time the robot spent stopped. It is the
+                # entire price of the mode, and it does NOT appear in `elapsed_s`,
+                # because sim time does not advance while the call blocks -- so without
+                # this field a synchronous run and an asynchronous one look equally cheap
+                # and the trade being made is invisible in the results file.
+                think_wall_s += float(out.get("latency_s") or 0.0)
 
                 # Record what was ASKED for, next to where the robot was, so the two
                 # can be compared afterwards. Both controllers steer at the same
@@ -612,8 +1055,42 @@ class NavigationRunner:
                     reasoning=(out.get("reasoning") or "")[:600],
                 )
 
-            # --- guard + step ---------------------------------------------
-            guard = self.guard.check(position, self.base.yaw, command.vx, command.vy)
+            # --- recover, then guard, then step ----------------------------
+            # Recovery runs BEFORE the guard, and the guard then sees the reversing
+            # command: `check` casts along the direction of travel, so a negative vx
+            # aims the fan backwards and the manoeuvre is protected by the same code
+            # that protects driving forward.
+            drive, recovering = self.recovery.update(
+                sim_time, position, self.base.yaw, command)
+            if self.recovery.take_release():
+                # The manoeuvre just ended. The plan the server is holding was generated
+                # from INSIDE the wedge and, on every wedge worth recovering from, says
+                # STOP -- so re-serving it drives the robot straight back into the desk
+                # it just backed out of, and the reverse bought nothing. Dropping it
+                # forces the next call to generate on the backed-off view. It also
+                # invalidates any generation already in flight, which was started on the
+                # old view too.
+                #
+                # `/replan` and not `/reset`: reset rebuilds the recording directory, and
+                # with no run name that means None, which would silently stop recording
+                # the decisions for the rest of the episode -- including the ones this
+                # whole mechanism exists to produce.
+                try:
+                    self.policy.replan()
+                    replans += 1
+                except PolicyServerError as exc:
+                    # Not fatal and not silent. A server without the route (server.py)
+                    # holds no cached plan to clear, so there is nothing to fail at; the
+                    # robot keeps driving either way and the count says what happened.
+                    replans_failed += 1
+                    print(f"[nav] replan after recovery failed: {exc}", flush=True)
+            # Spin the beam BEFORE the guard reads it, so a step's decision is taken on
+            # that step's returns. The order is not cosmetic: with it reversed the guard
+            # would consistently see the world one step -- 2.5 cm at the speed cap -- older
+            # than it needs to, for no reason and invisibly.
+            if self.lidar is not None:
+                self.lidar.step(position, self.base.yaw, PHYSICS_DT, sim_time)
+            guard = self.guard.check(position, self.base.yaw, drive.vx, drive.vy)
             self.base.apply(
                 # Already guarded, and directionally: what survives is the part of the
                 # command that was not driving into anything.
@@ -621,7 +1098,10 @@ class NavigationRunner:
                 guard.vy,
                 # Let the robot keep turning when the guard stops translation --
                 # otherwise it wedges against a wall with no way to face away from it.
-                command.omega,
+                # `drive.omega` rather than `command.omega`: while reversing it is 0,
+                # and turning mid-reverse would take the robot out of the footprint it
+                # just vacated, which is the only space this manoeuvre knows is free.
+                drive.omega,
                 PHYSICS_DT,
             )
             self.kit.update()
@@ -631,6 +1111,28 @@ class NavigationRunner:
             prev_pos = new_pos
             step += 1
             history.observe(step, new_pos, self.base.yaw)
+
+            # Close the loop on an in-place turn, using the yaw the base actually
+            # reached. Wrapped to (-pi, pi] before it is accumulated, because yaw is
+            # read as an angle and not as a winding: one step across the +/-pi seam is a
+            # few thousandths of a radian of real rotation and 6.28 of arithmetic, which
+            # would finish any turn instantly at the moment the robot happens to be
+            # facing due west.
+            if pivot_remaining > 0.0:
+                yaw_now = self.base.yaw
+                pivot_remaining -= abs((yaw_now - prev_yaw + math.pi)
+                                       % (2 * math.pi) - math.pi)
+                prev_yaw = yaw_now
+                if pivot_remaining <= 0.0 or step >= pivot_deadline:
+                    # Look again NOW, from the direction just gained. Holding the rest of
+                    # the planning period would spend it standing still on a view the
+                    # robot has already turned away from -- the exact staleness this
+                    # whole study exists to remove.
+                    pivot_remaining = 0.0
+                    command = Command(0.0, 0.0, 0.0)
+                    next_decision_step = step
+            else:
+                prev_yaw = self.base.yaw
 
             # Refresh the third-person view ~20x per simulated second. The old value
             # was every 15 steps, chosen when a replan cost ~1 s of blocking inference
@@ -649,7 +1151,14 @@ class NavigationRunner:
             # Do not push this to every step. 28 fps would cost ~5% and the browser
             # cannot consume it anyway -- the page fetches /chase.jpg on its own timer,
             # and these two numbers have to be raised together or neither moves.
-            if step % 3 == 0:
+            #
+            # At the default `CHASE_EVERY` of 2 the capture at the top of the loop is
+            # already faster than this, and running both would pay for two readbacks to
+            # show one picture. This exists for the case where somebody raises
+            # `NAV_CHASE_EVERY` to make a long episode cheaper to record -- the LIVE view
+            # should not get slower because the RECORDING got sparser. Two rates, two
+            # purposes, and the faster of them wins.
+            if CHASE_EVERY > 3 and step % 3 == 0:
                 self._update_chase()
 
             if step % 30 == 0:
@@ -661,6 +1170,17 @@ class NavigationRunner:
                     wall_s=round(wall_time, 1),
                     guard_interventions=self.guard.interventions,
                     message=(
+                        (f"backing off after stalling ({self.recovery.balks})"
+                         if self.recovery.mode == "balk" else
+                         f"backing out of a wedge ({self.recovery.engagements})")
+                        if recovering else
+                        # Checked before the guard line on purpose: right after a reverse
+                        # the obstacle is usually still inside the slow band, so "blocked
+                        # by desk" is true and is not the interesting half of what is
+                        # happening. This is the half a watcher cannot infer from the
+                        # picture.
+                        "backed off -- asking where to go now"
+                        if self.recovery.memory_live(sim_time, new_pos) else
                         f"blocked by {guard.hit_prim.split('/')[-1]} at {guard.distance_m:.2f} m"
                         if guard.blocked else ""
                     ),
@@ -683,8 +1203,27 @@ class NavigationRunner:
             policy_calls=policy_calls,
             path_length_m=path_length,
             guard_interventions=self.guard.interventions,
+            recoveries=self.recovery.engagements,
+            # A subset of `recoveries`, not a second total. Reported separately because the
+            # two say different things about the run: a wedge means the robot drove into
+            # something, a balk means the policy stopped without arriving. An episode with
+            # four wedges and one with four balks have nothing in common, and a single
+            # number would report them as the same run.
+            balks=self.recovery.balks,
+            recoveries_blocked_behind=self.recovery.blocked_behind,
+            recovery_replans=replans,
+            recovery_replans_failed=replans_failed,
+            pivots=pivots,
             timed_out=timed_out,
             controller=self.controller_name,
+            policy=self.policy_label(),
+            plan_mode=PLAN_MODE,
+            plan_period_s=(replan_steps * PHYSICS_DT) if PLAN_MODE != "async" else 0.0,
+            lidar=(f"c1@{NAV_LIDAR_HEIGHT_M:.2f}" if self.lidar is not None else "fan"),
+            think_wall_s=round(think_wall_s, 1),
+            base_z_step_max_m=round(self.base.z_step_max, 6),
+            base_z_span_m=(round(self.base.z_max - self.base.z_min, 6)
+                           if self.base.z_max > self.base.z_min else 0.0),
             trace=trace,
             plans=plans,
         )

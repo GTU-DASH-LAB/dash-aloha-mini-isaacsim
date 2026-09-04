@@ -171,6 +171,81 @@ class EpisodeResult:
     guard_interventions: int
     timed_out: bool
     controller: str
+    # Which policy answered, straight off its own `/health`: "<model> [<format>] @<port>".
+    # Filenames carry the episode and the controller and nothing about the brain, so a
+    # directory of runs from TIC-VLA, Q-VLA-direct and the arc-menu selector was
+    # distinguishable only by guessing from timestamps -- and this harness has already
+    # once scored a ladder off two-week-old files and printed a plausible 6/13. Defaulted
+    # so every run recorded before this field existed still loads; "" means unknown, which
+    # is the truth about those and must not be read as any particular policy.
+    policy: str = ""
+    # How many times the robot had to back out of a wedge, and how many of those found
+    # the way behind blocked too. Defaulted so runs recorded before the recovery
+    # existed still load; 0 on those means "not measured", not "never happened".
+    recoveries: int = 0
+    recoveries_blocked_behind: int = 0
+    # How many of `recoveries` were BALKS -- the robot standing still with clear floor
+    # ahead of it -- rather than wedges. A subset, not a second total, and worth its own
+    # field because the two are different failures with different fixes: a wedge is a
+    # steering problem and a balk is the policy answering STOP without having arrived,
+    # which on the first full ladder was the single largest cause of failure. Defaulted,
+    # so runs recorded before the balk trigger existed still load; 0 there means "not
+    # measured", and specifically not "the robot never stalled".
+    balks: int = 0
+    # How many of those ended in a forced re-decision, and how many could not. A run with
+    # `recoveries > 0` and `recovery_replans == 0` is a robot that reversed and was then
+    # handed the same plan back -- the manoeuvre without the point of it.
+    recovery_replans: int = 0
+    recovery_replans_failed: int = 0
+    # In-place turns executed. Defaulted, so every result recorded before the pivot menu
+    # existed still loads -- and 0 there means "the action did not exist", not "the model
+    # never wanted it", which is why `menu_pivots` is also captured from /health.
+    pivots: int = 0
+    # The planning regime this run was measured under. 0.0 means ASYNCHRONOUS -- the
+    # model thought on a background thread while the robot kept driving the previous
+    # plan -- and anything else is the fixed period, in simulated seconds, that the robot
+    # drove between full stops. Defaulted so runs recorded before the mode existed still
+    # load, and 0.0 is the truth about those.
+    #
+    # This is not bookkeeping. The two regimes are different experiments and their
+    # numbers must never be pooled: under async, a longer thinking budget buys a longer
+    # BLIND window, so a thinking-level comparison measures how far the robot travels
+    # with its eyes shut. Under sync it measures the decision. A results directory
+    # holding both, distinguishable only by timestamp, is how a stack talks itself into
+    # believing more thinking makes a policy worse.
+    # Which planning regime produced this run: "async" (the robot drives blind for a
+    # whole generation), "bounded" (blind for at most one period), or "sync" (never
+    # blind, the robot stops for every decision). Three different experiments, and the
+    # single most important field for telling them apart afterwards -- `plan_period_s`
+    # alone cannot, because bounded and sync share a period and differ entirely in what
+    # happens during it.
+    plan_mode: str = "async"
+    plan_period_s: float = 0.0
+    # Which sensor the collision guard drove on, and what the policy was sent with it.
+    # "fan" is the original 7 rays over +-35 degrees; "c1@0.30" is the simulated RPLIDAR
+    # C1 at that mount height, feeding both the guard's wedge and the menu filter.
+    #
+    # Here for exactly the reason `plan_mode` is: the two arms of the lidar ladder share
+    # an episode, a controller, a policy and a scene, so a results directory holding both
+    # would be separable only by timestamp -- and this harness has already once scored a
+    # ladder off two-week-old files and printed a plausible 6/13. Defaulted so every run
+    # recorded before the sensor existed still loads; "" means the field did not exist,
+    # which is the truth about those and must not be read as "fan" even though it was.
+    lidar: str = ""
+    # Wall seconds the robot spent stopped, waiting for decisions. Zero under async by
+    # construction, since nothing waits there. Reported next to `wall_s` because it is
+    # the whole cost of synchronous planning and `elapsed_s` cannot show it: sim time
+    # does not advance while the loop is blocked.
+    think_wall_s: float = 0.0
+    # Vertical motion of the base over the episode: the largest single-step change in z,
+    # and the total span. The drive never commands z -- it carries through whatever the
+    # contact solver produced -- so anything here is the wheel spheres working against
+    # the floor, and the chase camera is parented to `base_link`, so it is also exactly
+    # what a viewer sees as the robot shaking. A step figure near the float32 resolution
+    # of the scene's coordinates is nothing; a millimetre-scale one at 60 Hz is a visible
+    # buzz. Defaulted, so runs recorded before this was measured still load.
+    base_z_step_max_m: float = 0.0
+    base_z_span_m: float = 0.0
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)

@@ -29,12 +29,19 @@ CONTROLLER="braking"
 ONLY=""
 FROM=""
 KEEP_GOING=1
+# Optional command run after every episode, as: $ON_EPISODE <episode> <controller>
+# <verdict>. It is what turns an unattended two-hour ladder into something you can
+# follow -- build the video, send the mail, whatever. Deliberately a hook and not
+# built in: none of that belongs in the thing whose job is to produce a trustworthy
+# number, and a hook that fails must never be able to change one.
+ON_EPISODE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --controller) CONTROLLER="$2"; shift 2 ;;
     --only)       ONLY="$2"; shift 2 ;;
     --from)       FROM="$2"; shift 2 ;;
     --stop-on-fail) KEEP_GOING=0; shift ;;
+    --on-episode) ON_EPISODE="$2"; shift 2 ;;
     -h|--help)    sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -71,6 +78,28 @@ echo "ladder: ${#EPISODES[@]} episodes, controller=$CONTROLLER"
 printf '  %s\n' "${EPISODES[@]}"
 echo
 
+# WHICH BRAIN IS ANSWERING, printed before the first episode rather than inferred from
+# thirteen results afterwards. `run.sh` defaults to port 8765 and starts TIC-VLA there
+# when nothing answers, so forgetting `NAV_POLICY_PORT=8766` does not run the arc-menu
+# ladder against the wrong policy -- on this machine it cannot even do that, because
+# Qwen already holds GPU1 and TIC-VLA dies of OOM. It ran five episodes into that wall
+# in twenty seconds. Loud and immediate either way; this makes it loud in one line and
+# also states the thinking level, which no result file records for a run that crashes.
+BENCH_PORT="${NAV_POLICY_PORT:-8765}"
+BENCH_HEALTH="$(curl -sf --max-time 10 "http://127.0.0.1:${BENCH_PORT}/health" || true)"
+if [ -n "$BENCH_HEALTH" ]; then
+  echo "policy on :${BENCH_PORT} -- $(printf '%s' "$BENCH_HEALTH" | python3 -c '
+import json, sys
+h = json.load(sys.stdin)
+print("  ".join(f"{k}={h[k]}" for k in
+                ("model", "format", "think_level", "horizon_s", "menu_speed_mps")
+                if k in h))')"
+else
+  echo "policy on :${BENCH_PORT} -- NOTHING ANSWERING; run.sh will start its default"
+  echo "  (TIC-VLA). If you meant the Qwen server, set NAV_POLICY_PORT and re-run."
+fi
+echo
+
 PASS=0; FAIL=0; ERR=0
 for EP in "${EPISODES[@]}"; do
   echo "================================================================"
@@ -92,9 +121,31 @@ for EP in "${EPISODES[@]}"; do
   fi
 
   echo "-- running (this blocks until the episode ends or times out)"
+  # Count the results this episode already has. `summarize_runs.py --latest` returns
+  # the NEWEST matching run, and it has no idea whether that run is the one we just
+  # asked for. When `run_navigation.py` died in setup(), the ladder scored all 13
+  # episodes off files up to two weeks old and printed a plausible 6/13. The trailing
+  # `_${CONTROLLER}.json` anchors the glob, so `hospital_down_hallway` does not match
+  # `hospital_down_hallway2`.
+  BEFORE=$(ls -1 nav/results/*_"${EP}_${CONTROLLER}".json 2>/dev/null | wc -l)
+
   nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
       > "$LOGDIR/run_${EP}_${CONTROLLER}.log" 2>&1
   RC=$?
+
+  AFTER=$(ls -1 nav/results/*_"${EP}_${CONTROLLER}".json 2>/dev/null | wc -l)
+  if [ "$AFTER" -eq "$BEFORE" ]; then
+    # No new file. Whatever rc says, this run produced no measurement -- do not let
+    # summarize_runs.py answer with somebody else's.
+    echo "!! NO RESULT WRITTEN (rc=$RC) -- run produced no new file in nav/results/;"
+    echo "   refusing to score it off an older run. See $LOGDIR/run_${EP}_${CONTROLLER}.log"
+    grep -m1 -B2 -A6 "Traceback (most recent call last)" \
+        "$LOGDIR/run_${EP}_${CONTROLLER}.log" | sed 's/^/   /'
+    ERR=$((ERR+1))
+    [ $KEEP_GOING -eq 0 ] && exit 1
+    echo
+    continue
+  fi
 
   # Headless run_navigation.py returns 0 on a completed episode and 1 on a failed
   # one -- a failed EPISODE, not a failed process. Anything else is a real crash.
@@ -114,6 +165,15 @@ for EP in "${EPISODES[@]}"; do
     tail -15 "$LOGDIR/run_${EP}_${CONTROLLER}.log"
     ERR=$((ERR+1))
     [ $KEEP_GOING -eq 0 ] && exit 1
+    VERDICT="CRASHED (rc=$RC)"
+  fi
+
+  # After the verdict is counted, so a broken hook cannot move the score. Errors are
+  # printed and swallowed for the same reason: an email that bounces at episode 4 must
+  # not end a ladder that still has nine episodes to run.
+  if [ -n "$ON_EPISODE" ]; then
+    "$ON_EPISODE" "$EP" "$CONTROLLER" "${VERDICT:-unknown}" \
+      || echo "!! on-episode hook failed for $EP (continuing)"
   fi
   echo
 done

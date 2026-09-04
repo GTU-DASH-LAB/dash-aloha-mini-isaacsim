@@ -96,7 +96,11 @@ _EPS = 1e-3
 # The action head emits exactly `action_horizon_steps: int = 30` waypoints
 # (ticvla/training/config.py:37) at 10 Hz. So every plan is 3.0 s of motion, always,
 # and the arc length of one is therefore a SPEED the policy is requesting.
-ACTION_HORIZON_S = 3.0
+# Spacing between densified waypoints, matching the policy servers' own `DT`. Both
+# servers emit 10 Hz plans; only their LENGTH differs (TIC-VLA 30 points over 3.0 s,
+# Q-VLA-direct 100 over 10.0 s), which is exactly why the plan's duration has to be read
+# off the plan rather than assumed. See `plan_speed`.
+PLAN_DT = 0.1
 
 
 def plan_speed(waypoints: np.ndarray) -> float:
@@ -125,11 +129,25 @@ def plan_speed(waypoints: np.ndarray) -> float:
     on the same rule -- but only if it gets inside 1.5 m, and at 2.80 m it never
     did. Parity with DynaNav's controller is not the same as parity with DynaNav's
     scoring harness.
+
+    THE DIVISOR IS THE PLAN'S OWN DURATION, NOT A CONSTANT. It used to be a fixed
+    `ACTION_HORIZON_S`, which is right only while the plan is a full one. The Q-VLA
+    server hands back a plan already sliced by staleness, so a 3.0 s horizon that is
+    2.0 s old arrives as 10 points covering 1.0 s -- and dividing that 1.3 m of arc by
+    3.0 reported 0.42 m/s for a plan asking for 1.35. The understatement scales with
+    staleness, and since `obey_plan_speed` feeds this straight into `v_cap`, it is a
+    brake that tightens the longer the model takes to think. At the limit exactly one
+    point survives, the guard below returns 0.0, and the robot is commanded to a dead
+    stop it never recovers from -- 129 of 141 calls on `office_nearest_elevator`.
+
+    This is identical to the old formula for any UNTRUNCATED plan (30 points x 0.1 s =
+    3.0 s), so every TIC-VLA number ever recorded with it is unchanged: the action
+    expert re-runs each tick and its plans are never sliced.
     """
     if len(waypoints) < 2:
         return 0.0
     inc = np.diff(waypoints, axis=0)
-    return float(np.sum(np.hypot(inc[:, 0], inc[:, 1])) / ACTION_HORIZON_S)
+    return float(np.sum(np.hypot(inc[:, 0], inc[:, 1])) / (len(waypoints) * PLAN_DT))
 
 
 @dataclass
@@ -177,12 +195,16 @@ class PursuitController:
         k_angular: float = DYNANAV_K_ANGULAR,
         alpha_filter: float = DYNANAV_ALPHA_FILTER,
         obey_plan_speed: bool = False,
+        speed_scaled_feedback: bool = False,
     ):
         self.v_max = max_speed_mps
         self.w_max = max_yaw_rate_radps
         self.lookahead_m = lookahead_m
         self.k_angular = k_angular
         self.alpha_filter = alpha_filter
+        # Off here for the same reason `obey_plan_speed` is: this class is the DynaNav
+        # parity baseline. See the note on `w_fb` in `__call__` for what it does.
+        self.speed_scaled_feedback = speed_scaled_feedback
         # Off here, on in GuidedPursuitController. This class is the DynaNav parity
         # baseline and DynaNav does not read plan length, so turning it on by default
         # would quietly stop this being a baseline. See `plan_speed`.
@@ -224,6 +246,28 @@ class PursuitController:
 
         w_ff = 0.5 * v_cmd * kappa
         w_fb = self.k_angular * self._yaw_err_filt
+        if self.speed_scaled_feedback:
+            # `w_ff` carries a `v` and `w_fb` does not, so the two terms are in
+            # different units: one is a path shape, the other a yaw rate. Halving
+            # speed therefore roughly doubles how far the path bends per METRE, and
+            # the robot pivots its way down a corridor it was told to drive straight.
+            # Measured on `hospital_down_hallway`: the chosen arcs add up to 12.8
+            # deg/m and the robot turned 136.
+            #
+            # For a circular arc the chord to the lookahead point subtends exactly
+            # `kappa * dist / 2`, and `kappa` here recovers the arc's own curvature
+            # exactly, so `w_ff + w_fb == v * kappa` when `v == k_angular * dist`.
+            # That is the whole of it: DynaNav's 0.8 is a per-second gain that is
+            # correct at ONE speed, 0.86 m/s, and their Nova Carter planned at 0.73.
+            # Solved on the real arcs rather than this algebra it lands on 0.8640 for
+            # every curvature in the menu to four decimals, which is the check that
+            # this is one missing factor and not a coincidence worth tuning.
+            #
+            # Clamped to 1.0 so it can only ever REDUCE the turn. Above the reference
+            # speed the term is already gentle, and leaving it untouched there keeps
+            # every TIC-VLA number on this repo (1.5 m/s cap, ~0.73 m/s plans) exactly
+            # as measured instead of silently restating old runs against a new law.
+            w_fb *= min(1.0, v_cmd / max(self.k_angular * dist, _EPS))
         w_cmd = float(np.clip(w_ff + w_fb, -self.w_max, self.w_max))
 
         return Command(vx=v_cmd, vy=0.0, omega=w_cmd)
@@ -400,6 +444,13 @@ class GuidedPursuitController(PursuitController):
 
         w_ff = 0.5 * v_cmd * kappa
         w_fb = self.k_angular * self._yaw_err_filt
+        if self.speed_scaled_feedback:
+            # Same correction as the parent, applied here so the flag cannot be set
+            # on a `guided` controller and silently do nothing. Note the error being
+            # scaled is the 9 s guidance heading rather than the lookahead error, so
+            # this does not restore exact arc-following the way it does upstairs --
+            # it only removes the speed dependence, which is all the flag claims.
+            w_fb *= min(1.0, v_cmd / max(self.k_angular * dist, _EPS))
         w_cmd = float(np.clip(w_ff + w_fb, -self.w_max, self.w_max))
 
         return Command(vx=v_cmd, vy=0.0, omega=w_cmd)
@@ -408,10 +459,17 @@ class GuidedPursuitController(PursuitController):
 class BrakingPursuitController(PursuitController):
     """Pure pursuit that obeys the speed the policy asks for. The default.
 
-    Exactly `PursuitController` plus `obey_plan_speed=True`, which is one line and
-    the only change in this module with clean supporting evidence and no measured
-    downside -- it can only ever REDUCE speed, and only when the policy's own plan
-    asks it to. See `plan_speed` for the aisle6 trace that motivates it.
+    `PursuitController` plus the two changes in this module that can only ever make
+    the robot do LESS than the parity baseline would, and only in response to
+    something the policy itself asked for:
+
+      obey_plan_speed        never drive faster than the plan. See `plan_speed` for
+                             the aisle6 trace that motivates it.
+      speed_scaled_feedback  never bend the path further than the plan asked. See the
+                             note on `w_fb` in `PursuitController.__call__`.
+
+    Both are bounded in the same direction on purpose, so a regression can be read off
+    a run without re-deriving which knob could have caused it.
 
     Deliberately separate from `guided`. Plan-speed obedience and guidance steering
     were found in the same session and are easy to conflate, but guidance steering
@@ -421,8 +479,10 @@ class BrakingPursuitController(PursuitController):
 
     name = "braking"
 
-    def __init__(self, *args, obey_plan_speed: bool = True, **kwargs):
-        super().__init__(*args, obey_plan_speed=obey_plan_speed, **kwargs)
+    def __init__(self, *args, obey_plan_speed: bool = True,
+                 speed_scaled_feedback: bool = True, **kwargs):
+        super().__init__(*args, obey_plan_speed=obey_plan_speed,
+                         speed_scaled_feedback=speed_scaled_feedback, **kwargs)
 
 
 CONTROLLERS = {

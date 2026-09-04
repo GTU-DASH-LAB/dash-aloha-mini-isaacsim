@@ -87,6 +87,7 @@ third_party/lerobot_alohamini git submodule -- official LeRobot integration (cam
                                specs + kinematics source of truth)
 docs/                         verification screenshots ; ARCHITECTURE.md ; plan.md ;
                                CLAUDE.md (this file)
+docs/ticvla-architecture/     TIC-VLA block diagrams, EN + TR, read off the source
 ```
 
 ## Gotchas hit so far
@@ -392,8 +393,11 @@ environment → joint drives applied → wheel collision fixed → terminal cont
 ## Language-driven navigation (`nav/`)
 
 TIC-VLA + the DynaNav benchmark drive the base from a typed sentence. Full detail in
-[`nav/README.md`](nav/README.md) and [`nav/plan.md`](nav/plan.md); the facts that
-affect the *rest* of this repo:
+[`nav/README.md`](nav/README.md) and [`nav/plan.md`](nav/plan.md); the model itself —
+every layer, dimension and both loss functions, read off the source and checked against
+the checkpoint — is drawn in
+[`docs/ticvla-architecture/`](docs/ticvla-architecture/README.md) (EN + TR). The facts
+that affect the *rest* of this repo:
 
 - **Two processes, and the split is forced.** TIC-VLA needs Python 3.11 (Isaac Sim
   5.0's NumPy 1.x ABI), AlohaMini needs 3.12; separately, a DynaNav scene alone was
@@ -446,9 +450,62 @@ affect the *rest* of this repo:
   separate process invocations instead of looping in Python.
 - **The kinematic base does not collide** (already documented above, but it bites
   harder here): a teleported body has no contact response and will pass straight
-  through shelving. `nav/sim/collision_guard.py` raycasts instead. Verified live rather
-  than assumed — `nav/tools/check_collision_guard.py` sweeps the ray fan through a
-  circle and hits 9/16 bearings on real warehouse geometry at 6.8–12.5 m.
+  through shelving. `nav/sim/collision_guard.py` raycasts instead.
+- **That guard's "9/16 bearings at 6.8–12.5 m" was true somewhere and is not reproducible
+  at the warehouse start pose — do not use it as a health check.** Re-measured there: the
+  nearest walls are 15.68 m (+X), 16.11 m (−X), 16.72 m (+Y), 16.04 m (−Y), so a 16-ray
+  sweep capped at 15 m returns **0/16**, and a 500-ray scan capped at the C1's 12 m
+  returns 0/500. Both are the correct answer. This cost a full three-stage diagnostic
+  because a zero looks exactly like a broken raycast: the discriminator is a single ray
+  straight DOWN, which hits the floor at 0.32 m and proves the colliders are registered
+  PhysX actors. The guard is live — the Sept 2 hard study logged 0–2520 interventions per
+  run, all external, since `collision_guard.py:137` skips `/World/Aloha` prims. **A range
+  cap makes distance a property of the tool, not of the scene**; report the cap next to
+  the count or the next reader repeats the diagnostic.
+- **A 2D lidar is worth buying for the CONTROL loop and not for the policy — both halves
+  measured before building anything.** `nav/sim/lidar_2d.py` is pinned to a real part,
+  a **Slamtec RPLIDAR C1** (0.05–12 m DTOF, 500 points/rev = 0.72°, 10 Hz, 5000
+  samples/s, ~4.5k TL), because rays are free in PhysX and nothing otherwise stops us
+  simulating a sensor nobody can buy. PhysX `raycast_closest` is neither 2D nor 3D — the
+  existing code is planar *by construction* (`direction z = 0.0`, one origin height), and
+  an elevation loop would have made it a 3D unit we then could not order.
+  - **Check a datasheet by multiplying**: points/rev × scan rate must reproduce the quoted
+    sample rate. C1 is 500 × 10 = 5000 ✓. This caught a real error in our own LD19 entry:
+    "≤1°" is a *bound* and 4500 Hz is a *value*, so 360 points/rev satisfies the first and
+    contradicts the second — 450 is the number, and the round one understates the cheaper
+    sensor by 25% in the one comparison the entry exists to make.
+  - **Mount at z = 0.30 m, no mast.** Swept 0.20–1.50 m: 0% blind at every height except
+    **0.80 m, which is 21.8% blind in a single 39.6° arc** off the arm bases (`right_base`
+    43 rays, `left_base` 42, `left_link1` 12). Measure the worst *contiguous* arc, not the
+    blind fraction — 20% scattered between the arms is a usable sensor, 20% in one block
+    is a robot that cannot see one whole side.
+  - **Two gates, both negative for the policy.** `gate_lidar_opening.py` replays the 13
+    failed reference runs and asks whether the turn was geometrically available: it was
+    (open toward the goal 55% hospital / 83% warehouse), but openness does not *prefer*
+    the goal — 40%/43% goal-over-straight against controls holding at 81%/65%. A geometric
+    frontier selector would reproduce the straight bias we already have. `gate_lidar_
+    blindside.py` then tests the surviving idea, the scan as an extra INPUT naming
+    openings outside `camera_nav`'s 90° frame: the goal is outside the frame on
+    **96%/94%** of failure moments, so the hole is real, and the scan does contain it
+    **54%/83%** of the time — but the blind arc is open **65%/73%** of the time anyway,
+    so the lift is **−11pp / +9pp**, and the channel fires on **215/215** hospital control
+    moments. Range is irrelevant to both: 12/25/40 m give identical answers everywhere
+    except one column of one episode. **Do not buy the 25–40 m class.**
+  - **Report the null next to the recall, and the opening WIDTH next to the count.** Both
+    readings inverted once those were added. 54% recall looks like a channel until the
+    65% null makes it worse than guessing; ~1.15 openings per moment looks like the scan
+    naming one direction until the width column says that opening is **135–182° wide**.
+    One opening covering most of the blind arc is not a direction, it is the observation
+    that the robot is indoors — the same shape of error as the open-set prompt that named
+    all five directions at recall 100% and precision 0.
+  - **What survives is the low loop, on resolution.** `collision_guard.py` already casts
+    at exactly this height and already covers the rear (its fan centres on the direction
+    of *travel*, `atan2(vy, vx) + yaw`, not on yaw), so reversing is guarded. What it does
+    not have is density: 7 rays over ±35° is 11.7° apart, a **12 cm gap at the 0.6 m stop
+    distance and 30 cm at 1.5 m** — a chair or table leg fits through it. The C1's 0.72°
+    closes that to 0.8 cm and 1.9 cm. Budget the staleness against it: the beam revisits a
+    given bearing every 100 ms, which at the 1.5 m/s cap is 15 cm of travel that the stop
+    distance has to absorb.
 - **FastAPI + `from __future__ import annotations` = request models must be module
   level.** A pydantic model defined *inside* the route factory cannot be resolved by
   `get_type_hints()` against the function's module globals. FastAPI does not raise — it
@@ -668,6 +725,22 @@ affect the *rest* of this repo:
   Episodes elsewhere are shown but locked, because Isaac Sim cannot swap stages
   in-process at this version and a half-swapped stage fails as a *navigation* error, not
   a crash — a benchmark's worst failure mode, since it yields a plausible number.
+- **The ladder once scored 13 episodes without driving a single metre, and the number it
+  printed was 6/13.** Three ordinary decisions lined up into a silent lie, so all three are
+  worth naming. (1) `run_navigation.py` read `info['num_action_chunks']` out of `/health`
+  to build a *log message*; those are `server.py`'s keys, and `server_qwen.py` serves the
+  same three ROUTES with a different payload, so pointing the runner at it raised KeyError
+  inside `setup()`. (2) An uncaught exception exits Python with status 1, and `bench.sh`
+  deliberately reads 1 as "the episode failed" rather than "the process died" — a good
+  rule that here made a crash indistinguishable from a result. (3) `summarize_runs.py
+  --latest` answers with the newest matching file and cannot know whether that file came
+  from the run you just did; the newest were up to two weeks old. The tell was the policy
+  server's own counter: `predictions` sat at 8 across a "completed" 13-episode ladder.
+  Fixed on two independent axes — `ready_message()` never subscripts a payload it does not
+  own, and `bench.sh` counts `nav/results/*_${EP}_${CONTROLLER}.json` before and after each
+  run and calls it an ERROR when the count did not move. **Two servers matching on routes
+  is not two servers matching on schema**, and after any benchmark run, read a counter that
+  lives on the far side of the thing being measured.
 - **6/13 on the benchmark ladder (Phase 18), from 0/13.** Two episodes beat DynaNav's own
   spl. The remaining failures are not one thing: some arrive and brake correctly ~2 m off
   the scored goal (`hospital_down_hallway` — plan reach collapses to 0.05 m at 2.11 m
@@ -739,6 +812,529 @@ affect the *rest* of this repo:
   heading the plan asked for *sooner* in arc length, rather than getting "more time to
   react". Slowing is the right fix for overshooting *past* a target; it is not a fix for
   arriving 1.5 m to the side of one.
+
+- **Swapping the VLM (Q-VLA): what a candidate has to pass, and it is not just shapes.**
+  Design in [`nav/qvla_design.md`](nav/qvla_design.md), feasibility in
+  [`nav/qwen_swap_plan.md`](nav/qwen_swap_plan.md), checker in
+  `nav/tools/check_vlm_swap.py`. The gates that are easy to miss:
+  - **TIC-VLA consumes a KV cache TENSOR, not text.** So a GGUF build — including the
+    Ridge quantisation, which is the lightest option at 11.7 GB and does support vision
+    through an `mmproj` — **cannot be used at all**: llama.cpp exposes no HF-style
+    per-layer `past_key_values` to Python. Quantisation choice is constrained by what
+    `transformers` can load, not by what runs fastest.
+  - **`past_key_values[-1]` assumes every layer has a KV pair** (`ticvla.py:108`, with a
+    `dim() != 4` assert on the next line). Qwen3.8-27B is a hybrid — 48 `linear_attention`
+    + 16 `full_attention` — where most layers carry a recurrent state instead. It passes
+    only because `full_attention_interval: 4` puts a full-attention layer at index 63 of
+    64. Select the last full-attention layer from `layer_types` rather than relying on
+    that. `check_vlm_swap.py` now reports this as its own section.
+  - **A candidate worth swapping to is usually too new for the installed transformers.**
+    4.57.6 cannot even read `qwen3_5` — but the shapes that decide the swap are plain
+    JSON, so the checker falls back to fetching `config.json` off the hub.
+  - **The weights have to fit GPU1 *while Isaac Sim holds GPU0*, and this line was wrong
+    for weeks because of a unit error.** Measured off the safetensors headers without
+    loading: FP8 is **28.75 GiB** (23.00 F8_E4M3 + 5.74 BF16) and fits a 31.36 GiB card
+    with **2.61 GiB** spare. The note that used to stand here — "FP8 at 30.89 GB leaves
+    0.5 GB on a 31.35 GiB card and cannot be the closed-loop build" — compared a **GB**
+    figure against a **GiB** one. FP8 *is* the closed-loop build, single-card. The KV
+    cache fits the headroom comfortably: only 16 of 64 layers are `full_attention`, so it
+    is a few hundred MB.
+  - **NVFP4 is smaller on disk and larger in memory, and is unusable on this stack.**
+    21.81 GiB packed (6.97 GiB of nvfp4 over 14.97 B params, plus 14.84 GiB of F8_E4M3 and
+    BF16 that were never 4-bit) — but compressed-tensors registers a forward pre-hook that
+    decompresses on the FIRST forward, not at load. Hence a suspiciously fast "ready in
+    6.5 s" followed by a death mid-generation. Decompressed to bf16 it is **42.73 GiB**,
+    11 GiB over the card even with the card empty, and transformers 5.16.1 hardcodes
+    `run_compressed=False` in `quantizer_compressed_tensors.py`, so there is no packed-
+    inference path to fall back to. **On-disk size is not the inference footprint for
+    4-bit.** The symptom to recognise is a `KeyError: 'weight_packed'` that is really a
+    `torch.OutOfMemoryError` against a half-decompressed model — visible only after
+    printing the traceback, since the one-line error named neither.
+- **On a 27B, DECODE is the whole cost — prefill and resolution are not the lever, and
+  the 200-token cap is not the token count.** Both halves of this were predicted wrong in
+  `qvla_design.md` before being measured, so the numbers are worth keeping.
+  `probe_qvla_latency.py` on Qwen3.8-27B-FP8, four real nav frames:
+
+  | resolution | prompt tokens | prefill | decode | TOTAL |
+  |---|---|---|---|---|
+  | 448×448 (196 tok/frame, InternVL parity) | 796 | 0.47 s | 8.17 s | 8.64 s |
+  | 1920×1080 native (2059 tok/frame) | 8236 | 4.57 s | 8.21 s | 12.78 s |
+
+  Decode is **flat across a 10× change in prompt size** and is 95% of the call at the low
+  resolution. Prefill scales exactly linearly (~0.55 ms/token), so cutting resolution is a
+  real 9.7× on prefill and nearly nothing on the total — driving prefill to *zero* still
+  leaves 8.2 s. And `ticvla.py:579`'s `max_new_tokens=200` is a cap, not a cost: sampled
+  off the **live** policy server on real frames, generations are 131–135 tokens, mean
+  **134**, tight because the output shape is fixed (`<think>` paragraph + one `<answer>`
+  line of three triples). Budgeting 200 overstates a 27B call by 1.5×.
+- **A multi-GPU split silently changes which FP8 kernels run, so a two-card timing is not
+  a one-card timing.** transformers logs it plainly: spanning devices routes FP8 linear
+  layers off DeepGEMM onto Triton/`grouped_mm`, because DeepGEMM's cached kernels are
+  bound to a single CUDA context. **The provisional 16 tok/s was indeed the split talking.**
+  It was quoted here on the belief that FP8 *had* to span both cards; that belief was the
+  GB/GiB error above. Loaded onto one card (`CUDA_VISIBLE_DEVICES=1`, `QVLA_MAX_MEMORY=0:30`),
+  DeepGEMM comes back and the same 8-call probe runs at **~2.7 s/call steady-state**
+  (4.5 s mean including the first), 8 calls in 36 s wall. `qwen_load.py` drops zero entries
+  from `max_memory` rather than capping them, because a device left in the map at 0 can
+  still be spilled onto, and one spilled layer costs the whole DeepGEMM path.
+- **`modules_to_not_convert` is PREFIX-matched, so an entry naming a module that does not
+  exist can still disable one that does.** This produced a model that loaded, ran at full
+  speed, raised nothing, and emitted pure gibberish. Qwen3.8-27B-FP8's skip list has 882
+  entries including `layers.N.mlp.gate` and `...mlp.shared_expert_gate` for every layer —
+  MoE routers, and this checkpoint is dense, so they look like harmless leftovers. They
+  are not: `mlp.gate` is a **prefix of `mlp.gate_proj`**, a real linear in all 64 blocks.
+  So `gate_proj` was skipped, stayed a plain `nn.Linear`, took its e4m3 weights raw, and
+  its `weight_scale_inv` was dropped — the gate half of every SwiGLU off by a per-block
+  scale. `"What is the capital of France?"` answered
+  `'althocie不成这儿ardy礼拜 forth喜怒哀perationarked…'`; after dropping the 130 spurious
+  entries, `'The capital of France is Paris.'` The **only** signal was a load report
+  listing those `weight_scale_inv` keys as UNEXPECTED next to a note saying UNEXPECTED
+  "can be ignored". **Read the load report, and treat an unexpected `*_scale*` key as an
+  error.** Fixed in `nav/policy_server/qwen_load.py`, which everything in this repo loads
+  Qwen through — at runtime, never in site-packages. Note it does not affect timing (same
+  shapes, same FLOPs), so latency measured before the fix stands and quality did not.
+- **Q-VLA-direct (VLM writes the waypoints, no action expert): the plan is well-formed,
+  the SPEED is a single scalar per plan, and the STEERING is one-sided.** Measured
+  against TIC-VLA on 8 moments of `office_hallway_turn`, identical frames/history/state,
+  every call its own generation (`compare_qvla_ticvla.py`):
+
+  | | asked heading @1 s | implied speed | vs bearing to goal |
+  |---|---|---|---|
+  | TIC-VLA (action expert) | −46.8° … +5.9°, tracks the turn | 0.62 m/s (0.18–0.86) | 20.9° mean |
+  | Q-VLA-direct | **+0.00° in 8 of 8** | 0.56 m/s (0.01–0.70) | 29.1° mean |
+
+  Format and parsing are not the problem: 36 generations, **0 parse failures, 0 errors**.
+  Speed *varies with the image* — 7 distinct profiles across 8 frames — but this line used
+  to say it was "genuinely read off the image", and that overstates what the numbers do.
+  Every `pairs` plan is one scalar × `[1..6]`: perfectly linear, so there is **no
+  within-plan braking at all**. The "braked to 0.01 m/s" event is `0.02` written six
+  times — a stop, not a brake. The model picks a speed for the next 3 s and holds it.
+  (`arc` is worse in a different way: non-linear profiles, but only 3 distinct ones across
+  8 frames, byte-identical repeats.) What is flat outright is the lateral channel, and the
+  failure is specific: told "Turn right." the model writes a textbook arc —
+  `(0.32, -0.01), (0.64, -0.03), (0.96, -0.06), (1.28, -0.10), (1.60, -0.15), (1.92, -0.21)`,
+  a proper parabola — and told "Turn left." it writes literal `0.00` six times. **It never
+  emits a positive y.** Ruled out, each by direct probe:
+  - *Not comprehension.* "y must be POSITIVE and grow along the list" → `0.00`. "Answer
+    with the exact mirror image of a right turn, y of the opposite sign" → `0.00`.
+  - *Not obstacle avoidance.* Dead in **5 of 5** different scenes across the episode
+    (`probe_steering_authority.py` exists to make that distinction, because one frame
+    cannot: a side dead *everywhere* is an encoding bug, a side dead in *some* scenes is
+    a wall and is correct behaviour).
+  - *Not the sign convention.* Flipping the prompt to y-positive-is-RIGHT (`QVLA_FLIP_Y=1`)
+    does not move the dead side — it kills the live one. Both directions go to `0.00`.
+    So the model holds its own FLU convention and will only steer when the prompt agrees
+    with it; contradicted, it stops steering rather than following the wording.
+
+  The conclusion for the architecture: **the action expert is doing real work that this
+  27B cannot do in text as prompted**, and the gap is not prose quality. Any fix has to
+  stop asking the model for a signed lateral offset inside a tuple — a direction word plus
+  an unsigned magnitude, with the arc built our side. Note what this does *not* say: the
+  slow/fast split is still worth having on speed alone, and Q-VLA's braking was as good as
+  the action expert's.
+
+  **Amended by the perception probe below.** Two claims here are wrong and one is right for
+  the wrong reason. "Speed varies with the image" is not established: those 8 moments each
+  carried their OWN history text, so image and history varied together; holding history
+  fixed across 5 unrelated scenes gives ONE plan. "Not comprehension" is backwards — the
+  model comprehends completely, and the probes that concluded otherwise could not see it
+  because thinking was off. What survives is the headline, and now with a mechanism.
+- **`QVLA_FORMAT=arc` collapses to a permanent stop in CLOSED loop, which eight open-loop
+  frames could never have shown.** First closed-loop arc run, `hospital_vending_machine`:
+  109 plans, **102 of them speed `0.000`**, last non-zero at t=9.0 s, 1.07 m of path in 54 s,
+  timed out 12.5 m short. Not a stack failure — 45 generations, **0 parse failures, 0 gen
+  errors**; the model generates cleanly and generates zeros: `STRAIGHT 0 | 0.0, 0.0, 0.0,
+  0.0, 0.0, 0.0`. Two consequences worth separating from the cause. First, an all-zero
+  distance list makes the logged heading **meaningless**, not merely wrong: the waypoints
+  collapse onto the origin and `atan2` returns whatever noise survives — hence `head=180.00`
+  with `reach=0.550` in the trace. Don't read steering columns from a stopped plan.
+
+  **Second: the prompt hypothesis written here first was WRONG, and it is left in place
+  because of how convincing it was.** It said `arc` had a zero-attractor `pairs` lacked —
+  both carry the same "if you have arrived, STOP" bullet, but `pairs` illustrates it with
+  `(0.05, 0.00)` repeated (which still advances) while `arc` says "write STRAIGHT 0", so
+  `STRAIGHT 0 | 0.0 ×6` is both the cheapest legal string and one the prompt blesses. It
+  fit every observation available at the time. It was falsified by the very next run:
+  `pairs` collapses identically, `(0.00, 0.00) ×6`, 136 of 141 plans at zero. The cause was
+  never the prompt — see the horizon entry below. **A mechanism that explains the evidence
+  is not thereby the mechanism**, and the tell was available: the same-frame probe that
+  would have distinguished them costs one minute and was skipped in favour of a story.
+- **The plan horizon has to outlast a generation, and copying the action expert's 3.0 s
+  was the whole bug.** This is the real cause of both zero-collapses above, and the model
+  was never involved. Feeding ONE frame seven different `time_delay` values returns the
+  SAME cached plan, reported as:
+
+  | `time_delay` | waypoints left | `plan_speed` |
+  |---|---|---|
+  | 0.0 | 30 | 1.353 |
+  | 1.0 | 20 | 0.887 |
+  | 2.0 | 10 | 0.420 |
+  | **2.9** | **1** | **0.000** |
+
+  The chain: generation takes 2.7–5 s against a 3.0 s horizon → the server slices the
+  cached plan by staleness (`full[ceil(time_delay/DT):]`) → at 2.9 s one point survives →
+  `plan_speed` returns 0.0 below two points → `braking` does
+  `v_cap = min(v_cap, plan_speed(...))` → **full stop**. And staleness is *generation
+  latency*, so standing still never clears it. 129 of 141 calls ran at staleness ≥ 3.0 s.
+  **Why 3.0 s was the wrong number to inherit:** TIC-VLA's action expert re-runs on the
+  current frame every control tick, so its waypoints are never stale — only the KV cache
+  is, and 3.0 s is a *cache-freshness* budget. Remove the expert and the waypoints
+  themselves become the thing that ages. The horizon is set by inference latency, not by
+  parity with a head that no longer exists. Now `HORIZON_S = 10.0`, `N_WAYPOINTS = 100`,
+  10 control points; `DT` stays 0.1 s so the control rate is the same 10 Hz. Verified:
+  ~0.69 m/s held from staleness 0.0 through 9.0 s. **This is also the honest answer to
+  "do we still need the action expert?" — yes, and not for steering quality. Its job is
+  keeping a valid trajectory available at control rate, which a 27 B writing waypoints at
+  ~0.3 Hz cannot do for a horizon that real time consumes at 1 s/s.**
+- **Three separate constants were second copies of the horizon, and every one failed
+  silently.** Worth naming as a class, because all three produced a plausible wrong number
+  rather than an error, and two of them mimicked the bug being fixed. (1) `plan_speed`
+  divided by a fixed `ACTION_HORIZON_S`, understating commanded speed in proportion to
+  staleness — and via `obey_plan_speed` that is a brake that tightens the longer the model
+  thinks. Now divides by the plan's own duration; identical for any untruncated plan, so
+  recorded TIC-VLA numbers stand. (2) The parser's flat `6.0 m` plausibility cap. After the
+  horizon change the model wrote a *correct* `(0.70, 0.00) … (7.00, 0.00)` and the parser
+  discarded it — presenting as `has_plan: false`, all zeros, robot stopped, i.e. **exactly
+  the symptom of the bug just fixed**. Only `parse_failures: 1` distinguished them. Now
+  `MAX_REACH_M = 2.0 * HORIZON_S`, reproducing `6.0` exactly at 3 s. (3) The flat 110-token
+  cap, sized for six pairs, which would have truncated ten mid-list. Plus the literal
+  "3 seconds" in both prompts and the 3.0 s budget in `check_vlm_swap.py` /
+  `probe_qvla_latency.py`, which would now fail a working configuration. **After changing a
+  constant, grep for its value, not its name** — a copy has the number, not the identifier.
+- **`/predict` re-serves a CACHED plan, so a probe loop over it measures one generation N
+  times and prints N identical lines.** It only blocks on a generation when it has no plan;
+  otherwise it returns the cached one instantly and regenerates in the background. A tight
+  loop therefore produces a perfect-looking N-of-N result out of a single sample. This
+  invalidated three conclusions stated as measurements: that history makes no difference
+  (twice), that frame count makes no difference, and the "nine times out of nine" anchor
+  reading behind commit `4ac6655` — that was 1–2 real generations re-served. **Every probe
+  must POST `/reset` before every call**, which sets `plan=None` and forces a real
+  generation. Redone that way the history answer inverted outright. Same class as the
+  second-copy constants above: no error, no warning, a plausible number.
+- **Q-VLA-direct with thinking OFF is not navigating — it copies a number out of the
+  prompt and draws a straight line.** The single most important measurement on this branch,
+  and it took a `/reset`-per-call probe to see. Five visually unrelated 4-frame windows from
+  across an 881-frame capture, identical instruction and identical history, produced **one
+  plan**: `(0.70, 0.00) … (7.00, 0.00)`, with `max|y| = 0.000` in every scene. Two of those
+  scenes have a wall or a pillar a few metres ahead. Vary instead the *number in the prompt*,
+  holding the scene fixed, and the plan tracks it: stated cap 0.8 → `0.70` m/s, 1.5 → `1.50`,
+  2.5 → `0.05` — and `0.70`, `1.50`, `0.05` and `0.00` all appear verbatim in the prompt
+  (`0.05` is the "for example (0.05, 0.00) repeated" bullet). This also explains the earlier
+  0.7 m/s readings, which looked like agreement with reality and were agreement with the
+  prompt's own "about 0.7 m/s" — removing that sentence moved the output to the new number.
+  **A plan that matches a number you put in the prompt is not evidence the model agrees
+  with you.**
+- **The cause is that the model gets ZERO tokens to think, and turning thinking on shows it
+  perceives and reasons correctly.** `QVLA_THINK` defaults to 0, and the no-think path
+  prefills `<answer>(` — so the first token the model is free to choose is already inside a
+  coordinate. With `QVLA_THINK=1` the same FP8 checkpoint describes the scenes accurately
+  ("a large open room with a hexagonal tile floor, a black console table on the right, and
+  windows with vertical blinds" — correct), does the trigonometry off the stated 90° FOV,
+  and reaches the right decision. **Vision is not broken and the FP8 quantization is fine;
+  neither was ever tested before, and both were quietly assumed.** Three regimes, each
+  failing differently:
+
+  | | parse OK | cost/plan | plan |
+  |---|---|---|---|
+  | think off | 5/5 | ~2.7 s | one straight line for all scenes, speed copied from prompt |
+  | think on, unforced | **1/6** | 8–54 s | correct reasoning, never emits `</think>` or an answer |
+  | think on, budget-forced | **5/5** | ~22 s | writes an answer, still the same straight line |
+
+  Budget forcing is now in `_generate`: cap the thinking, then close the block ourselves
+  with `</think>\n<answer>(` and decode only the answer. It fixes the structural failure
+  completely (parse failures 5→0) and changes nothing about quality, which is the finding.
+  Because the decisive artifact is this — the model's own reasoning, sitting in its context,
+  saying **"To stop at it, I need to head toward it, i.e., move forward and left"** — and
+  the very next tokens it writes are `y = 0.00`, ten times. **The lateral channel is dead at
+  emission, not at perception and not at reasoning.** Greedy decoding into a heavily
+  templated answer collapses onto a clean arithmetic sequence, and the reasoning does not
+  reach the coordinates.
+
+  So the answer to "do we still need the action expert?" is **yes**, now for a reason worth
+  having: not that the 27B cannot see or cannot think about navigation — it demonstrably
+  does both — but that it cannot convert a decision into coordinates, and cannot do it
+  inside a control period even when it does. 22 s/plan against a 10 s horizon is 2.2× over
+  budget, and raising the horizon to cover it means planning further ahead than the scene
+  stays valid.
+- **Sampling breaks the SPEED collapse and does nothing for steering; the `+` sign bug is
+  real but is not the cause.** Two follow-ups, both worth recording because one confirmed a
+  suspicion and one killed an even better story. (1) `do_sample=False` was the suspect for
+  the mode collapse, and the comment asserting "sampling buys nothing when the output is a
+  list of coordinates" had never been measured. At `QVLA_TEMPERATURE=0.7` the five scenes
+  give four distinct speeds instead of one — so that comment was wrong — but `y` is still
+  exactly `0.00` in all 50 waypoints. Under sampling, chance alone should put mass
+  somewhere off zero. (2) `_NUM` was `-?\d+(?:\.\d+)?`: optional minus and **no plus**, so
+  `(0.32, +0.01)` failed the pair match, `parse_control_points` returned None, and the
+  runner saw no plan — indistinguishable from the model writing zeros. Since the prompt
+  says "make y negative to go right and positive to go LEFT", an explicit `+` on exactly
+  the turn recorded as impossible is what you would expect, and no earlier probe read the
+  RAW text. Fixed to `[-+]?`. **But it was not the cause**: with the fix in, at the original
+  greedy/no-think baseline, "Turn left." and "Turn right." both return raw
+  `(0.00, 0.00) ×10` with `parse_failures = 0`. The model really does write literal zeros.
+  Recorded this way round on purpose — the tempting version of this entry is "found the
+  one-sided steering bug", and checking cost one probe. Note also that "Turn right." no
+  longer produces the clean parabola the entry above reports: that was the 6-point/3.0 s
+  horizon, and at 10 points both directions are dead.
+- **The TIC-VLA dataset zips are `stored`, not deflated — 1.00× — and `_json` has no
+  images.** Both measured off the completed `DynaNav_json.zip` by reading its central
+  directory rather than extracting: 288,602 entries, 25.83 GB in and 25.83 GB out,
+  151,183 `.txt` + 137,419 `.json`, zero images. Consequences: the frames are in the
+  `_data` archives so all 538.29 GB is needed, and unzipping costs the archive size
+  *again* — 538 GB of zips plus 538 GB extracted is ~1076 GB against ~936 GB free.
+  **Extract each zip then delete it.** Reading the central directory is the cheap way to
+  learn this; a ratio guessed from "it's JSON, it'll compress" would have been badly wrong
+  in the safe direction and "it's JPEG, it won't" wrong in the dangerous one.
+- **TIC-VLA obeys instructions in prose and ignores them in every number it emits —
+  including the VLM's own `<answer>`.** Measured because the robot kept driving through
+  "stop", "turn right", "turn left" and "go backward". The obvious hypothesis was that
+  understanding exists in the VLM and dies at the KV-cache interface to the action expert,
+  which would have made a text/action consistency loss the fix. **It is not that.** Hold
+  the scene, history and `robot_state` fixed and vary only the instruction, `/reset` before
+  every call (frames 600–603, our nav cache):
+
+  | instruction | expert @3 s | expert heading | VLM `<answer>` @3 s |
+  |---|---|---|---|
+  | Go straight ahead down the hallway. | (+1.68, +0.00) | +0.03° | **(+2.07, +0.00)** |
+  | Stop immediately. Do not move at all. | (+1.73, +0.02) | +0.55° | **(+2.07, +0.00)** |
+  | Turn right. | (+1.78, +0.01) | +0.31° | **(+2.07, +0.00)** |
+  | Turn left. | (+1.75, +0.01) | +0.27° | **(+2.07, +0.00)** |
+  | Turn hard right, 90 degrees, now. | (+1.82, −0.00) | −0.01° | **(+2.07, +0.00)** |
+  | Go backward. Reverse. | (+1.74, +0.02) | +0.53° | **(+2.07, +0.00)** |
+
+  The `<answer>` is bit-identical to two decimals across six contradictory commands, and
+  the two heads agree with each other to 0.0–0.6° of bearing and a 1.14–1.23× magnitude
+  ratio. So the interface is not where language dies: **both** numeric channels are deaf,
+  and a consistency loss between two channels that already agree to half a degree has
+  nothing to pull on. That closes the "birleştirelim / couple the heads" idea as stated —
+  the coupling already exists in effect.
+
+  The prose is the opposite. `<think>` tracks every command exactly: "I will hold position,
+  keep brakes engaged, monitor the doorway, and avoid rolling" for stop; "I have just
+  completed a gentle left turn" for left. The mechanism is visible in the tense — for
+  "Turn hard right, 90 degrees, now" it writes "I have **completed** the right turn and am
+  now moving straight", and for "Go backward. Reverse." it writes "...to start the backward
+  step. Next I will **move forward**." It converts the command into a past-tense narration
+  of the trajectory it was already going to take. That is exactly what §3.3 of the paper
+  built: instructions annotated by GPT-5 *given* the trajectory, so instruction and
+  trajectory never conflict in training and the learned relation is descriptive, not
+  imperative. Never trained as a command, so nothing to generalize — this is not weak
+  generalization.
+
+  Controls, because "it ignores language" is worthless without them:
+  - **Vision is not deaf on the same inputs.** Pin the instruction, vary the scene over 8
+    scenes: heading sd **52.95°** (range 153.4°), path-length sd 0.76 m (0.66–3.32 m).
+    Instruction axis on the same frames: heading sd **0.21°** (range 0.6°), length sd
+    0.034 m. The KV cache carries perception and drops language, on our own Isaac Sim
+    renders, which also answers the "these frames are OOD for SCAND/GND" objection.
+  - **Speed is the one channel where "stop" registers at all, and only sometimes.** With
+    four frames it does nothing: 1.91 m over 3 s against 1.98 m for "go straight", a 4%
+    cut, 0.64 m/s. With a *single* frame (`check_policy_sanity.py --frame nav_000600.jpg`)
+    it halves the plan, 1.05 m against 2.02 m — real, but 0.35 m/s is still driving, and
+    the heading spread stays 3.5°. So the honest statement is that "stop" is a weak speed
+    prior in one input regime and absent in the other, never a stop. Consistent with
+    Eq (5), where `r_speed` penalizes slow motion. Do not report "stop" as fully ignored;
+    that overstates a result that changes with the number of frames.
+  - **It is deterministic.** `check_policy_sanity.py --repeats 4` gives within-instruction
+    spread of exactly 0.000°, and 6 unpatched generations of `predict()` were bit-identical
+    — so **ignore that tool's `ratio: inf` PASS**, it is a divide-by-zero, not evidence.
+    The cause is not that generation is disabled: `DynaNav/ticvla.py:584` and `:945` both
+    use `do_sample=True` with `temperature=0.1, top_p=0.1, top_k=10`, which is effectively
+    greedy for this model. Read the tool's per-instruction headings, not its verdict.
+  - Pick the probe scene carefully: frames 150–153 plan +90°/0.84 m, a degenerate sideways
+    shuffle where nothing moves for any reason. The first instruction sweep ran there and
+    would have been an artifact; frames 600–603 (forward, 0.66 m/s) is the honest regime.
+- **Prompting has about ±9° of authority over TIC-VLA's action expert, and it saturates.**
+  This is the bound on every "better system prompt / skill / soft prompt" idea, measured
+  rather than argued, by `nav/tools/probe_cache_bandwidth.py`. The expert cannot be reached
+  by language directly — it cross-attends to last-layer KV values — so the probe patches
+  `vlm.chat` on the instance and writes the reasoning itself. That grants *more* control
+  than any prompt could have, since a prompt can only influence the text this sets exactly.
+
+  Noise floor first: 6 unpatched generations were bit-identical, heading sd **0.000°**.
+  Then, same scene, same instruction, only the reasoning replaced:
+
+  | injected reasoning | heading | endpoint @3 s |
+  |---|---|---|
+  | (real generation) | +0.66° | (+1.54, +0.02) |
+  | RIGHT, `y = −1.5` spelled out | **−7.62°** | (+0.94, −0.13) |
+  | LEFT, `y = +1.5` spelled out | +9.61° | (+1.12, +0.19) |
+  | STOP, `(0,0,0)` | +8.82° | (+0.21, +0.03) |
+  | REVERSE, `x = −1` | +9.38° | (+0.19, +0.03) |
+  | NONSENSE — a bechamel recipe, `(7.77, 7.77)` | +7.39° | (+1.25, +0.16) |
+  | EMPTY | +10.83° | (+0.20, +0.04) |
+
+  Read the controls, not the spread. Right-vs-left, two opposed meanings in near-identical
+  wording, is 17.2° apart; right-vs-bechamel, unrelated meaning in alien wording, is 15.0°
+  apart. Ratio **1.15** — so the words are worth roughly 2°. What the expert actually
+  tracks is the **numbers** inside `<answer>`: STOP (`x=0`) and REVERSE (`x<0`) both land
+  on the same ~0.20 m endpoint as EMPTY, while the recipe carrying `x=7.77` drives 1.25 m.
+  "Stop appears to work" is the cache degrading toward no-information, not obedience.
+
+  Holding the prose fixed and neutral and sweeping only the injected lateral value gives
+  the transfer function: output y is monotone in injected y over **8 of 9** points
+  (−0.239 → +0.241 for y ∈ [−6, +3]), gain **0.070** in [−3, 3] — **14× attenuation** —
+  and then it *reverses*: y = +6 steers +2.56°, less than y = +3's +9.04°. Best steering
+  anywhere in the sweep is **9.63°**.
+
+  So the authority ranking on this architecture is scene **153°** ≫ injected numbers
+  **±9°** ≫ words **~2°**. A turn is 90°. Prompting is a trim tab; it can bias lane
+  position and cannot command a turn. Do not spend effort on prompt engineering here —
+  and note this also rules out soft prompting, which is gradient training aimed at the
+  same ±9° channel.
+
+  Gotcha when reproducing: a real generation must run before any patched one. `vlm.chat`
+  sets `img_context_token_id` as a side effect and the cache-building forward pass reads
+  it; patching chat away on a cold model crashes in InternVL on `selected.sum()` with
+  `selected` still a bool.
+- **TIC-VLA's `<answer>` is sometimes the literal `-100` padding sentinel** — 10 of 16
+  generations in one sweep, 0 of 8 in another, so it is input-dependent, not universal.
+  Cause is in the vendored code: `vlm_data.py:282` interpolates `guidance_waypoint` straight
+  into the answer string, and `policy_data.py:283` initialises that tensor to `-100` for
+  samples with no delayed frame or under 9 s of future. `policy_data.py:396` only *counts*
+  those as `invalid`, it never drops them, so `<answer>(-100.00, -100.00, -100.00), ...`
+  is a real SFT target string. The model learned to emit the CE `ignore_index` as text.
+  Any parser reading `<answer>` must reject `-100` explicitly rather than treat it as a
+  waypoint — as a coordinate it is 100 m behind and 100 m to the right.
+- **The arc selector follows instructions at 100% and is obstacle-blind out of the box.
+  Both halves matter; do not quote one without the other.** Frozen Qwen3.8-27B-FP8, arcs
+  drawn on the robot's own camera by `nav/arc_menu.py`, answer is a label. Labels shuffled
+  every trial, so a left-to-right prior scores chance.
+
+  *Instructions* (`probe_arc_selection.py`, 144 trials): "turn left" / "turn right" / "go
+  straight" each **100%** side-correct against 43% chance, mean κ separating left from
+  right by **+1.190** of a 1.20 menu span. In heading terms the instruction moves the plan
+  **103°**, against 0.6° for TIC-VLA's expert and a 9° ceiling for anything injected into
+  it. Median latency **0.31 s**. This is the zero-shot instruction following, on a frozen
+  model, with no trajectory data.
+
+  *Obstacles* (`probe_arc_obstacles.py`, same model, instruction "Drive safely."): it drove
+  the straight arc into a wall on **89%** of blocked frames, and — the control that needs
+  no human labels — **0 of 18** choices negated when the frame was mirrored. Following a
+  direction word and seeing free space are separate capabilities, and only the first one
+  was there.
+- **That obstacle failure was in the question, not the eyes — and the fix is one extra
+  sentence in a two-call chain.** Worth the whole chain of probes to see, because the two
+  causes cost wildly different amounts to repair.
+
+  `probe_free_space.py` asked about free space directly, no arcs drawn. Forced choice
+  between a blocked and an open frame, every pairing in both orders: **70/70**, 50% of
+  replies "1" so no position bias, and the free text named the obstacle on **6/6** blocked
+  frames with a distance ("a large red double door"). Perception is not the problem.
+
+  (Instrument note: the first version asked a per-frame yes/no and got 100% recall with 50%
+  specificity off 18 NOs in 24 — most of what always-say-NO scores. And its free-text
+  question, "describe what is between the robot and 3 m ahead", produced twelve
+  descriptions of tile patterns and no mention of the wall: it put "floor" in the model's
+  mouth. Both were measuring the phrasing. Force the choice and name the categories.)
+
+  `probe_arc_repair.py`, four ways to ask, same frames, same shuffles, same pixels:
+
+  | variant | avoid wall | keep straight | open side | mirror | latency |
+  |---|---|---|---|---|---|
+  | DIGIT — one image, bare digit | 22% | 100% | 20% | 0% | 0.31 s |
+  | THINK — reason then answer, one call | 33% | 86% | 37% | 17% | 2.42 s |
+  | CHAIN — describe, then choose | 72% | 100% | 60% | 28% | 2.10 s |
+  | **SIDED** — describe **and name the open side**, then choose | **100%** | **92%** | **90%** | **83%** | 2.10 s |
+
+  Chance is 43% for open side and ~0% for mirror. CHAIN's own gap is the tell: it passes
+  along "there is a wall approximately 0.5 to 1 metre away", which reports that the way is
+  blocked and never says which way is open, so the second call turns and guesses where.
+  Asking the first call to name the free side wires together two things that each already
+  scored 100% alone. Keep the open-corridor frames in any rerun — they are what separates
+  SIDED from a model that merely learned to swerve, and they are why THINK's 86% is a
+  demerit and not noise.
+
+  Cost: **2.10 s** per decision against DIGIT's 0.31 s, both calls on one frozen model. The
+  0.31 s path is still correct when the instruction carries the direction; the 2.10 s path
+  is what "drive safely" costs.
+- **8/13 on the ladder with the frozen arc-menu Qwen, up from 6/13 with TIC-VLA.** Full
+  13 episodes, `braking`, one server, 49.7 min wall, **0 errors**. Read the server's own
+  counters next to it, because that is the check that catches a ladder scored against a
+  dead port: 2294 predictions, 989 generations, 0 gen errors, 5 parse failures (0.5%).
+  Successes: `hospital_down_hallway`, `office_passing_hallway`, both vending machines,
+  `office_hallway_turn`, `hospital_past_wheelchairs`, `hospital_forward_staircase`,
+  `warehouse`. **No action expert, no fine-tuning, no trajectory data** — the whole policy
+  is a drawn menu and two calls to a frozen 27B.
+- **Backing out of a wedge is only half a recovery, and the first version shipped only that
+  half.** Reversing hands control back to a policy looking at the same obstacle from a
+  metre further away, holding a cached plan that says STOP, shown the frame that made it
+  say STOP. Worse, at 1.4 m nothing is inside `stop_distance_m` any more, so the wedge
+  trigger cannot re-arm and the robot stands there for the rest of the episode. The fix is
+  three things at once, and each is separately necessary: **throw the plan away**
+  (`/replan`, plus an `epoch` counter so a generation already in flight is discarded on
+  arrival rather than landing as a fresh-looking stale plan), **say what happened** in the
+  prompt, and **remove STOP from the menu** for that decision. The last one is not a hack:
+  both reasons the prompt gives for answering STOP are known false right after a reverse —
+  the robot cannot have arrived, because arrival latches and ends the episode, and standing
+  still is precisely the thing that just failed. Prompt is the right channel here and the
+  authority is measured, not assumed: instructions move the arc-menu plan **103°**, against
+  ~9° for TIC-VLA's action expert.
+
+  Ladder result: **6 reverses, 6 forced re-decisions, 0 failures to re-decide**, 3 of them
+  with something behind the robot as well. `hospital_vending_machine2` was **0/3** before
+  and is **2/2** after (pilot + ladder), both wins going through exactly one reverse and one
+  re-decision. Do not read that as 2/2 being the rate — n is small and this stack is noisy
+  — but the mechanism firing 6 times and re-deciding 6 times is not noise.
+- **STOP is being used to mean "blocked", which is the mirror image of the wedge bug and is
+  now the top failure mode.** `office_nearest_elevator` answered STOP on **42 of 65**
+  decisions from 5.5 m out, oscillating stop/move/stop/move. Its own free-space text on
+  those frames: *"Yes, there is a wall straight ahead of the robot. The most open, walkable
+  floor is to the RIGHT. TARGET: not visible"* — naming an open side and denying it can see
+  the target, in the same sentence as an answer that means "I have arrived or everything is
+  blocked". `hospital_exit_room` is the same illness with the guard in the loop: **2655
+  interventions, 12% closed**. The prompt already says "do not answer 8 merely because the
+  way ahead is tight" and that is not holding, so the fix is structural in the same way the
+  recovery's was — gate STOP on what the description says (target visible AND near) rather
+  than trusting the model to apply a rule. **Not attempted mid-ladder on purpose**: changing
+  the prompt between episodes leaves 13 numbers measured under two policies.
+- **Three failures, three different causes — do not average them.** `hospital_down_hallway2`
+  stopped at **1.58 m** against a 1.50 m threshold while its twin on the same corridor
+  scored spl 1.00: 8 cm, the same behaviour landing either side of a hard cutoff, not a
+  navigation error. `office_hallway_turn2` and `warehouse_aisle6` **arrive and then leave**
+  (2.23 m → 8.10 m final), the long-documented consequence of DynaNav terminating at 1.5 m
+  so their controller is never asked to stop. Only the STOP-means-blocked pair above is a
+  new problem.
+- **`warehouse_aisle6`'s path length went 20.9 m → 103.8 m and that is NOT a regression —
+  it is the STOP-freeze lifting and a second failure appearing underneath.** Recorded
+  because a 5× worse-looking number came from a fix working, and reading it as a
+  regression would have argued for reverting one. Both runs make ~245 decisions; only the
+  answers differ.
+
+  | | STOP answered | zero-motion gaps | yaw swept | path | closest |
+  |---|---|---|---|---|---|
+  | before | **205/248 (83%)** | 28% | −50° | 20.9 m | 18.94 m |
+  | after | **18/243 (7%)** | 1% | **−506°** | 103.8 m | 18.07 m |
+
+  The before-run drove 20.9 m and then **parked**: from trace sample 91 of 502 onward it
+  never leaves a 0.5 m circle, covering **0.45 m in the last 82% of the episode**, while
+  its own describe call read *"a large grey brick wall is directly ahead… the most open,
+  walkable floor is to the right. TARGET: not visible"* — the STOP-means-blocked
+  pathology, and it cannot self-clear because arrival latches. Its 20.9 m is not a tidy
+  path, it is a short one plus a long freeze, so **path length was never comparable
+  between these two runs.** Closest approach is, and it barely moved: 18.94 → 18.07.
+
+  What is underneath is new and is its own bug: the after-run chooses **straight on 210 of
+  222 non-STOP decisions** with mean κ −0.028, and a persistent small right bias in a 34 m
+  open warehouse integrates into an **orbit** — 1.40 full clockwise turns, returning to
+  within **0.04 m** of a point it had visited 355 samples earlier. It is not lost in the
+  sense of thrashing; it is driving a smooth 30 m circle because `TARGET: not visible` on
+  142 of 243 frames leaves nothing to correct against. This episode is the only one on the
+  ladder long enough and open enough for a per-decision bias that small to close a loop.
+  **A near-zero mean curvature is not the same as going straight** — over 100 m it is a
+  circle, and the metric that shows it is cumulative yaw, not mean κ.
+- **Record both cameras or the video cannot answer the question you will ask it.** The menu
+  frame shows what the model looked at and what it chose; only a third-person view shows
+  whether the robot then went there. A scraped wall, a pivot in place and a reverse out of
+  a wedge are all invisible from the camera doing the deciding, because that camera moves
+  with the robot. Two gotchas, both hit for real: the video canvas must be sized off whether
+  the RUN recorded a chase view, not off whether a given frame's file exists — one missing
+  jpeg otherwise changes the frame size mid-stream and ffmpeg rejects the whole encode; and
+  the chase camera must stay lazy, because once an Isaac Sim `Camera` exists Kit renders its
+  render product every frame whether or not anything reads it.
+- **Resend refuses `Python-urllib/3.x` with HTTP 403 "error code: 1010".** Cloudflare
+  banning the client string, not the key, and the one-line error names neither.
+  `scripts/notify-progress.sh` never hit it because curl sends its own User-Agent. Any new
+  Python caller of that API needs one set explicitly.
 
 ## Next step
 

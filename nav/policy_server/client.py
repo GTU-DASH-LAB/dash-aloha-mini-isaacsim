@@ -76,8 +76,31 @@ class PolicyClient:
             time.sleep(poll_s)
         raise PolicyServerError(f"policy server not ready after {timeout_s}s; last={last}")
 
-    def reset(self) -> dict[str, Any]:
-        return self._post("/reset")
+    def reset(self, run: str = "") -> dict[str, Any]:
+        """Clear the policy's state between episodes.
+
+        `run` names the episode that is about to start. `server.py` ignores it; the
+        arc-menu server uses it to open a per-episode recording directory, and without a
+        name it does not record at all -- the step counter restarts every episode, so a
+        shared directory has the second one overwriting the first.
+        """
+        return self._post("/reset", {"run": run} if run else {})
+
+    def replan(self) -> dict[str, Any]:
+        """Throw away the cached plan MID-episode and leave everything else alone.
+
+        Deliberately not `reset()`. The arc-menu server rebuilds its recording directory
+        on every /reset, so a bare reset in the middle of a run sets `run_dir` to None and
+        silently stops recording the menus and decisions -- losing the evidence for the
+        very manoeuvre that prompted the call.
+
+        Only the arc-menu server implements this. `server.py` does not, so a 404 comes
+        back as `PolicyServerError`; callers that may talk to either should treat that as
+        "nothing to clear" rather than as a failure, because for TIC-VLA it is true --
+        its action expert re-runs on the current frame every tick and holds no plan to
+        throw away.
+        """
+        return self._post("/replan")
 
     def predict(
         self,
@@ -89,6 +112,12 @@ class PolicyClient:
         previous_waypoints_text: str = "",
         delayed_image_paths: list[str] | None = None,
         robot_type: str = "wheeled robot",
+        recovered: bool = False,
+        recovery_kind: str = "",
+        stalled_s: float = 0.0,
+        wait_fresh: bool = False,
+        wait_inflight: bool = False,
+        scan_points: list[list[float]] | None = None,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -105,6 +134,38 @@ class PolicyClient:
         `vlm_generation_start_step` is non-None only on calls that started a new
         background generation; the caller is expected to keep those and reference the
         second-to-last one. See run_navigation.py's `gen_starts`.
+
+        `recovered` says the robot has just reversed. The arc-menu server uses it to tell
+        the model something the picture cannot: that the view in front of it is a view it
+        has already failed at, seen from a metre further back. `recovery_kind` says which
+        failure -- "wedge" (drove into something) or "balk" (stopped with clear floor
+        ahead) -- and `stalled_s` is how long the robot has been making no progress, which
+        no single frame can show.
+
+        `wait_fresh` asks the server to block until it has a plan built on THESE images,
+        instead of returning the cached one. The caller is expected to have stopped the
+        robot first -- that is the whole point of it, and returning a fresh plan to a robot
+        that kept driving would buy nothing. See run_navigation.py's NAV_PLAN_PERIOD_S.
+
+        `wait_inflight` is the middle setting: return the plan built on the PREVIOUS
+        call's images, waiting for it only if it is still decoding, and start the next
+        generation on these. The robot keeps driving, but never on thinking more than one
+        planning period old -- where plain async lets that age grow to a whole generation
+        and therefore with the thinking budget. Send at most one of the two; `wait_fresh`
+        wins if both arrive, since it is the strictly stronger guarantee.
+
+        `scan_points` is one revolution of the 2D lidar as body-frame (x_forward, y_left)
+        metres. The arc-menu server uses it to drop menu arcs the robot cannot actually
+        drive; it is the one thing on this list the camera structurally cannot supply,
+        since a 90 degree frame cannot measure the width of a gap it is looking at. Sent
+        as points rather than ranges so the frame convention travels with the data.
+
+        All of them are ignored by `server.py`, so they are safe to send either way. That is
+        not incidental: the runner talks to whichever server is listening, and a field that
+        broke the TIC-VLA baseline would make the two policies un-comparable on the same
+        ladder. `wait_fresh` is the one to watch there -- TIC-VLA's own loop is genuinely
+        asynchronous by design, so sending it True does not make that baseline synchronous
+        and a run must not be labelled as though it had.
         """
         return self._post(
             "/predict",
@@ -117,5 +178,11 @@ class PolicyClient:
                 "previous_waypoints_text": previous_waypoints_text,
                 "delayed_image_paths": delayed_image_paths,
                 "robot_type": robot_type,
+                "recovered": recovered,
+                "recovery_kind": recovery_kind,
+                "stalled_s": stalled_s,
+                "wait_fresh": wait_fresh,
+                "wait_inflight": wait_inflight,
+                "scan_points": scan_points,
             },
         )

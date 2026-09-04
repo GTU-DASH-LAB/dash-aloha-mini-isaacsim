@@ -64,7 +64,27 @@ class CollisionGuard:
         ray_height_m: float = 0.30,
         chassis_radius_m: float = 0.35,
         robot_prim_prefix: str = "/World/Aloha",
+        scan=None,
     ):
+        # `scan` is an optional SweepingLidar2D. With it the guard reads the sensor's
+        # rolling buffer instead of casting its own fan; without it nothing changes at
+        # all. Kept as a switch rather than a replacement because every number this repo
+        # has recorded -- 2734 frozen steps, 956 -> 195 interventions, the whole
+        # 13-episode ladder -- was measured on the fan, and swapping the input silently
+        # would make the next ladder incomparable to all of them.
+        #
+        # WHAT THE SENSOR BUYS IS DENSITY, and it is worth stating as a number because it
+        # is the entire argument. Seven rays across +-35 degrees are 11.7 degrees apart:
+        # at the 0.6 m stop distance that is a 12 cm gap between adjacent rays, and 30 cm
+        # at 1.5 m. A chair leg, a table leg or a forklift tine fits through it cleanly.
+        # The C1's 0.72 degrees closes the same gaps to 0.8 cm and 1.9 cm.
+        #
+        # WHAT IT COSTS IS FRESHNESS, and that is not free. The fan is cast now; the
+        # buffer holds one revolution, so a bearing can be 100 ms old, which at the
+        # 1.5 m/s cap is 15 cm of travel. That is why `stop_distance_m` should be raised
+        # when driving on the scan -- the distance has to absorb the latency, and a guard
+        # tuned on instantaneous rays is optimistic by exactly that margin.
+        self.scan = scan
         self.stop_distance_m = stop_distance_m
         self.slow_distance_m = slow_distance_m
         self.fan_half_angle = math.radians(fan_half_angle_deg)
@@ -87,30 +107,10 @@ class CollisionGuard:
             self._query = get_physx_scene_query_interface()
         return self._query
 
-    def check(
-        self,
-        position: tuple[float, float, float],
-        yaw: float,
-        vx: float,
-        vy: float,
-    ) -> GuardResult:
-        """Sample toward the direction of TRAVEL, which is not necessarily yaw.
-
-        On the holonomic controller the robot can move sideways while facing
-        elsewhere, so casting along the heading would guard the wrong direction
-        entirely -- it would happily strafe into a wall it was not looking at.
-        """
-        speed = math.hypot(vx, vy)
-        if speed < 1e-6:
-            return GuardResult(False, float("inf"), vx, vy)
-
-        # Body-frame travel direction -> world.
-        travel = math.atan2(vy, vx) + yaw
+    def _sample_fan(self, position, travel) -> list[tuple[float, float, str]]:
+        """The original seven rays. (world bearing, distance from CENTRE, prim)."""
         query = self._scene_query()
-
-        nearest = float("inf")
-        nearest_prim = ""
-        blockers: list[float] = []  # world bearings of rays that came back too short
+        out = []
         for i in range(self.fan_rays):
             frac = (i / (self.fan_rays - 1)) * 2.0 - 1.0 if self.fan_rays > 1 else 0.0
             angle = travel + frac * self.fan_half_angle
@@ -129,7 +129,74 @@ class CollisionGuard:
             # outward can clip them.
             if prim.startswith(self.robot_prim_prefix):
                 continue
-            distance = float(hit.get("distance", float("inf"))) + self.chassis_radius_m
+            # Rays start at the chassis edge, so add the radius back to make the distance
+            # centre-relative -- which is the frame the thresholds are written in.
+            out.append((angle, float(hit.get("distance", float("inf")))
+                        + self.chassis_radius_m, prim))
+        return out
+
+    def _sample_scan(self, position, yaw, travel) -> list[tuple[float, float, str]]:
+        """The same question asked of the lidar buffer instead of a fresh fan.
+
+        Two differences from `_sample_fan`, and both are in the sensor's favour rather
+        than hidden by it. The returns are ~16x denser across the same wedge. And they are
+        already centre-relative with no radius to add back, because the unit sits at the
+        robot's centre and measures from there -- where the fan has to start outside the
+        chassis to avoid casting from inside the robot's own column collider.
+
+        Self-hits are already dropped by `points_body`, so the "never guard against
+        ourselves" rule is enforced in exactly one place for both sources.
+        """
+        pts = self.scan.points_body(position, yaw)
+        if pts.size == 0:
+            return []
+        import numpy as np
+
+        dist = np.hypot(pts[:, 0], pts[:, 1])
+        # Bearing relative to travel, wrapped, so the wedge test is a plain comparison.
+        rel = np.arctan2(pts[:, 1], pts[:, 0]) + yaw - travel
+        rel = (rel + math.pi) % (2.0 * math.pi) - math.pi
+        keep = (dist <= self.slow_distance_m) & (np.abs(rel) <= self.fan_half_angle)
+        idx = np.flatnonzero(keep)
+        if idx.size == 0:
+            return []
+        prims = self.scan.prims()
+        return [(float(rel[i] + travel), float(dist[i]), prims[i]) for i in idx]
+
+    def check(
+        self,
+        position: tuple[float, float, float],
+        yaw: float,
+        vx: float,
+        vy: float,
+        count: bool = True,
+    ) -> GuardResult:
+        """Sample toward the direction of TRAVEL, which is not necessarily yaw.
+
+        On the holonomic controller the robot can move sideways while facing
+        elsewhere, so casting along the heading would guard the wrong direction
+        entirely -- it would happily strafe into a wall it was not looking at.
+
+        `count=False` runs the same fan without touching `interventions`, for callers
+        asking "what is over there?" rather than "clip this velocity" -- see
+        `stuck_recovery.py`, which probes clearance every step. Counting those would
+        add hundreds of interventions to a run that never had one, and that number is
+        read as evidence about how cluttered the route was.
+        """
+        speed = math.hypot(vx, vy)
+        if speed < 1e-6:
+            return GuardResult(False, float("inf"), vx, vy)
+
+        # Body-frame travel direction -> world.
+        travel = math.atan2(vy, vx) + yaw
+
+        samples = (self._sample_scan(position, yaw, travel) if self.scan is not None
+                   else self._sample_fan(position, travel))
+
+        nearest = float("inf")
+        nearest_prim = ""
+        blockers: list[float] = []  # world bearings of returns that came back too short
+        for angle, distance, prim in samples:
             if distance <= self.stop_distance_m:
                 blockers.append(angle)
             if distance < nearest:
@@ -148,7 +215,8 @@ class CollisionGuard:
             return GuardResult(False, nearest, vx * scale, vy * scale, nearest_prim, scale)
 
         # --- blocked: keep whatever motion is not INTO an obstacle -----------------
-        self.interventions += 1
+        if count:
+            self.interventions += 1
 
         # Work in world for the projection, because the ray bearings are world angles.
         wx = speed * math.cos(travel)

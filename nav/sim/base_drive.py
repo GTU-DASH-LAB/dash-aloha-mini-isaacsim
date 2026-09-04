@@ -38,6 +38,25 @@ class KinematicBase:
         self._yaw = 0.0
         self._xy: np.ndarray | None = None
         self._initialized = False
+        # Vertical motion the DRIVE never asked for. `apply()` writes x and y but carries
+        # z straight through from whatever the contact solver last produced, so any
+        # bouncing of the wheel spheres against the floor is written back into the pose
+        # every step -- and the chase camera hangs off `base_link`, so it lands in the
+        # recorded video as a shake. Measured rather than argued about: `z_step_max` is
+        # the largest single-step change, which is what the eye reads as jitter, and the
+        # min/max span says whether the robot is also settling or climbing.
+        self.z_min = float("inf")
+        self.z_max = float("-inf")
+        self.z_step_max = 0.0
+        self._z_prev: float | None = None
+
+    def _note_z(self, z: float) -> None:
+        z = float(z)
+        self.z_min = min(self.z_min, z)
+        self.z_max = max(self.z_max, z)
+        if self._z_prev is not None:
+            self.z_step_max = max(self.z_step_max, abs(z - self._z_prev))
+        self._z_prev = z
 
     # If the sim's idea of where the robot is diverges from ours by more than this,
     # something moved it that was not us -- a fall, a reset, a physics correction --
@@ -78,6 +97,11 @@ class KinematicBase:
 
     def position(self) -> tuple[float, float, float]:
         positions, _ = self.art.get_world_poses()
+        # Sampled here rather than inside `apply()`: this is called once per loop
+        # iteration whatever the command was, so a robot held still by the guard or
+        # standing through a synchronous decision is still watched. `apply()` returns
+        # early on a zero command and would miss exactly those.
+        self._note_z(positions[0][2])
         return tuple(float(v) for v in positions[0])
 
     def apply(self, vx: float, vy: float, omega: float, dt: float) -> None:

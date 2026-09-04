@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TIC-VLA — Visual Architecture</title>
+<style>
+
+  :root {
+    --ink:#12181B; --ink-2:#3D4A50; --ink-3:#6E7D84;
+    --paper:#F5F6F6; --paper-2:#FFFFFF; --rule:#D3DADC; --rule-2:#E7EBEC;
+    --slow:#3B5B8C; --slow-fill:#DDE6F2; --slow-fill-2:#C6D5E9;
+    --fast:#A8641A; --fast-fill:#F6E7D2; --fast-fill-2:#EED6B4;
+    --frozen:#5F7378; --frozen-fill:#E3E8E9;
+    --neck:#96323F;  --neck-fill:#F2D9DC;
+    --wire:#93A2A8;
+    --mono: ui-monospace,"SFMono-Regular","JetBrains Mono","Cascadia Mono",Menlo,Consolas,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:#E4EAEC; --ink-2:#A6B4BA; --ink-3:#7A8A91;
+      --paper:#0E1315; --paper-2:#161D20; --rule:#2C363B; --rule-2:#212A2E;
+      --slow:#8FB3E4; --slow-fill:#1C2836; --slow-fill-2:#25374B;
+      --fast:#E0A45C; --fast-fill:#2B2115; --fast-fill-2:#3B2D1B;
+      --frozen:#93A5AB; --frozen-fill:#1E2528;
+      --neck:#E08792;  --neck-fill:#331C21;
+      --wire:#63757C;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#E4EAEC;--ink-2:#A6B4BA;--ink-3:#7A8A91;
+    --paper:#0E1315;--paper-2:#161D20;--rule:#2C363B;--rule-2:#212A2E;
+    --slow:#8FB3E4;--slow-fill:#1C2836;--slow-fill-2:#25374B;
+    --fast:#E0A45C;--fast-fill:#2B2115;--fast-fill-2:#3B2D1B;
+    --frozen:#93A5AB;--frozen-fill:#1E2528;--neck:#E08792;--neck-fill:#331C21;--wire:#63757C;
+  }
+  :root[data-theme="light"]{
+    --ink:#12181B;--ink-2:#3D4A50;--ink-3:#6E7D84;
+    --paper:#F5F6F6;--paper-2:#FFFFFF;--rule:#D3DADC;--rule-2:#E7EBEC;
+    --slow:#3B5B8C;--slow-fill:#DDE6F2;--slow-fill-2:#C6D5E9;
+    --fast:#A8641A;--fast-fill:#F6E7D2;--fast-fill-2:#EED6B4;
+    --frozen:#5F7378;--frozen-fill:#E3E8E9;--neck:#96323F;--neck-fill:#F2D9DC;--wire:#93A2A8;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;
+       line-height:1.6;margin:0;padding:0 clamp(14px,3vw,40px) 110px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto}
+
+  header{padding:clamp(36px,6vw,68px) 0 26px;border-bottom:2px solid var(--ink)}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+           color:var(--ink-3);margin:0 0 16px}
+  h1{font-size:clamp(28px,5vw,46px);line-height:1.03;letter-spacing:-.025em;font-weight:700;
+     margin:0 0 12px;text-wrap:balance}
+  .standfirst{font-size:clamp(15px,1.6vw,17.5px);color:var(--ink-2);max-width:64ch;margin:0}
+
+  .legend{display:flex;flex-wrap:wrap;gap:9px;margin:24px 0 0;padding:0;list-style:none}
+  .legend li{font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:2px;
+             border:1px solid;display:flex;align-items:center;gap:7px}
+  .legend .sw{width:9px;height:9px;border-radius:1px}
+  .Ls{color:var(--slow);border-color:var(--slow)}   .Ls .sw{background:var(--slow)}
+  .Lf{color:var(--fast);border-color:var(--fast)}   .Lf .sw{background:var(--fast)}
+  .Lz{color:var(--frozen);border-color:var(--frozen)} .Lz .sw{background:var(--frozen)}
+  .Ln{color:var(--neck);border-color:var(--neck)}   .Ln .sw{background:var(--neck)}
+
+  section{margin-top:clamp(44px,6vw,66px)}
+  h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+     color:var(--ink-3);font-weight:500;margin:0 0 14px;padding-bottom:10px;
+     border-bottom:1px solid var(--rule)}
+  h2 .n{color:var(--ink);margin-right:12px}
+  .lede{color:var(--ink-2);max-width:70ch;margin:0 0 8px}
+
+  figure{margin:22px 0 0;background:var(--paper-2);border:1px solid var(--rule);border-radius:4px}
+  .scroll{overflow-x:auto;padding:20px 20px 8px}
+  figcaption{font-size:13px;color:var(--ink-2);padding:12px 20px 16px;border-top:1px solid var(--rule-2);
+             margin-top:8px}
+  figcaption b{color:var(--ink);font-weight:600}
+  .hint{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);letter-spacing:.08em;
+        text-transform:uppercase;padding:0 20px 14px;display:none}
+  @media(max-width:900px){.hint{display:block}}
+
+  svg{display:block}
+  svg text{font-family:var(--sans);fill:var(--ink)}
+  .t-name{font-size:14px;font-weight:650;letter-spacing:-.01em}
+  .t-sub {font-size:11.5px;font-family:var(--mono);fill:var(--ink-2)}
+  .t-dim {font-size:11px;font-family:var(--mono);fill:var(--ink-3)}
+  .t-wire{font-size:11px;font-family:var(--mono);fill:var(--ink-2)}
+  .t-band{font-size:11px;font-family:var(--mono);letter-spacing:.14em;font-weight:600}
+  .t-big {font-size:17px;font-weight:700;letter-spacing:-.01em}
+  .t-tiny{font-size:9.5px;font-family:var(--mono);fill:var(--ink-3)}
+  .wire{stroke:var(--wire);stroke-width:1.6;fill:none}
+  .wire-d{stroke:var(--neck);stroke-width:1.6;fill:none;stroke-dasharray:5 4}
+  .plate{stroke-width:1}
+
+  code.inl{font-family:var(--mono);font-size:.875em;background:var(--rule-2);padding:1.5px 5px;border-radius:2px}
+  .callout{border:1px solid var(--rule);border-left:3px solid var(--neck);background:var(--paper-2);
+           border-radius:3px;padding:15px 18px;margin-top:22px}
+  .callout .ct{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+               color:var(--neck);margin:0 0 7px;font-weight:600}
+  .callout p{margin:0;color:var(--ink-2);font-size:14px}
+  .callout p+p{margin-top:9px}
+  .callout b{color:var(--ink);font-weight:600}
+
+  footer{margin-top:66px;padding-top:18px;border-top:1px solid var(--rule);
+         font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+  a{color:var(--slow)}
+  :focus-visible{outline:2px solid var(--slow);outline-offset:2px}
+
+  .pagenav{display:flex;gap:10px;align-items:center;margin:0 0 20px;flex-wrap:wrap}
+  .pagenav a,.pagenav button{font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+      text-transform:uppercase;padding:5px 12px;border-radius:2px;border:1px solid var(--rule);
+      background:var(--paper-2);color:var(--ink-2);text-decoration:none;cursor:pointer;
+      line-height:1.6}
+  .pagenav a:hover,.pagenav button:hover{border-color:var(--ink-3);color:var(--ink)}
+  .pagenav a[aria-current="page"]{border-color:var(--ink);color:var(--ink);font-weight:600}
+  .pagenav .sep{color:var(--rule);font-size:11px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="pagenav">
+  <a href="visual.en.html" aria-current="page">Diagrams</a>
+  <a href="reference.en.html">Full reference</a>
+  <span class="sep">|</span>
+  <a href="visual.en.html" aria-current="page">EN</a>
+  <a href="visual.tr.html">TR</a>
+  <span class="sep">|</span>
+  <button id="themebtn" type="button">Theme</button>
+</nav>
+
+<header>
+  <p class="eyebrow">Architecture · layer by layer</p>
+  <h1>TIC-VLA, drawn</h1>
+  <p class="standfirst">
+    Every block below is a real module with the shape the code gives it. The slow branch runs
+    once per plan and leaves a 128-dimensional trace; the fast branch reads that trace thirty
+    times a second. Where they meet is deliberately narrow — that narrowness is the design.
+  </p>
+  <ul class="legend">
+    <li class="Ls"><span class="sw"></span>slow · VLM</li>
+    <li class="Lf"><span class="sw"></span>fast · action expert</li>
+    <li class="Lz"><span class="sw"></span>frozen · no gradient</li>
+    <li class="Ln"><span class="sw"></span>the bottleneck</li>
+  </ul>
+</header>
+
+<!-- ============================== FIG 1 ============================== -->
+<section>
+  <h2><span class="n">01</span> The whole network</h2>
+  <p class="lede">
+    Read row 1 left→right, then drop to row 2. Numbers on the wires are the actual tensors.
+  </p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1500 884" width="1460" role="img"
+         aria-label="Full TIC-VLA dataflow: delayed frames through InternViT, pixel shuffle, mlp1 projector and Qwen2 language model to a KV-cache bottleneck, then the action expert producing 30 waypoints.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--wire)"/>
+        </marker>
+        <marker id="arn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--neck)"/>
+        </marker>
+      </defs>
+
+      <!-- ================= ROW 1 BAND ================= -->
+      <rect x="0" y="14" width="1500" height="26" rx="3" fill="var(--slow-fill)"/>
+      <text class="t-band" x="16" y="32" fill="var(--slow)">SLOW BRANCH — VLM over DELAYED frames</text>
+      <text class="t-band" x="1484" y="32" fill="var(--slow)" text-anchor="end" style="letter-spacing:.04em">once per plan · ~1.5–2.0 s</text>
+
+      <!-- input frame stack -->
+      <g>
+        <rect x="42" y="196" width="62" height="62" rx="2" fill="var(--frozen-fill)" stroke="var(--frozen)"/>
+        <rect x="32" y="206" width="62" height="62" rx="2" fill="var(--frozen-fill)" stroke="var(--frozen)"/>
+        <rect x="22" y="216" width="62" height="62" rx="2" fill="var(--frozen-fill)" stroke="var(--frozen)"/>
+        <rect x="12" y="226" width="62" height="62" rx="2" fill="var(--paper-2)" stroke="var(--frozen)" stroke-width="1.6"/>
+        <text class="t-name" x="12" y="312">delayed frames</text>
+        <text class="t-dim"  x="12" y="330">448×448×3, 1 tile each</text>
+        <text class="t-dim"  x="12" y="346">τ ~ U(0, min(10s, t))</text>
+      </g>
+      <line class="wire" x1="110" y1="257" x2="152" y2="257" marker-end="url(#ar)"/>
+
+      <!-- InternViT: 24 plates -->
+      <g>
+        <rect x="158" y="150" width="104" height="214" rx="3" fill="var(--frozen-fill)" stroke="var(--frozen)" stroke-width="1.6"/>
+        <g stroke="var(--frozen)" class="plate" opacity="0.5">
+          <line x1="166" y1="164" x2="254" y2="164"/><line x1="166" y1="172" x2="254" y2="172"/>
+          <line x1="166" y1="180" x2="254" y2="180"/><line x1="166" y1="188" x2="254" y2="188"/>
+          <line x1="166" y1="196" x2="254" y2="196"/><line x1="166" y1="204" x2="254" y2="204"/>
+          <line x1="166" y1="212" x2="254" y2="212"/><line x1="166" y1="220" x2="254" y2="220"/>
+          <line x1="166" y1="228" x2="254" y2="228"/><line x1="166" y1="236" x2="254" y2="236"/>
+          <line x1="166" y1="244" x2="254" y2="244"/><line x1="166" y1="252" x2="254" y2="252"/>
+          <line x1="166" y1="260" x2="254" y2="260"/><line x1="166" y1="268" x2="254" y2="268"/>
+          <line x1="166" y1="276" x2="254" y2="276"/><line x1="166" y1="284" x2="254" y2="284"/>
+          <line x1="166" y1="292" x2="254" y2="292"/><line x1="166" y1="300" x2="254" y2="300"/>
+          <line x1="166" y1="308" x2="254" y2="308"/><line x1="166" y1="316" x2="254" y2="316"/>
+          <line x1="166" y1="324" x2="254" y2="324"/><line x1="166" y1="332" x2="254" y2="332"/>
+          <line x1="166" y1="340" x2="254" y2="340"/><line x1="166" y1="348" x2="254" y2="348"/>
+        </g>
+        <rect x="158" y="150" width="104" height="22" rx="3" fill="var(--frozen)" opacity="0.16"/>
+        <text class="t-sub" x="210" y="165" text-anchor="middle" fill="var(--frozen)" style="font-weight:600">FROZEN</text>
+        <text class="t-name" x="210" y="384" text-anchor="middle">InternViT-300M</text>
+        <text class="t-dim"  x="210" y="401" text-anchor="middle">24 × [MHSA 16×64 ‖ FFN 4096]</text>
+        <text class="t-dim"  x="210" y="416" text-anchor="middle">hidden 1024 · patch 14</text>
+        <text class="t-dim"  x="210" y="431" text-anchor="middle">608.0 M params</text>
+      </g>
+      <line class="wire" x1="268" y1="257" x2="312" y2="257" marker-end="url(#ar)"/>
+      <text class="t-wire" x="290" y="246" text-anchor="middle">1025→1024 tok</text>
+      <text class="t-tiny" x="290" y="272" text-anchor="middle">CLS dropped</text>
+
+      <!-- pixel shuffle funnel -->
+      <g>
+        <polygon points="318,158 400,196 400,318 318,356" fill="var(--frozen-fill)" stroke="var(--frozen)" stroke-width="1.6"/>
+        <text class="t-name" x="359" y="384" text-anchor="middle">pixel_shuffle</text>
+        <text class="t-dim"  x="359" y="401" text-anchor="middle">scale 0.5 · v2</text>
+        <text class="t-dim"  x="359" y="416" text-anchor="middle">1024→256 tok</text>
+        <text class="t-dim"  x="359" y="431" text-anchor="middle">1024→4096 dim</text>
+      </g>
+      <line class="wire" x1="406" y1="257" x2="448" y2="257" marker-end="url(#ar)"/>
+      <text class="t-wire" x="427" y="246" text-anchor="middle">(256,4096)</text>
+
+      <!-- mlp1 -->
+      <g>
+        <polygon points="454,196 536,222 536,292 454,318" fill="var(--slow-fill)" stroke="var(--slow)" stroke-width="1.6"/>
+        <text class="t-name" x="495" y="384" text-anchor="middle">mlp1</text>
+        <text class="t-dim"  x="495" y="401" text-anchor="middle">LN → 4096↦896</text>
+        <text class="t-dim"  x="495" y="416" text-anchor="middle">GELU → 896↦896</text>
+        <text class="t-dim"  x="495" y="431" text-anchor="middle">8.97 M params</text>
+      </g>
+      <line class="wire" x1="542" y1="257" x2="584" y2="257" marker-end="url(#ar)"/>
+      <text class="t-wire" x="563" y="246" text-anchor="middle">(256,896)</text>
+
+      <!-- token splice -->
+      <g>
+        <rect x="590" y="230" width="196" height="54" rx="3" fill="var(--paper-2)" stroke="var(--slow)" stroke-width="1.6"/>
+        <rect x="596" y="236" width="42" height="42" rx="2" fill="var(--slow-fill-2)" stroke="var(--slow)" stroke-width=".8"/>
+        <rect x="642" y="236" width="42" height="42" rx="2" fill="var(--slow-fill-2)" stroke="var(--slow)" stroke-width=".8"/>
+        <rect x="688" y="236" width="42" height="42" rx="2" fill="var(--slow-fill-2)" stroke="var(--slow)" stroke-width=".8"/>
+        <rect x="734" y="236" width="46" height="42" rx="2" fill="var(--rule-2)" stroke="var(--slow)" stroke-width=".8"/>
+        <text class="t-tiny" x="617" y="261" text-anchor="middle">256</text>
+        <text class="t-tiny" x="663" y="261" text-anchor="middle">256</text>
+        <text class="t-tiny" x="709" y="261" text-anchor="middle">256</text>
+        <text class="t-tiny" x="757" y="261" text-anchor="middle">text</text>
+        <text class="t-name" x="688" y="384" text-anchor="middle">token splice</text>
+        <text class="t-dim"  x="688" y="401" text-anchor="middle">&lt;img&gt; + &lt;IMG_CONTEXT&gt;×256 + &lt;/img&gt;</text>
+        <text class="t-dim"  x="688" y="416" text-anchor="middle">per image · left padding</text>
+      </g>
+      <line class="wire" x1="792" y1="257" x2="834" y2="257" marker-end="url(#ar)"/>
+      <text class="t-wire" x="813" y="246" text-anchor="middle">(B,N)</text>
+
+      <!-- Qwen2 LM: 24 plates -->
+      <g>
+        <rect x="840" y="132" width="112" height="250" rx="3" fill="var(--slow-fill)" stroke="var(--slow)" stroke-width="1.6"/>
+        <g stroke="var(--slow)" class="plate" opacity="0.45">
+          <line x1="848" y1="150" x2="944" y2="150"/><line x1="848" y1="160" x2="944" y2="160"/>
+          <line x1="848" y1="170" x2="944" y2="170"/><line x1="848" y1="180" x2="944" y2="180"/>
+          <line x1="848" y1="190" x2="944" y2="190"/><line x1="848" y1="200" x2="944" y2="200"/>
+          <line x1="848" y1="210" x2="944" y2="210"/><line x1="848" y1="220" x2="944" y2="220"/>
+          <line x1="848" y1="230" x2="944" y2="230"/><line x1="848" y1="240" x2="944" y2="240"/>
+          <line x1="848" y1="250" x2="944" y2="250"/><line x1="848" y1="260" x2="944" y2="260"/>
+          <line x1="848" y1="270" x2="944" y2="270"/><line x1="848" y1="280" x2="944" y2="280"/>
+          <line x1="848" y1="290" x2="944" y2="290"/><line x1="848" y1="300" x2="944" y2="300"/>
+          <line x1="848" y1="310" x2="944" y2="310"/><line x1="848" y1="320" x2="944" y2="320"/>
+          <line x1="848" y1="330" x2="944" y2="330"/><line x1="848" y1="340" x2="944" y2="340"/>
+          <line x1="848" y1="350" x2="944" y2="350"/><line x1="848" y1="360" x2="944" y2="360"/>
+        </g>
+        <line x1="848" y1="370" x2="944" y2="370" stroke="var(--neck)" stroke-width="2.5"/>
+        <text class="t-tiny" x="960" y="374" fill="var(--neck)">layer 24 ← the only one kept</text>
+        <text class="t-name" x="896" y="404" text-anchor="middle">Qwen2-0.5B</text>
+        <text class="t-dim"  x="896" y="421" text-anchor="middle">24 × [GQA 14q/2kv×64 ‖ SwiGLU 4864]</text>
+        <text class="t-dim"  x="896" y="436" text-anchor="middle">hidden 896 · RoPE θ=1e6 · 1.26 B</text>
+      </g>
+
+      <!-- LM → logits (up) -->
+      <path class="wire" d="M952,170 L1010,170" marker-end="url(#ar)"/>
+      <g>
+        <rect x="1016" y="140" width="180" height="60" rx="3" fill="var(--paper-2)" stroke="var(--neck)" stroke-width="1.6"/>
+        <text class="t-name" x="1106" y="165" text-anchor="middle" fill="var(--neck)">language loss</text>
+        <text class="t-dim"  x="1106" y="184" text-anchor="middle">stage 1 only · CE</text>
+      </g>
+      <text class="t-wire" x="981" y="160" text-anchor="middle">logits</text>
+
+      <!-- LM → KV cache (down) -->
+      <path class="wire" d="M952,300 L1010,300" marker-end="url(#ar)"/>
+      <text class="t-wire" x="981" y="290" text-anchor="middle">cache</text>
+
+      <!-- KV cache stack: 24 layers, last highlighted, K|V split -->
+      <g>
+        <rect x="1016" y="228" width="180" height="150" rx="3" fill="var(--paper-2)" stroke="var(--rule)"/>
+        <text class="t-tiny" x="1024" y="244">past_key_values · 24 layers</text>
+        <g>
+          <rect x="1024" y="252" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="252" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="262" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="262" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="272" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="272" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="282" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="282" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="292" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="292" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="302" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="302" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="312" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="312" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="322" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="322" width="78" height="7" fill="var(--slow-fill-2)"/>
+          <rect x="1024" y="332" width="78" height="7" fill="var(--slow-fill-2)"/><rect x="1108" y="332" width="78" height="7" fill="var(--slow-fill-2)"/>
+        </g>
+        <!-- last layer, K discarded / V kept -->
+        <rect x="1024" y="346" width="78" height="20" rx="2" fill="var(--rule-2)" stroke="var(--ink-3)" stroke-dasharray="3 2"/>
+        <rect x="1108" y="346" width="78" height="20" rx="2" fill="var(--neck-fill)" stroke="var(--neck)" stroke-width="1.8"/>
+        <text class="t-tiny" x="1063" y="360" text-anchor="middle">K · dropped</text>
+        <text class="t-tiny" x="1147" y="360" text-anchor="middle" fill="var(--neck)" style="font-weight:700">V · kept</text>
+        <text class="t-name" x="1106" y="404" text-anchor="middle">the hand-off</text>
+        <text class="t-dim"  x="1106" y="421" text-anchor="middle">last layer only, values only</text>
+        <text class="t-dim"  x="1106" y="436" text-anchor="middle">(B,2,L,64) → (B,L,128)</text>
+      </g>
+
+      <path class="wire-d" d="M1202,356 L1252,356" marker-end="url(#arn)"/>
+
+      <!-- model state output -->
+      <g>
+        <rect x="1258" y="330" width="120" height="52" rx="3" fill="var(--neck-fill)" stroke="var(--neck)" stroke-width="2"/>
+        <text class="t-sub" x="1318" y="352" text-anchor="middle" fill="var(--neck)" style="font-weight:700">model state</text>
+        <text class="t-dim" x="1318" y="370" text-anchor="middle" fill="var(--neck)">(B, L, 128)</text>
+      </g>
+      <text class="t-tiny" x="1318" y="404" text-anchor="middle" fill="var(--neck)">1/24 of the cache,</text>
+      <text class="t-tiny" x="1318" y="418" text-anchor="middle" fill="var(--neck)">half of that layer</text>
+      <text class="t-tiny" x="1318" y="436" text-anchor="middle" fill="var(--neck)">· .detach() ·</text>
+
+      <!-- serpentine connector down to row 2 -->
+      <path class="wire-d" d="M1318,446 L1318,486 L60,486 L60,556" marker-end="url(#arn)"/>
+      <text class="t-tiny" x="700" y="478" text-anchor="middle" fill="var(--neck)">carried to the fast branch — the ONLY thing that crosses</text>
+
+      <!-- gradient barrier -->
+      <g>
+        <line x1="1234" y1="120" x2="1234" y2="466" stroke="var(--neck)" stroke-width="1.2" stroke-dasharray="2 5" opacity=".8"/>
+        <text class="t-tiny" x="1240" y="132" fill="var(--neck)">gradient barrier</text>
+      </g>
+
+      <!-- ================= ROW 2 BAND ================= -->
+      <rect x="0" y="512" width="1500" height="26" rx="3" fill="var(--fast-fill)"/>
+      <text class="t-band" x="16" y="530" fill="var(--fast)">FAST BRANCH — ActionExpert over the CURRENT frame · 10.27 M params</text>
+      <text class="t-band" x="1484" y="530" fill="var(--fast)" text-anchor="end" style="letter-spacing:.04em">10 Hz · 30 steps = 3.0 s</text>
+
+      <!-- three input sources -->
+      <g>
+        <!-- model state (arrives from row 1) -->
+        <rect x="14" y="560" width="150" height="46" rx="3" fill="var(--neck-fill)" stroke="var(--neck)" stroke-width="1.6"/>
+        <text class="t-sub" x="89" y="580" text-anchor="middle" fill="var(--neck)">model state</text>
+        <text class="t-dim" x="89" y="597" text-anchor="middle" fill="var(--neck)">(B, L, 128)</text>
+
+        <!-- current frame -->
+        <rect x="14" y="628" width="150" height="46" rx="3" fill="var(--frozen-fill)" stroke="var(--frozen)" stroke-width="1.6"/>
+        <text class="t-sub" x="89" y="648" text-anchor="middle">current frame</text>
+        <text class="t-dim" x="89" y="665" text-anchor="middle">ViT+mlp1, no_grad</text>
+        <text class="t-tiny" x="89" y="690" text-anchor="middle">(B, 256, 896) · front-padded</text>
+
+        <!-- robot state: six cells -->
+        <rect x="14" y="712" width="150" height="46" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.6"/>
+        <g>
+          <rect x="20" y="718" width="22" height="20" rx="1.5" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width=".7"/>
+          <rect x="44" y="718" width="22" height="20" rx="1.5" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width=".7"/>
+          <rect x="68" y="718" width="22" height="20" rx="1.5" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width=".7"/>
+          <rect x="92" y="718" width="22" height="20" rx="1.5" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width=".7"/>
+          <rect x="116" y="718" width="22" height="20" rx="1.5" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width=".7"/>
+          <rect x="140" y="718" width="20" height="20" rx="1.5" fill="var(--neck-fill)" stroke="var(--neck)" stroke-width="1"/>
+          <text class="t-tiny" x="31" y="732" text-anchor="middle">vx</text>
+          <text class="t-tiny" x="55" y="732" text-anchor="middle">vy</text>
+          <text class="t-tiny" x="79" y="732" text-anchor="middle">ẇ</text>
+          <text class="t-tiny" x="103" y="732" text-anchor="middle">dx</text>
+          <text class="t-tiny" x="127" y="732" text-anchor="middle">dy</text>
+          <text class="t-tiny" x="150" y="732" text-anchor="middle" fill="var(--neck)">τ</text>
+        </g>
+        <text class="t-dim" x="89" y="752" text-anchor="middle">(B, 6, 1) — one scalar per token</text>
+      </g>
+
+      <!-- projections -->
+      <line class="wire" x1="170" y1="583" x2="212" y2="583" marker-end="url(#ar)"/>
+      <line class="wire" x1="170" y1="651" x2="212" y2="651" marker-end="url(#ar)"/>
+      <line class="wire" x1="170" y1="735" x2="212" y2="735" marker-end="url(#ar)"/>
+      <g>
+        <polygon points="218,562 292,572 292,594 218,604" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.4"/>
+        <text class="t-tiny" x="255" y="586" text-anchor="middle">128↦512</text>
+        <text class="t-tiny" x="255" y="620" text-anchor="middle">kv_cache_proj</text>
+        <text class="t-tiny" x="255" y="632" text-anchor="middle">+ tok-dropout .1</text>
+
+        <polygon points="218,630 292,640 292,662 218,672" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.4"/>
+        <text class="t-tiny" x="255" y="654" text-anchor="middle">896↦512</text>
+        <text class="t-tiny" x="255" y="688" text-anchor="middle">down_proj</text>
+
+        <polygon points="218,714 292,724 292,746 218,756" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.4"/>
+        <text class="t-tiny" x="255" y="738" text-anchor="middle">1↦256↦512</text>
+        <text class="t-tiny" x="255" y="772" text-anchor="middle">state_encoder + pos</text>
+        <text class="t-tiny" x="255" y="784" text-anchor="middle">Emb(16,512), drop .5</text>
+      </g>
+
+      <!-- concat context bar -->
+      <line class="wire" x1="298" y1="583" x2="342" y2="600" marker-end="url(#ar)"/>
+      <line class="wire" x1="298" y1="651" x2="342" y2="660" marker-end="url(#ar)"/>
+      <line class="wire" x1="298" y1="735" x2="342" y2="716" marker-end="url(#ar)"/>
+      <g>
+        <rect x="348" y="556" width="96" height="210" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.8"/>
+        <rect x="354" y="562" width="84" height="66" rx="2" fill="var(--neck-fill)" stroke="var(--neck)" stroke-width="1"/>
+        <rect x="354" y="632" width="84" height="86" rx="2" fill="var(--fast-fill-2)" stroke="var(--fast)" stroke-width=".8"/>
+        <rect x="354" y="722" width="84" height="38" rx="2" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width=".8"/>
+        <text class="t-tiny" x="396" y="590" text-anchor="middle" fill="var(--neck)">kv</text>
+        <text class="t-tiny" x="396" y="604" text-anchor="middle" fill="var(--neck)">L×512</text>
+        <text class="t-tiny" x="396" y="670" text-anchor="middle">image</text>
+        <text class="t-tiny" x="396" y="684" text-anchor="middle">256×512</text>
+        <text class="t-tiny" x="396" y="738" text-anchor="middle">state</text>
+        <text class="t-tiny" x="396" y="752" text-anchor="middle">6×512</text>
+        <text class="t-name" x="396" y="790" text-anchor="middle">context</text>
+        <text class="t-dim"  x="396" y="807" text-anchor="middle">(B, L+262, 512)</text>
+        <text class="t-tiny" x="396" y="823" text-anchor="middle">K and V for every layer</text>
+      </g>
+
+      <!-- queries from above -->
+      <g>
+        <rect x="512" y="556" width="150" height="44" rx="3" fill="var(--fast-fill-2)" stroke="var(--fast)" stroke-width="1.6"/>
+        <text class="t-sub"  x="587" y="575" text-anchor="middle">action_chunk_embed</text>
+        <text class="t-dim"  x="587" y="592" text-anchor="middle">Embedding(30, 512)</text>
+        <text class="t-tiny" x="587" y="616" text-anchor="middle">30 learned queries · no input from the scene</text>
+      </g>
+      <path class="wire" d="M587,632 L587,656" marker-end="url(#ar)"/>
+      <text class="t-wire" x="600" y="648">Q</text>
+
+      <!-- 3 cross-attention blocks -->
+      <g>
+        <rect x="500" y="660" width="174" height="122" rx="4" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.8"/>
+        <text class="t-tiny" x="510" y="676">× 3 identical blocks</text>
+        <rect x="512" y="684" width="150" height="26" rx="2" fill="var(--paper-2)" stroke="var(--fast)" stroke-width=".9"/>
+        <text class="t-tiny" x="587" y="700" text-anchor="middle">cross-attn · 8 heads × 64</text>
+        <text class="t-tiny" x="587" y="722" text-anchor="middle">↓ x = norm1(x + drop(attn))</text>
+        <rect x="512" y="728" width="150" height="26" rx="2" fill="var(--paper-2)" stroke="var(--fast)" stroke-width=".9"/>
+        <text class="t-tiny" x="587" y="744" text-anchor="middle">FFN 512→2048→512</text>
+        <text class="t-tiny" x="587" y="768" text-anchor="middle">↓ x = norm2(x + drop(ffn))</text>
+      </g>
+      <path class="wire" d="M450,661 L494,690" marker-end="url(#ar)"/>
+      <text class="t-wire" x="452" y="684">K,V</text>
+
+      <line class="wire" x1="680" y1="721" x2="724" y2="721" marker-end="url(#ar)"/>
+      <text class="t-wire" x="702" y="711" text-anchor="middle">(B,30,512)</text>
+
+      <!-- head -->
+      <g>
+        <polygon points="730,676 806,694 806,748 730,766" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.6"/>
+        <text class="t-tiny" x="768" y="714" text-anchor="middle">512↦256</text>
+        <text class="t-tiny" x="768" y="728" text-anchor="middle">ELU ↦2</text>
+        <text class="t-name" x="768" y="790" text-anchor="middle">mlp head</text>
+      </g>
+      <line class="wire" x1="812" y1="721" x2="856" y2="721" marker-end="url(#ar)"/>
+
+      <!-- output waypoints -->
+      <g>
+        <rect x="862" y="600" width="300" height="200" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.8"/>
+        <text class="t-name" x="878" y="624">waypoints (B, 30, 2)</text>
+        <text class="t-dim"  x="878" y="642">cumulative [dx, dy], FLU, 0.1 s apart</text>
+        <!-- axis -->
+        <line x1="896" y1="770" x2="1146" y2="770" stroke="var(--rule)" stroke-width="1"/>
+        <line x1="896" y1="770" x2="896" y2="660" stroke="var(--rule)" stroke-width="1"/>
+        <text class="t-tiny" x="1140" y="786" text-anchor="end">x forward →</text>
+        <text class="t-tiny" x="902" y="666">↑ y left</text>
+        <!-- 30 waypoints on a gentle left arc -->
+        <g fill="var(--fast)">
+          <circle cx="904" cy="769" r="2.6"/><circle cx="912" cy="768" r="2.6"/><circle cx="920" cy="767" r="2.6"/>
+          <circle cx="928" cy="766" r="2.6"/><circle cx="936" cy="764" r="2.6"/><circle cx="944" cy="762" r="2.6"/>
+          <circle cx="952" cy="760" r="2.6"/><circle cx="960" cy="757" r="2.6"/><circle cx="968" cy="754" r="2.6"/>
+          <circle cx="976" cy="751" r="2.6"/><circle cx="985" cy="747" r="2.6"/><circle cx="993" cy="743" r="2.6"/>
+          <circle cx="1001" cy="739" r="2.6"/><circle cx="1009" cy="734" r="2.6"/><circle cx="1018" cy="729" r="2.6"/>
+          <circle cx="1026" cy="724" r="2.6"/><circle cx="1034" cy="719" r="2.6"/><circle cx="1043" cy="713" r="2.6"/>
+          <circle cx="1051" cy="707" r="2.6"/><circle cx="1059" cy="701" r="2.6"/><circle cx="1068" cy="695" r="2.6"/>
+          <circle cx="1076" cy="688" r="2.6"/><circle cx="1084" cy="682" r="2.6"/><circle cx="1093" cy="675" r="2.6"/>
+          <circle cx="1101" cy="668" r="2.6"/><circle cx="1109" cy="661" r="2.6"/><circle cx="1118" cy="653" r="2.6"/>
+          <circle cx="1126" cy="646" r="2.6"/><circle cx="1134" cy="638" r="2.6"/><circle cx="1143" cy="630" r="3.6"/>
+        </g>
+        <text class="t-tiny" x="1152" y="634" fill="var(--fast)">t = 3.0 s</text>
+        <text class="t-tiny" x="878" y="790">all 30 decoded in parallel — step 30 never sees step 29</text>
+      </g>
+
+      <!-- action loss -->
+      <path class="wire" d="M1168,700 L1216,700" marker-end="url(#ar)"/>
+      <g>
+        <rect x="1222" y="660" width="180" height="80" rx="3" fill="var(--paper-2)" stroke="var(--neck)" stroke-width="1.8"/>
+        <text class="t-name" x="1312" y="684" text-anchor="middle" fill="var(--neck)">action loss</text>
+        <text class="t-dim"  x="1312" y="703" text-anchor="middle">smooth_l1(pred, target)</text>
+        <text class="t-dim"  x="1312" y="720" text-anchor="middle">Huber β=1 · mean</text>
+        <text class="t-tiny" x="1312" y="734" text-anchor="middle">total_loss = action_loss</text>
+      </g>
+      <text class="t-tiny" x="1312" y="762" text-anchor="middle">the entire stage-2 objective</text>
+
+      <!-- backprop arrow, showing where it stops -->
+      <path class="wire-d" d="M1222,772 L500,772" marker-end="url(#arn)" opacity=".75"/>
+      <text class="t-tiny" x="880" y="766" text-anchor="middle" fill="var(--neck)">∇ reaches only these 10.27 M parameters, and stops at the context bar</text>
+
+      <!-- footer note strip -->
+      <text class="t-tiny" x="14" y="866" fill="var(--ink-3)">Every shape, width and count on this page is read from the source and checked against the 50 action-expert tensors in TIC-VLA-model.ckpt.</text>
+    </svg>
+    </div>
+    <p class="hint">← scroll the diagram sideways →</p>
+    <figcaption>
+      <b>The shape of the design is the narrow red box.</b> A 1.9 B-parameter model is consulted,
+      and what survives into the controller is one layer's values — <b>(B, L, 128)</b> — detached.
+      Everything the VLM knows has to fit through that, and no action error ever flows back the
+      other way.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================== FIG 2 ============================== -->
+<section>
+  <h2><span class="n">02</span> Inside one cross-attention block</h2>
+  <p class="lede">
+    Three of these, stacked, are the entire controller. Post-norm, cross-attention only —
+    the 30 queries never attend to each other, so the plan's smoothness is whatever the
+    shared context implies.
+  </p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1020 560" width="1000" role="img"
+         aria-label="Detail of one CrossAttentionTransformer block: fused QKV projection, 8-head attention, residual plus LayerNorm, feed-forward 512 to 2048 to 512, second residual plus LayerNorm.">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--wire)"/>
+        </marker>
+      </defs>
+
+      <!-- inputs -->
+      <rect x="20" y="60" width="150" height="46" rx="3" fill="var(--fast-fill-2)" stroke="var(--fast)" stroke-width="1.6"/>
+      <text class="t-sub" x="95" y="80" text-anchor="middle">queries  x</text>
+      <text class="t-dim" x="95" y="97" text-anchor="middle">(B, 30, 512)</text>
+
+      <rect x="20" y="300" width="150" height="60" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.6"/>
+      <text class="t-sub" x="95" y="322" text-anchor="middle">context</text>
+      <text class="t-dim" x="95" y="339" text-anchor="middle">(B, L+262, 512)</text>
+      <text class="t-tiny" x="95" y="354" text-anchor="middle">kv ‖ image ‖ state</text>
+
+      <!-- fused in_proj -->
+      <line class="wire" x1="176" y1="83" x2="222" y2="83" marker-end="url(#ar2)"/>
+      <line class="wire" x1="176" y1="330" x2="222" y2="330" marker-end="url(#ar2)"/>
+      <rect x="228" y="60" width="120" height="300" rx="3" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.6"/>
+      <text class="t-sub"  x="288" y="196" text-anchor="middle">in_proj</text>
+      <text class="t-dim"  x="288" y="214" text-anchor="middle">(1536, 512)</text>
+      <text class="t-tiny" x="288" y="232" text-anchor="middle">Q ‖ K ‖ V fused</text>
+      <text class="t-tiny" x="288" y="80" text-anchor="middle">→ Q</text>
+      <text class="t-tiny" x="288" y="326" text-anchor="middle">→ K, V</text>
+
+      <!-- attention -->
+      <line class="wire" x1="354" y1="200" x2="400" y2="200" marker-end="url(#ar2)"/>
+      <rect x="406" y="140" width="170" height="120" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.8"/>
+      <text class="t-name" x="491" y="166" text-anchor="middle">MultiheadAttention</text>
+      <text class="t-dim"  x="491" y="186" text-anchor="middle">embed 512 · 8 heads × 64</text>
+      <text class="t-dim"  x="491" y="203" text-anchor="middle">dropout 0.1 · batch_first</text>
+      <text class="t-dim"  x="491" y="228" text-anchor="middle">out_proj (512, 512)</text>
+      <text class="t-tiny" x="491" y="248" text-anchor="middle">no causal mask — all 30 see all context</text>
+
+      <!-- residual 1 -->
+      <line class="wire" x1="582" y1="200" x2="622" y2="200" marker-end="url(#ar2)"/>
+      <circle cx="644" cy="200" r="18" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.8"/>
+      <text class="t-big" x="644" y="207" text-anchor="middle" fill="var(--fast)">+</text>
+      <path class="wire" d="M95,112 L95,200 L622,200" marker-end="url(#ar2)" opacity=".8"/>
+      <text class="t-tiny" x="350" y="192" fill="var(--ink-3)">residual — the query stream, carried around the attention</text>
+
+      <line class="wire" x1="664" y1="200" x2="700" y2="200" marker-end="url(#ar2)"/>
+      <rect x="706" y="176" width="110" height="48" rx="3" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.6"/>
+      <text class="t-sub" x="761" y="196" text-anchor="middle">norm1</text>
+      <text class="t-dim" x="761" y="213" text-anchor="middle">LayerNorm(512)</text>
+
+      <!-- down to FFN -->
+      <path class="wire" d="M761,230 L761,282 L200,282 L200,340" marker-end="url(#ar2)"/>
+      <text class="t-tiny" x="480" y="276" text-anchor="middle" fill="var(--ink-3)">post-norm: normalise AFTER the residual, not before</text>
+
+      <!-- FFN -->
+      <rect x="128" y="400" width="150" height="46" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.4"/>
+      <text class="t-sub" x="203" y="420" text-anchor="middle">Linear 512→2048</text>
+      <text class="t-dim" x="203" y="437" text-anchor="middle">ffn.0</text>
+      <line class="wire" x1="284" y1="423" x2="322" y2="423" marker-end="url(#ar2)"/>
+      <rect x="328" y="400" width="90" height="46" rx="3" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.4"/>
+      <text class="t-sub" x="373" y="428" text-anchor="middle">GELU</text>
+      <line class="wire" x1="424" y1="423" x2="462" y2="423" marker-end="url(#ar2)"/>
+      <rect x="468" y="400" width="106" height="46" rx="3" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.4"/>
+      <text class="t-sub" x="521" y="428" text-anchor="middle">Dropout 0.1</text>
+      <line class="wire" x1="580" y1="423" x2="618" y2="423" marker-end="url(#ar2)"/>
+      <rect x="624" y="400" width="150" height="46" rx="3" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.4"/>
+      <text class="t-sub" x="699" y="420" text-anchor="middle">Linear 2048→512</text>
+      <text class="t-dim" x="699" y="437" text-anchor="middle">ffn.3</text>
+
+      <!-- residual 2 -->
+      <line class="wire" x1="780" y1="423" x2="818" y2="423" marker-end="url(#ar2)"/>
+      <circle cx="840" cy="423" r="18" fill="var(--paper-2)" stroke="var(--fast)" stroke-width="1.8"/>
+      <text class="t-big" x="840" y="430" text-anchor="middle" fill="var(--fast)">+</text>
+      <path class="wire" d="M816,200 L880,200 L880,360 L840,360 L840,401" marker-end="url(#ar2)" opacity=".8"/>
+
+      <line class="wire" x1="840" y1="443" x2="840" y2="476" marker-end="url(#ar2)"/>
+      <rect x="762" y="482" width="156" height="46" rx="3" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.6"/>
+      <text class="t-sub" x="840" y="502" text-anchor="middle">norm2</text>
+      <text class="t-dim" x="840" y="519" text-anchor="middle">LayerNorm(512)</text>
+      <text class="t-tiny" x="936" y="508">→ (B, 30, 512)</text>
+
+      <!-- param tally -->
+      <rect x="20" y="482" width="330" height="46" rx="3" fill="var(--paper-2)" stroke="var(--rule)"/>
+      <text class="t-tiny" x="34" y="500">per block: in_proj 786 k · out_proj 262 k · FFN 2.10 M</text>
+      <text class="t-tiny" x="34" y="516">3 blocks = 9.45 M of the action expert's 10.27 M</text>
+    </svg>
+    </div>
+    <p class="hint">← scroll the diagram sideways →</p>
+    <figcaption>
+      The feed-forward is where the parameters actually live: <b>2.10 M of the 3.15 M per block</b>,
+      and the three blocks together are <b>92 %</b> of the whole action expert.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ============================== FIG 3 ============================== -->
+<section>
+  <h2><span class="n">03</span> Two stages, two losses, no bridge</h2>
+  <p class="lede">
+    There is no joint objective anywhere in the codebase — no weighted sum, no alternating
+    schedule. This diagram is what trains, and what does not.
+  </p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1020 420" width="1000" role="img"
+         aria-label="Two training stages side by side: stage 1 trains the projector and language model on a cross-entropy loss; stage 2 trains only the action expert on a smooth L1 loss, with three separate gradient barriers between them.">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--neck)"/>
+        </marker>
+      </defs>
+
+      <!-- stage 1 -->
+      <rect x="20" y="20" width="450" height="366" rx="4" fill="none" stroke="var(--slow)" stroke-width="1.4"/>
+      <rect x="20" y="20" width="450" height="30" rx="4" fill="var(--slow-fill)"/>
+      <text class="t-band" x="36" y="40" fill="var(--slow)">STAGE 1 — VLM</text>
+      <text class="t-tiny" x="454" y="40" text-anchor="end" fill="var(--slow)">1 268 361 472 params trained</text>
+
+      <rect x="44" y="72" width="180" height="40" rx="3" fill="var(--frozen-fill)" stroke="var(--frozen)"/>
+      <text class="t-sub" x="134" y="88" text-anchor="middle">InternViT</text>
+      <text class="t-tiny" x="134" y="104" text-anchor="middle">frozen · explicit loop</text>
+
+      <rect x="44" y="126" width="180" height="34" rx="3" fill="var(--slow-fill)" stroke="var(--slow)" stroke-width="1.5"/>
+      <text class="t-sub" x="134" y="147" text-anchor="middle">mlp1 — trained</text>
+
+      <rect x="44" y="174" width="180" height="34" rx="3" fill="var(--slow-fill)" stroke="var(--slow)" stroke-width="1.5"/>
+      <text class="t-sub" x="134" y="195" text-anchor="middle">Qwen2-0.5B — trained</text>
+
+      <rect x="44" y="230" width="404" height="136" rx="3" fill="var(--paper-2)" stroke="var(--neck)" stroke-width="1.6"/>
+      <text class="t-sub"  x="58" y="252" fill="var(--neck)">cross-entropy on the answer turn only</text>
+      <text class="t-dim"  x="58" y="272">labels[:, :first('assistant')] = −100</text>
+      <text class="t-dim"  x="58" y="292">&lt;think&gt;CoT&lt;/think&gt;</text>
+      <text class="t-dim"  x="58" y="310">&lt;answer&gt;(x,y,θ)×3&lt;/answer&gt;</text>
+      <text class="t-tiny" x="58" y="330">targets at 3 s / 6 s / 9 s — indices 29, 59, 89 at 10 Hz</text>
+      <text class="t-tiny" x="58" y="346">θ = atan2(y, x+1e−3) — the pair's own bearing, carries nothing new</text>
+      <text class="t-tiny" x="58" y="360">AdamW lr 1e−4 · wd 1e−5 · warmup 1000 → cosine → 1 %</text>
+
+      <line class="wire" x1="134" y1="116" x2="134" y2="122" marker-end="url(#ar2)"/>
+      <line class="wire" x1="134" y1="164" x2="134" y2="170" marker-end="url(#ar2)"/>
+      <line class="wire" x1="134" y1="212" x2="134" y2="226" marker-end="url(#ar2)"/>
+
+      <!-- the three barriers -->
+      <g>
+        <line x1="492" y1="30" x2="492" y2="376" stroke="var(--neck)" stroke-width="1.6" stroke-dasharray="3 5"/>
+        <rect x="480" y="120" width="24" height="150" rx="3" fill="var(--neck-fill)" stroke="var(--neck)"/>
+        <text class="t-tiny" x="492" y="150" text-anchor="middle" fill="var(--neck)" transform="rotate(-90 492 195)"
+              style="font-weight:700">THREE GRADIENT BARRIERS</text>
+      </g>
+      <text class="t-tiny" x="516" y="300" fill="var(--neck)">1 · requires_grad = False</text>
+      <text class="t-tiny" x="516" y="316" fill="var(--neck)">2 · past_key_values.detach()</text>
+      <text class="t-tiny" x="516" y="332" fill="var(--neck)">3 · extract_feature under no_grad</text>
+
+      <!-- stage 2 -->
+      <rect x="550" y="20" width="450" height="270" rx="4" fill="none" stroke="var(--fast)" stroke-width="1.4"/>
+      <rect x="550" y="20" width="450" height="30" rx="4" fill="var(--fast-fill)"/>
+      <text class="t-band" x="566" y="40" fill="var(--fast)">STAGE 2 — ACTION</text>
+      <text class="t-tiny" x="984" y="40" text-anchor="end" fill="var(--fast)">10 269 954 params trained</text>
+
+      <rect x="574" y="72" width="180" height="40" rx="3" fill="var(--frozen-fill)" stroke="var(--frozen)"/>
+      <text class="t-sub"  x="664" y="88" text-anchor="middle">entire VLM</text>
+      <text class="t-tiny" x="664" y="104" text-anchor="middle">frozen · train_vlm=False</text>
+
+      <rect x="574" y="126" width="180" height="34" rx="3" fill="var(--fast-fill)" stroke="var(--fast)" stroke-width="1.5"/>
+      <text class="t-sub" x="664" y="147" text-anchor="middle">ActionExpert — trained</text>
+
+      <rect x="574" y="176" width="404" height="98" rx="3" fill="var(--paper-2)" stroke="var(--neck)" stroke-width="1.6"/>
+      <text class="t-sub"  x="588" y="198" fill="var(--neck)">smooth_l1_loss(pred, target)</text>
+      <text class="t-dim"  x="588" y="218">Huber β=1.0 · reduction 'mean' · over (B, 30, 2)</text>
+      <text class="t-tiny" x="588" y="236">total_loss = action_loss — nothing else is added</text>
+      <text class="t-tiny" x="588" y="252">ADE / FDE logged, never optimised</text>
+      <text class="t-tiny" x="588" y="268">AdamW lr 2e−4 · wd 1e−5 · bf16-mixed · clip 1.0</text>
+
+      <line class="wire" x1="664" y1="116" x2="664" y2="122" marker-end="url(#ar2)"/>
+      <line class="wire" x1="664" y1="164" x2="664" y2="172" marker-end="url(#ar2)"/>
+
+      <!-- the dropped loss -->
+      <rect x="574" y="310" width="404" height="66" rx="3" fill="var(--neck-fill)" stroke="var(--neck)" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <text class="t-sub"  x="588" y="332" fill="var(--neck)">TICVLA.forward still returns language_loss …</text>
+      <text class="t-tiny" x="588" y="352">… and stage 2's training step never reads it. With the VLM frozen it is</text>
+      <text class="t-tiny" x="588" y="368">a zero tensor, computed and discarded on every batch.</text>
+    </svg>
+    </div>
+    <p class="hint">← scroll the diagram sideways →</p>
+    <figcaption>
+      Stage 1 optimises the language model to write plausible waypoint <b>text</b>. Stage 2
+      optimises the action expert to fit trajectories given a state it cannot influence.
+      Nothing optimises the two together.
+    </figcaption>
+  </figure>
+
+  <div class="callout">
+    <p class="ct">Why this matters for what we measured</p>
+    <p>Whatever steering competence TIC-VLA has was learned by <b>10.27 M parameters reading a
+    frozen 128-dimensional summary</b> — not by the 1.9 B model that produced it. The language
+    model is never once penalised for a trajectory that misses.</p>
+    <p>That is the same wall from the other side. Qwen3.8-27B could not write a positive
+    <code class="inl">y</code> inside an <code class="inl">(x, y)</code> tuple; TIC-VLA does not
+    solve that problem, it <b>routes around</b> it — the lateral sign is never asked of the
+    language model at all. It comes out of a regression head that was fit to real trajectories.</p>
+  </div>
+</section>
+
+<footer>
+  Read from ticvla/models/{ticvla,vlm}.py · ticvla/utils/vision.py · ticvla/data/{policy_data,vlm_data}.py ·
+  ticvla/training/{train,config}.py · InternVL3-1B/config.json · verified against TIC-VLA-model.ckpt.
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn  = document.getElementById('themebtn');
+  var KEY  = 'ticvla-arch-theme';
+  try { var saved = localStorage.getItem(KEY); if (saved) root.setAttribute('data-theme', saved); }
+  catch (e) { /* file:// with storage blocked -- the media query still applies */ }
+  btn.addEventListener('click', function () {
+    var cur = root.getAttribute('data-theme');
+    if (!cur) {
+      cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    var next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

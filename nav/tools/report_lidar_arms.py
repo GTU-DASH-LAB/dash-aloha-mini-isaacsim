@@ -76,19 +76,29 @@ def health(url: str) -> dict | None:
 
 
 def cell(text: str, *, mono: bool = False, bold: bool = False, colour: str = INK,
-         align: str = "left", pad: str = "7px 10px", extra: str = "") -> str:
+         align: str = "left", pad: str = "7px 7px", extra: str = "") -> str:
     font = MONO if mono else SANS
     weight = "600" if bold else "400"
+    # Numeric cells never wrap. At an email's ~700 px a `1.50 m` breaking after the
+    # digits puts the unit on its own line and the column stops reading as a column.
+    nowrap = "white-space:nowrap;" if mono else ""
     return (f'<td style="padding:{pad};font-family:{font};font-size:13px;'
             f'font-weight:{weight};color:{colour};text-align:{align};'
-            f'border-bottom:1px solid {RULE};{extra}">{text}</td>')
+            f'border-bottom:1px solid {RULE};{nowrap}{extra}">{text}</td>')
 
 
 def head_cell(text: str, align: str = "left") -> str:
-    return (f'<th style="padding:6px 10px;font-family:{SANS};font-size:10px;'
+    return (f'<th style="padding:6px 7px;font-family:{SANS};font-size:10px;'
             f'font-weight:600;letter-spacing:0.08em;text-transform:uppercase;'
             f'color:{FAINT};text-align:{align};border-bottom:2px solid {RULE};'
             f'white-space:nowrap;">{escape(text)}</th>')
+
+
+def signed(v: float, places: int = 0) -> str:
+    """`+3`, `-2`, and a bare `0` — never `-0`, which reads as a rounding bug."""
+    if abs(v) < 0.5 / (10 ** places):
+        return "0" if places == 0 else f"{0:.{places}f}"
+    return f"{v:+.{places}f}"
 
 
 def section(title: str, sub: str = "") -> str:
@@ -179,13 +189,16 @@ def build(c, counters: dict | None, when: str) -> str:
         "Episode by episode",
         'Paired, never pooled. "9/19 against 8/19" is equally consistent with nothing '
         'changing and with nine episodes flipping each way; only the join names which '
-        'ones moved. Read <b>flip</b> first and <b>closed</b> second — success is a hard '
-        '1.5&nbsp;m threshold, so a run can improve a long way without flipping, or flip '
-        'on 8&nbsp;cm.'
+        'ones moved. Read <b>flip</b> first and <b>closed</b> second — arrival is a hard '
+        'radius, so a run can improve a long way without flipping, or flip on 8&nbsp;cm.'
     ))
+    # Nine columns is more than a phone has. Clients that honour overflow scroll it;
+    # the ones that do not shrink the table, which is the same outcome they would have
+    # reached anyway -- what neither does is push the page body sideways.
+    P.append('<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">')
     P.append(
         f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%" '
-        f'style="border-collapse:collapse;">'
+        f'style="border-collapse:collapse;min-width:640px;">'
         f'<tr>{head_cell("episode")}{head_cell("goal ≤", "center")}'
         f'{head_cell("was", "center")}'
         f'{head_cell("A " + c.a_label, "center")}{head_cell("B " + c.b_label, "center")}'
@@ -232,7 +245,7 @@ def build(c, counters: dict | None, when: str) -> str:
             + cell(flip_html, align="center", extra=zebra)
             + cell(f"{ca:.0f}%", mono=True, colour=MUTED, align="right", extra=zebra)
             + cell(f"{cb:.0f}%", mono=True, colour=MUTED, align="right", extra=zebra)
-            + cell(f"{d:+.0f}", mono=True, align="right",
+            + cell(signed(d), mono=True, align="right",
                    colour=WIN if d > 1 else LOSS if d < -1 else FAINT, extra=zebra)
             + "</tr>"
         )
@@ -245,15 +258,15 @@ def build(c, counters: dict | None, when: str) -> str:
                extra=f"border-top:2px solid {RULE};")
         + cell(f'{t["b_pass"]} / {t["n"]}', mono=True, bold=True, align="center",
                extra=f"border-top:2px solid {RULE};")
-        + cell(f'<span style="color:{dcolour};font-weight:700;">{delta:+d}</span>',
+        + cell(f'<span style="color:{dcolour};font-weight:700;">{signed(delta)}</span>',
                align="center", extra=f"border-top:2px solid {RULE};")
         + cell(f'{t["a_closed"]:.0f}%', mono=True, bold=True, align="right",
                extra=f"border-top:2px solid {RULE};")
         + cell(f'{t["b_closed"]:.0f}%', mono=True, bold=True, align="right",
                extra=f"border-top:2px solid {RULE};")
-        + cell(f'{t["b_closed"] - t["a_closed"]:+.0f}', mono=True, bold=True,
+        + cell(signed(t["b_closed"] - t["a_closed"]), mono=True, bold=True,
                align="right", extra=f"border-top:2px solid {RULE};")
-        + "</tr></table>"
+        + "</tr></table></div>"
     )
     P.append(
         f'<p style="margin:8px 0 0;font-family:{SANS};font-size:11.5px;color:{FAINT};'
@@ -350,7 +363,7 @@ def build(c, counters: dict | None, when: str) -> str:
             + cell(escape(label), colour=MUTED)
             + cell(fmt.format(av), mono=True, align="right")
             + cell(fmt.format(bv), mono=True, align="right")
-            + cell(("{:+.2f}" if fmt.endswith("2f") else "{:+.0f}").format(d),
+            + cell(signed(d, 2 if fmt.endswith("2f") else 0),
                    mono=True, colour=dcol, align="right")
             + "</tr>"
         )

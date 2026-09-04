@@ -24,14 +24,22 @@ observed to succeed twice and fail once. n=1 per arm is the noise floor of this 
 so a one- or two-episode difference in either direction is not a result. What this tool
 can settle is a LARGE difference, and the direction of a consistent small one across many
 episodes -- which is why the totals line prints both arms' `closed` mean.
+
+IMPORTABLE ON PURPOSE. `report_lidar_arms.py` renders the same comparison as HTML for
+email, and the pairing rules here -- the 25-minute clustering, the clean-ladder filter,
+the refusal to backfill `lidar: ""` -- are exactly the kind of thing CLAUDE.md records as
+failing silently when they exist in two copies. So the logic lives in `pair_arms()` and
+both front ends call it; nothing below the fold re-derives a rule.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import math
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -41,17 +49,8 @@ from summarize_runs import load_config, score  # noqa: E402
 
 RESULTS = REPO / "nav" / "results"
 
-ap = argparse.ArgumentParser()
-ap.add_argument("--a", default="fan", help="reference arm's `lidar` label")
-ap.add_argument("--b", default="c1@0.30", help="treatment arm's `lidar` label")
-ap.add_argument("--controller", default="braking")
-ap.add_argument("--history", action="store_true",
-                help="add a column of how often each episode passed on the ladders "
-                     "recorded BEFORE the sensor existed")
-args = ap.parse_args()
 
-
-def prior_ladders() -> list[dict[str, bool]]:
+def prior_ladders(controller: str) -> list[dict[str, bool]]:
     """Per-episode outcomes of each clean single-pass ladder from before the sensor.
 
     CLEAN means every episode appears exactly once in the cluster. Ladders where an
@@ -70,10 +69,10 @@ def prior_ladders() -> list[dict[str, bool]]:
     runs = []
     for p in sorted(RESULTS.glob("*.json")):
         try:
-            d = __import__("json").loads(p.read_text())
+            d = json.loads(p.read_text())
         except Exception:
             continue
-        if d.get("controller") != args.controller:
+        if d.get("controller") != controller:
             continue
         if "menu" not in (d.get("policy") or ""):
             continue
@@ -98,131 +97,185 @@ def prior_ladders() -> list[dict[str, bool]]:
             if len({x[1] for x in g}) == len(g) >= 13]
 
 
-history = prior_ladders() if args.history else []
+@dataclass
+class Comparison:
+    """Everything a front end needs, with no scoring rule left for it to reinvent."""
 
-cfg = load_config()
-# Sorted by filename, which is the timestamp, so the LAST match per episode is the newest
-# run of that arm. Both arms are re-run for a comparison; an older stray run of the same
-# label would otherwise be paired against a fresh one from the other.
-rows = [r for r in (score(p, cfg) for p in sorted(RESULTS.glob("*.json"))) if r]
-rows = [r for r in rows if r["controller"] == args.controller]
+    a_label: str
+    b_label: str
+    controller: str
+    order: list[str]                       # paired episodes, in ladder order
+    arm_a: dict[str, dict]
+    arm_b: dict[str, dict]
+    history: list[dict[str, bool]] = field(default_factory=list)
+    never: list[str] = field(default_factory=list)   # never passed on any prior ladder
+    only_a: list[str] = field(default_factory=list)
+    only_b: list[str] = field(default_factory=list)
 
-arm_a = {r["episode"]: r for r in rows if r["lidar"] == args.a}
-arm_b = {r["episode"]: r for r in rows if r["lidar"] == args.b}
+    def flip(self, ep: str) -> str:
+        """WON / LOST / = for one episode. The first column anyone should read."""
+        a, b = self.arm_a[ep]["success"], self.arm_b[ep]["success"]
+        return "WON" if b and not a else "LOST" if a and not b else "="
 
-both = [e for e in arm_a if e in arm_b]
-if not both:
-    raise SystemExit(
-        f"no episode has a run under BOTH '{args.a}' and '{args.b}' with controller "
-        f"{args.controller}.\n"
-        f"  '{args.a}' has {len(arm_a)} episodes, '{args.b}' has {len(arm_b)}.\n"
-        "  Runs recorded before the `lidar` field existed carry '' -- they were the fan, "
-        "but\n  nothing in the file says so, so they are not matched by --a fan."
-    )
-# Ladder order, so the table reads easiest-first like the ladder itself rather than
-# alphabetically. Episodes present in only one arm are listed under the table, never
-# silently dropped -- a missing run is usually a crash and is the thing worth seeing.
-order = [e for e in cfg if e in both]
-order += [e for e in both if e not in cfg]
+    def was(self, ep: str) -> tuple[int, int] | None:
+        """(passes, ladders) on the pre-sensor ladders, or None if never run then."""
+        seen = [d for d in self.history if ep in d]
+        return (sum(1 for d in seen if d[ep]), len(seen)) if seen else None
 
-hcol = f"{'was':>7}" if history else ""
-print(f"\n  {'episode':<26}{hcol}{'A ' + args.a:>14}{'B ' + args.b:>14}   flip   "
-      f"{'closed A':>9}{'closed B':>9}{'  d':>7}")
-print("  " + "-" * (92 + len(hcol)))
+    def totals(self) -> dict:
+        n = len(self.order) or 1
+        return {
+            "n": len(self.order),
+            "a_pass": sum(1 for e in self.order if self.arm_a[e]["success"]),
+            "b_pass": sum(1 for e in self.order if self.arm_b[e]["success"]),
+            "a_closed": sum(self.arm_a[e]["closed_frac"] for e in self.order) / n * 100,
+            "b_closed": sum(self.arm_b[e]["closed_frac"] for e in self.order) / n * 100,
+            "a_guard": sum(self.arm_a[e]["guard"] for e in self.order),
+            "b_guard": sum(self.arm_b[e]["guard"] for e in self.order),
+            "a_path": sum(self.arm_a[e]["path_m"] for e in self.order),
+            "b_path": sum(self.arm_b[e]["path_m"] for e in self.order),
+            "a_spl": sum(self.arm_a[e]["spl"] for e in self.order) / n,
+            "b_spl": sum(self.arm_b[e]["spl"] for e in self.order) / n,
+        }
 
-flips_won, flips_lost = [], []
-closed_a, closed_b = [], []
-never = []
-for ep in order:
-    a, b = arm_a[ep], arm_b[ep]
-    ta = f"{'YES' if a['success'] else 'no':<4}{a['closest_m']:6.2f}m"
-    tb = f"{'YES' if b['success'] else 'no':<4}{b['closest_m']:6.2f}m"
-    if a["success"] and not b["success"]:
-        flip, flips_lost = "LOST", flips_lost + [ep]
-    elif b["success"] and not a["success"]:
-        flip, flips_won = " WON", flips_won + [ep]
-    else:
-        flip = "  ="
-    h = ""
-    if history:
-        seen = [d for d in history if ep in d]
-        won = sum(1 for d in seen if d[ep])
-        h = f"{won}/{len(seen)}" if seen else "-"
-        h = f"{h:>7}"
-        # An episode that never passed before is the only place a single run can carry
-        # real information: everywhere else the prior already contains both outcomes, so
-        # one flip is inside the noise this stack is known to have.
-        if seen and won == 0:
-            never.append(ep)
-    ca, cb = a["closed_frac"] * 100, b["closed_frac"] * 100
-    closed_a.append(ca)
-    closed_b.append(cb)
-    print(f"  {ep:<26}{h}{ta:>14}{tb:>14}   {flip}   "
-          f"{ca:8.0f}%{cb:8.0f}%{cb - ca:+7.0f}")
+    def won(self) -> list[str]:
+        return [e for e in self.order if self.flip(e) == "WON"]
 
-print("  " + "-" * 92)
-na = sum(1 for e in order if arm_a[e]["success"])
-nb = sum(1 for e in order if arm_b[e]["success"])
-ma = sum(closed_a) / len(closed_a)
-mb = sum(closed_b) / len(closed_b)
-print(f"  {'TOTAL':<26}{na:>9} /{len(order):3d}{nb:>9} /{len(order):3d}"
-      f"   {nb - na:+4d}   {ma:8.0f}%{mb:8.0f}%{mb - ma:+7.0f}")
+    def lost(self) -> list[str]:
+        return [e for e in self.order if self.flip(e) == "LOST"]
 
-print(f"\n  won  ({len(flips_won)}): {', '.join(flips_won) or '-'}")
-print(f"  lost ({len(flips_lost)}): {', '.join(flips_lost) or '-'}")
+    def prior_scores(self) -> list[str]:
+        return [f"{sum(d.values())}/{len(d)}" for d in self.history]
 
-if history:
-    scores = [f"{sum(d.values())}/{len(d)}" for d in history]
-    print(f"\n  `was` is the pass rate over {len(history)} clean single-pass ladders "
-          f"recorded before the")
-    print(f"  sensor existed, scoring {', '.join(scores)}. That spread IS the noise "
-          f"floor -- those")
-    print("  ladders span a config change, and even the two best differ episode by "
-          "episode.")
-    print("  So a one- or two-episode move here is not a result and must not be reported "
-          "as one.")
-    hard = [e for e in never]
-    if hard:
-        print(f"\n  NEVER PASSED BEFORE: {', '.join(hard)}")
-        for e in hard:
-            aa, bb = arm_a[e]["success"], arm_b[e]["success"]
-            mark = ("BOTH arms" if aa and bb else
-                    f"only {args.b}" if bb else
-                    f"only {args.a}" if aa else "neither")
-            print(f"    {e:<26} now: {mark}")
-        print("  This row is the only place one ladder can say something a repeat could "
-              "not:")
-        print("  everywhere else the prior already contains both outcomes, so a flip is "
-              "noise.")
 
-only_a = sorted(set(arm_a) - set(arm_b))
-only_b = sorted(set(arm_b) - set(arm_a))
-if only_a or only_b:
-    print(f"\n  NOT PAIRED -- these are excluded from every number above, and a missing "
-          f"run is\n  usually a crash rather than a result:")
-    if only_a:
-        print(f"    only in {args.a}: {', '.join(only_a)}")
-    if only_b:
-        print(f"    only in {args.b}: {', '.join(only_b)}")
+def pair_arms(a: str = "fan", b: str = "c1@0.30", controller: str = "braking",
+              history: bool = True) -> Comparison:
+    cfg = load_config()
+    # Sorted by filename, which is the timestamp, so the LAST match per episode is the
+    # newest run of that arm. Both arms are re-run for a comparison; an older stray run
+    # of the same label would otherwise be paired against a fresh one from the other.
+    rows = [r for r in (score(p, cfg) for p in sorted(RESULTS.glob("*.json"))) if r]
+    rows = [r for r in rows if r["controller"] == controller]
 
-# Guard interventions are the one number that speaks about the SENSOR rather than about
-# the policy, since the guard is the half of this change that does not go through a VLM.
-# A denser scan should raise the count -- it sees more -- and a large fall would mean the
-# robot stopped meeting obstacles, which on a fixed set of episodes means it stopped
-# getting to them.
-ga = sum(arm_a[e]["guard"] for e in order)
-gb = sum(arm_b[e]["guard"] for e in order)
-print(f"\n  guard interventions   {args.a} {ga}   {args.b} {gb}")
-print("  (the guard is the half of this change that does not pass through the VLM;")
-print("   more returns should mean MORE interventions, and a large drop means the robot")
-print("   stopped reaching the obstacles rather than that it stopped hitting them)")
+    arm_a = {r["episode"]: r for r in rows if r["lidar"] == a}
+    arm_b = {r["episode"]: r for r in rows if r["lidar"] == b}
+    both = [e for e in arm_a if e in arm_b]
+    if not both:
+        raise SystemExit(
+            f"no episode has a run under BOTH '{a}' and '{b}' with controller "
+            f"{controller}.\n"
+            f"  '{a}' has {len(arm_a)} episodes, '{b}' has {len(arm_b)}.\n"
+            "  Runs recorded before the `lidar` field existed carry '' -- they were the "
+            "fan, but\n  nothing in the file says so, so they are not matched by --a fan."
+        )
+    # Ladder order, so the table reads easiest-first like the ladder itself rather than
+    # alphabetically. Episodes present in only one arm are listed separately, never
+    # silently dropped -- a missing run is usually a crash and is the thing worth seeing.
+    order = [e for e in cfg if e in both] + [e for e in both if e not in cfg]
 
-pa = sum(arm_a[e]["path_m"] for e in order)
-pb = sum(arm_b[e]["path_m"] for e in order)
-print(f"\n  path driven           {args.a} {pa:.0f} m   {args.b} {pb:.0f} m")
-print("  (read next to `closed`, never alone -- a short path is a tidy route or a run")
-print("   that parked, and warehouse_aisle6 has produced both)")
+    hist = prior_ladders(controller) if history else []
+    cmp = Comparison(a, b, controller, order, arm_a, arm_b, hist,
+                     only_a=sorted(set(arm_a) - set(arm_b)),
+                     only_b=sorted(set(arm_b) - set(arm_a)))
+    # An episode that never passed before is the only place a single run can carry real
+    # information: everywhere else the prior already contains both outcomes, so one flip
+    # is inside the noise this stack is known to have.
+    cmp.never = [e for e in order
+                 if (w := cmp.was(e)) is not None and w[0] == 0]
+    return cmp
 
-if not math.isclose(len(order), len(both)):
-    print("\n  note: some paired episodes are missing from episodes.yaml and were "
-          "appended after the ladder order.")
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--a", default="fan", help="reference arm's `lidar` label")
+    ap.add_argument("--b", default="c1@0.30", help="treatment arm's `lidar` label")
+    ap.add_argument("--controller", default="braking")
+    ap.add_argument("--history", action="store_true",
+                    help="add a column of how often each episode passed on the ladders "
+                         "recorded BEFORE the sensor existed")
+    args = ap.parse_args()
+
+    c = pair_arms(args.a, args.b, args.controller, history=args.history)
+
+    hcol = f"{'was':>7}" if args.history else ""
+    print(f"\n  {'episode':<26}{hcol}{'A ' + c.a_label:>14}{'B ' + c.b_label:>14}   "
+          f"flip   {'closed A':>9}{'closed B':>9}{'  d':>7}")
+    print("  " + "-" * (92 + len(hcol)))
+
+    for ep in c.order:
+        a, b = c.arm_a[ep], c.arm_b[ep]
+        ta = f"{'YES' if a['success'] else 'no':<4}{a['closest_m']:6.2f}m"
+        tb = f"{'YES' if b['success'] else 'no':<4}{b['closest_m']:6.2f}m"
+        flip = {"WON": " WON", "LOST": "LOST"}.get(c.flip(ep), "  =")
+        h = ""
+        if args.history:
+            w = c.was(ep)
+            h = f"{f'{w[0]}/{w[1]}' if w else '-':>7}"
+        ca, cb = a["closed_frac"] * 100, b["closed_frac"] * 100
+        print(f"  {ep:<26}{h}{ta:>14}{tb:>14}   {flip}   "
+              f"{ca:8.0f}%{cb:8.0f}%{cb - ca:+7.0f}")
+
+    t = c.totals()
+    print("  " + "-" * 92)
+    print(f"  {'TOTAL':<26}{t['a_pass']:>9} /{t['n']:3d}{t['b_pass']:>9} /{t['n']:3d}"
+          f"   {t['b_pass'] - t['a_pass']:+4d}   {t['a_closed']:8.0f}%"
+          f"{t['b_closed']:8.0f}%{t['b_closed'] - t['a_closed']:+7.0f}")
+
+    print(f"\n  won  ({len(c.won())}): {', '.join(c.won()) or '-'}")
+    print(f"  lost ({len(c.lost())}): {', '.join(c.lost()) or '-'}")
+
+    if args.history:
+        print(f"\n  `was` is the pass rate over {len(c.history)} clean single-pass "
+              f"ladders recorded before the")
+        print(f"  sensor existed, scoring {', '.join(c.prior_scores())}. That spread IS "
+              f"the noise floor -- those")
+        print("  ladders span a config change, and even the two best differ episode by "
+              "episode.")
+        print("  So a one- or two-episode move here is not a result and must not be "
+              "reported as one.")
+        if c.never:
+            print(f"\n  NEVER PASSED BEFORE: {', '.join(c.never)}")
+            for e in c.never:
+                aa, bb = c.arm_a[e]["success"], c.arm_b[e]["success"]
+                mark = ("BOTH arms" if aa and bb else
+                        f"only {c.b_label}" if bb else
+                        f"only {c.a_label}" if aa else "neither")
+                print(f"    {e:<26} now: {mark}")
+            print("  This row is the only place one ladder can say something a repeat "
+                  "could not:")
+            print("  everywhere else the prior already contains both outcomes, so a flip "
+                  "is noise.")
+
+    if c.only_a or c.only_b:
+        print("\n  NOT PAIRED -- these are excluded from every number above, and a "
+              "missing run is\n  usually a crash rather than a result:")
+        if c.only_a:
+            print(f"    only in {c.a_label}: {', '.join(c.only_a)}")
+        if c.only_b:
+            print(f"    only in {c.b_label}: {', '.join(c.only_b)}")
+
+    # Guard interventions are the one number that speaks about the SENSOR rather than
+    # about the policy, since the guard is the half of this change that does not go
+    # through a VLM. A denser scan should raise the count -- it sees more -- and a large
+    # fall would mean the robot stopped meeting obstacles, which on a fixed set of
+    # episodes means it stopped getting to them.
+    print(f"\n  guard interventions   {c.a_label} {t['a_guard']}   "
+          f"{c.b_label} {t['b_guard']}")
+    print("  (the guard is the half of this change that does not pass through the VLM;")
+    print("   more returns should mean MORE interventions, and a large drop means the "
+          "robot")
+    print("   stopped reaching the obstacles rather than that it stopped hitting them)")
+
+    print(f"\n  path driven           {c.a_label} {t['a_path']:.0f} m   "
+          f"{c.b_label} {t['b_path']:.0f} m")
+    print("  (read next to `closed`, never alone -- a short path is a tidy route or a "
+          "run")
+    print("   that parked, and warehouse_aisle6 has produced both)")
+
+    if not math.isclose(len(c.order), len(set(c.arm_a) & set(c.arm_b))):
+        print("\n  note: some paired episodes are missing from episodes.yaml and were "
+              "appended after the ladder order.")
+
+
+if __name__ == "__main__":
+    main()

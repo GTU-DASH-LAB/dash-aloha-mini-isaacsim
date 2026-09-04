@@ -29,6 +29,7 @@ episodes -- which is why the totals line prints both arms' `closed` mean.
 from __future__ import annotations
 
 import argparse
+import datetime
 import math
 import sys
 from pathlib import Path
@@ -44,7 +45,60 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--a", default="fan", help="reference arm's `lidar` label")
 ap.add_argument("--b", default="c1@0.30", help="treatment arm's `lidar` label")
 ap.add_argument("--controller", default="braking")
+ap.add_argument("--history", action="store_true",
+                help="add a column of how often each episode passed on the ladders "
+                     "recorded BEFORE the sensor existed")
 args = ap.parse_args()
+
+
+def prior_ladders() -> list[dict[str, bool]]:
+    """Per-episode outcomes of each clean single-pass ladder from before the sensor.
+
+    CLEAN means every episode appears exactly once in the cluster. Ladders where an
+    episode was re-run are excluded outright rather than reduced to their last result:
+    a re-run is usually a config being changed mid-ladder, and CLAUDE.md is explicit
+    that a directory holding two policies distinguishable only by timestamp is how this
+    stack talks itself into believing something. Clustered on a 25-minute gap, which is
+    comfortably longer than the slowest episode and far shorter than the gap between
+    sessions.
+
+    These are a RELIABILITY PRIOR, not a baseline. They span real config changes -- the
+    wedge-recovery fix landed between them, which is why one of the three scores 2/13
+    against 8/13 for the other two -- so an episode's rate says how often it has ever
+    worked, not how often the current code would work.
+    """
+    runs = []
+    for p in sorted(RESULTS.glob("*.json")):
+        try:
+            d = __import__("json").loads(p.read_text())
+        except Exception:
+            continue
+        if d.get("controller") != args.controller:
+            continue
+        if "menu" not in (d.get("policy") or ""):
+            continue
+        if d.get("lidar", ""):
+            continue          # anything labelled is from the sensor era, not before it
+        runs.append((p.name[:15], d["episode"], bool(d.get("success"))))
+    if not runs:
+        return []
+
+    def when(s: str) -> datetime.datetime:
+        return datetime.datetime.strptime(s, "%Y%m%d-%H%M%S")
+
+    groups, cur = [], [runs[0]]
+    for r in runs[1:]:
+        if (when(r[0]) - when(cur[-1][0])).total_seconds() > 25 * 60:
+            groups.append(cur)
+            cur = [r]
+        else:
+            cur.append(r)
+    groups.append(cur)
+    return [{e: ok for _, e, ok in g} for g in groups
+            if len({x[1] for x in g}) == len(g) >= 13]
+
+
+history = prior_ladders() if args.history else []
 
 cfg = load_config()
 # Sorted by filename, which is the timestamp, so the LAST match per episode is the newest
@@ -71,12 +125,14 @@ if not both:
 order = [e for e in cfg if e in both]
 order += [e for e in both if e not in cfg]
 
-print(f"\n  {'episode':<26}{'A ' + args.a:>14}{'B ' + args.b:>14}   flip   "
+hcol = f"{'was':>7}" if history else ""
+print(f"\n  {'episode':<26}{hcol}{'A ' + args.a:>14}{'B ' + args.b:>14}   flip   "
       f"{'closed A':>9}{'closed B':>9}{'  d':>7}")
-print("  " + "-" * 92)
+print("  " + "-" * (92 + len(hcol)))
 
 flips_won, flips_lost = [], []
 closed_a, closed_b = [], []
+never = []
 for ep in order:
     a, b = arm_a[ep], arm_b[ep]
     ta = f"{'YES' if a['success'] else 'no':<4}{a['closest_m']:6.2f}m"
@@ -87,10 +143,22 @@ for ep in order:
         flip, flips_won = " WON", flips_won + [ep]
     else:
         flip = "  ="
+    h = ""
+    if history:
+        seen = [d for d in history if ep in d]
+        won = sum(1 for d in seen if d[ep])
+        h = f"{won}/{len(seen)}" if seen else "-"
+        h = f"{h:>7}"
+        # An episode that never passed before is the only place a single run can carry
+        # real information: everywhere else the prior already contains both outcomes, so
+        # one flip is inside the noise this stack is known to have.
+        if seen and won == 0:
+            never.append(ep)
     ca, cb = a["closed_frac"] * 100, b["closed_frac"] * 100
     closed_a.append(ca)
     closed_b.append(cb)
-    print(f"  {ep:<26}{ta:>14}{tb:>14}   {flip}   {ca:8.0f}%{cb:8.0f}%{cb - ca:+7.0f}")
+    print(f"  {ep:<26}{h}{ta:>14}{tb:>14}   {flip}   "
+          f"{ca:8.0f}%{cb:8.0f}%{cb - ca:+7.0f}")
 
 print("  " + "-" * 92)
 na = sum(1 for e in order if arm_a[e]["success"])
@@ -102,6 +170,30 @@ print(f"  {'TOTAL':<26}{na:>9} /{len(order):3d}{nb:>9} /{len(order):3d}"
 
 print(f"\n  won  ({len(flips_won)}): {', '.join(flips_won) or '-'}")
 print(f"  lost ({len(flips_lost)}): {', '.join(flips_lost) or '-'}")
+
+if history:
+    scores = [f"{sum(d.values())}/{len(d)}" for d in history]
+    print(f"\n  `was` is the pass rate over {len(history)} clean single-pass ladders "
+          f"recorded before the")
+    print(f"  sensor existed, scoring {', '.join(scores)}. That spread IS the noise "
+          f"floor -- those")
+    print("  ladders span a config change, and even the two best differ episode by "
+          "episode.")
+    print("  So a one- or two-episode move here is not a result and must not be reported "
+          "as one.")
+    hard = [e for e in never]
+    if hard:
+        print(f"\n  NEVER PASSED BEFORE: {', '.join(hard)}")
+        for e in hard:
+            aa, bb = arm_a[e]["success"], arm_b[e]["success"]
+            mark = ("BOTH arms" if aa and bb else
+                    f"only {args.b}" if bb else
+                    f"only {args.a}" if aa else "neither")
+            print(f"    {e:<26} now: {mark}")
+        print("  This row is the only place one ladder can say something a repeat could "
+              "not:")
+        print("  everywhere else the prior already contains both outcomes, so a flip is "
+              "noise.")
 
 only_a = sorted(set(arm_a) - set(arm_b))
 only_b = sorted(set(arm_b) - set(arm_a))

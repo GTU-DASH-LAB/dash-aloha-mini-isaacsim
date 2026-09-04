@@ -450,9 +450,62 @@ that affect the *rest* of this repo:
   separate process invocations instead of looping in Python.
 - **The kinematic base does not collide** (already documented above, but it bites
   harder here): a teleported body has no contact response and will pass straight
-  through shelving. `nav/sim/collision_guard.py` raycasts instead. Verified live rather
-  than assumed — `nav/tools/check_collision_guard.py` sweeps the ray fan through a
-  circle and hits 9/16 bearings on real warehouse geometry at 6.8–12.5 m.
+  through shelving. `nav/sim/collision_guard.py` raycasts instead.
+- **That guard's "9/16 bearings at 6.8–12.5 m" was true somewhere and is not reproducible
+  at the warehouse start pose — do not use it as a health check.** Re-measured there: the
+  nearest walls are 15.68 m (+X), 16.11 m (−X), 16.72 m (+Y), 16.04 m (−Y), so a 16-ray
+  sweep capped at 15 m returns **0/16**, and a 500-ray scan capped at the C1's 12 m
+  returns 0/500. Both are the correct answer. This cost a full three-stage diagnostic
+  because a zero looks exactly like a broken raycast: the discriminator is a single ray
+  straight DOWN, which hits the floor at 0.32 m and proves the colliders are registered
+  PhysX actors. The guard is live — the Sept 2 hard study logged 0–2520 interventions per
+  run, all external, since `collision_guard.py:137` skips `/World/Aloha` prims. **A range
+  cap makes distance a property of the tool, not of the scene**; report the cap next to
+  the count or the next reader repeats the diagnostic.
+- **A 2D lidar is worth buying for the CONTROL loop and not for the policy — both halves
+  measured before building anything.** `nav/sim/lidar_2d.py` is pinned to a real part,
+  a **Slamtec RPLIDAR C1** (0.05–12 m DTOF, 500 points/rev = 0.72°, 10 Hz, 5000
+  samples/s, ~4.5k TL), because rays are free in PhysX and nothing otherwise stops us
+  simulating a sensor nobody can buy. PhysX `raycast_closest` is neither 2D nor 3D — the
+  existing code is planar *by construction* (`direction z = 0.0`, one origin height), and
+  an elevation loop would have made it a 3D unit we then could not order.
+  - **Check a datasheet by multiplying**: points/rev × scan rate must reproduce the quoted
+    sample rate. C1 is 500 × 10 = 5000 ✓. This caught a real error in our own LD19 entry:
+    "≤1°" is a *bound* and 4500 Hz is a *value*, so 360 points/rev satisfies the first and
+    contradicts the second — 450 is the number, and the round one understates the cheaper
+    sensor by 25% in the one comparison the entry exists to make.
+  - **Mount at z = 0.30 m, no mast.** Swept 0.20–1.50 m: 0% blind at every height except
+    **0.80 m, which is 21.8% blind in a single 39.6° arc** off the arm bases (`right_base`
+    43 rays, `left_base` 42, `left_link1` 12). Measure the worst *contiguous* arc, not the
+    blind fraction — 20% scattered between the arms is a usable sensor, 20% in one block
+    is a robot that cannot see one whole side.
+  - **Two gates, both negative for the policy.** `gate_lidar_opening.py` replays the 13
+    failed reference runs and asks whether the turn was geometrically available: it was
+    (open toward the goal 55% hospital / 83% warehouse), but openness does not *prefer*
+    the goal — 40%/43% goal-over-straight against controls holding at 81%/65%. A geometric
+    frontier selector would reproduce the straight bias we already have. `gate_lidar_
+    blindside.py` then tests the surviving idea, the scan as an extra INPUT naming
+    openings outside `camera_nav`'s 90° frame: the goal is outside the frame on
+    **96%/94%** of failure moments, so the hole is real, and the scan does contain it
+    **54%/83%** of the time — but the blind arc is open **65%/73%** of the time anyway,
+    so the lift is **−11pp / +9pp**, and the channel fires on **215/215** hospital control
+    moments. Range is irrelevant to both: 12/25/40 m give identical answers everywhere
+    except one column of one episode. **Do not buy the 25–40 m class.**
+  - **Report the null next to the recall, and the opening WIDTH next to the count.** Both
+    readings inverted once those were added. 54% recall looks like a channel until the
+    65% null makes it worse than guessing; ~1.15 openings per moment looks like the scan
+    naming one direction until the width column says that opening is **135–182° wide**.
+    One opening covering most of the blind arc is not a direction, it is the observation
+    that the robot is indoors — the same shape of error as the open-set prompt that named
+    all five directions at recall 100% and precision 0.
+  - **What survives is the low loop, on resolution.** `collision_guard.py` already casts
+    at exactly this height and already covers the rear (its fan centres on the direction
+    of *travel*, `atan2(vy, vx) + yaw`, not on yaw), so reversing is guarded. What it does
+    not have is density: 7 rays over ±35° is 11.7° apart, a **12 cm gap at the 0.6 m stop
+    distance and 30 cm at 1.5 m** — a chair or table leg fits through it. The C1's 0.72°
+    closes that to 0.8 cm and 1.9 cm. Budget the staleness against it: the beam revisits a
+    given bearing every 100 ms, which at the 1.5 m/s cap is 15 cm of travel that the stop
+    distance has to absorb.
 - **FastAPI + `from __future__ import annotations` = request models must be module
   level.** A pydantic model defined *inside* the route factory cannot be resolved by
   `get_type_hints()` against the function's module globals. FastAPI does not raise — it

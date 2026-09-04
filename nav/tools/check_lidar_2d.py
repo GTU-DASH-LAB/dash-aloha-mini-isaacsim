@@ -20,11 +20,22 @@ settled and is not what this tool is for.
      revolution comes back as a real external return. The height to pick is the lowest
      one whose blind sector is small, not the one whose blind sector is smallest.
 
-The measurement is taken from the robot's OWN pose read off the stage, not from
-`episode.start`. Nav stages are keyed on the environment and the runner teleports to the
-episode start at run time, so the authored robot pose and the episode start are not the
-same point -- and self-occlusion measured from a spot the robot is not standing in would
-be a confident number about nothing.
+KEEP THE TWO VERDICTS APART, because an earlier version of this file did not and printed
+a confident recommendation to raise the mast when the mast was never the problem. A low
+external-return count has two completely different causes: the sensor is looking OVER the
+geometry, which is a mounting fault, or there is simply nothing within range of where the
+robot is standing, which is a fact about the room. In this warehouse the walls measure
+15.7-16.7 m out and the C1 reaches 12 m, so 0% external is the CORRECT answer at every
+height, and a rule that reads it as a blind sector converts a healthy scene into a
+hardware recommendation. The discriminator is whether external stays low across the whole
+sweep or only at the tall mounts.
+
+The measurement is taken from the robot's own pose read off the stage. Note this is NOT
+because it differs from `episode.start` -- the runner teleports to `episode.start` before
+every run, so that is the pose the robot actually occupies, and an earlier version of this
+note had the argument backwards. Measured on this stage they are the same point to 0.00 m,
+so nothing here turns on it; the blind-sector number is a property of the robot's own
+geometry and does not move with position anyway.
 """
 
 from __future__ import annotations
@@ -138,25 +149,47 @@ for text in args.heights.split(","):
 
 print("  " + "-" * 66)
 
-# The lowest mount that both clears the robot and still sees the room. Low is preferred
+# MOUNTING FIRST, and on the blind arc alone. This is the only criterion that is a
+# property of the robot rather than of wherever it happens to be parked. Low is preferred
 # on purpose: a mast is weight, wiring and a thing to catch on doorframes, and the whole
 # argument for 2D over 3D was that the cheap, simple option is the one that transfers.
-usable = [r for r in rows if r["arc"] <= 15.0 and r["external"] >= 0.10]
+clear = [r for r in rows if r["arc"] <= 15.0]
 print()
-if not usable:
-    print("VERDICT: no candidate height both clears the robot and sees the room.")
+if not clear:
+    print("VERDICT: no candidate height clears the robot's own column and arms.")
     print("         Either the mast has to go higher than the sweep, or the unit has to")
     print("         be mounted forward of the column and accept a partial field of view")
     print("         -- set Lidar2D(mount_forward_m=...) and re-run before assuming a")
     print("         360 degree scan is available on this chassis.")
     code = 1
 else:
-    best = min(usable, key=lambda r: r["h"])
-    print(f"VERDICT: mount at z={best['h']:.2f} m -- worst blind arc {best['arc']:.1f} deg, "
-          f"{best['external']:.0%} of the revolution returns real geometry.")
+    best = min(clear, key=lambda r: r["h"])
+    print(f"VERDICT: mount at z={best['h']:.2f} m -- worst blind arc {best['arc']:.1f} deg.")
     print(f"         Set Lidar2D(mount_height_m={best['h']:.2f}); the 1.30 default in")
     print("         lidar_2d.py is provisional and this number replaces it.")
     code = 0
+
+    # RANGE SECOND, and reported separately, because a low external count is not evidence
+    # about the mount unless it depends on the mount. If every height is equally blank the
+    # room is simply further away than the device reaches, and saying anything else here
+    # turns a fact about the warehouse into a hardware purchase.
+    if best["external"] < 0.10:
+        if max(r["external"] for r in rows) < 0.10:
+            print(f"\n         Note: no height returns much geometry -- nothing is within "
+                  f"{spec.max_range_m:.0f} m of")
+            print("         this pose. That is the room, not the mount, and it says nothing")
+            print("         against z={:.2f}. Re-run somewhere enclosed, or raise --spec"
+                  .format(best["h"]))
+            print("         range, before reading it as a coverage problem.")
+        else:
+            better = min((r for r in clear if r["external"] >= 0.10),
+                         key=lambda r: r["h"], default=None)
+            print("\n         Note: this height is looking OVER the geometry -- a taller "
+                  "mount in the")
+            print("         same sweep does return returns, so the blank is the height.")
+            if better:
+                print(f"         The lowest clear height that also sees the room is "
+                      f"z={better['h']:.2f} m.")
 
 kit.close()
 raise SystemExit(code)

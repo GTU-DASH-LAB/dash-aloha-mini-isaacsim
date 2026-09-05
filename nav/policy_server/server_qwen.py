@@ -1123,7 +1123,21 @@ def menu_plan(image_paths: list[str], instruction: str,
     # request carrying one frame gets the one-frame prompt no matter what MENU_FRAMES says.
     # The two must agree, because the two-frame system prompt tells the model to describe
     # the SECOND image, and there is no second image to describe.
-    frames = image_paths[-MENU_FRAMES:] if MENU_FRAMES > 1 else [newest]
+    # The baseline is the OLDEST frame in the history, not the previous one. `image_paths`
+    # arrives at 3 s spacing, so `[-2:]` compared two images 3 s and -- at 0.45 m/s -- about
+    # 1.35 m apart. In a 32 m corridor that is 4% of the way and the two pictures are
+    # indistinguishable, so the model answered "is not making progress" on 30-70% of
+    # decisions. It was answering correctly; the question was badly posed. It then chose
+    # STOP on 14-20% of decisions, which made the robot genuinely motionless and the NEXT
+    # comparison even more certainly "no progress" -- a self-confirming spiral that cost
+    # the ladder 10/19 -> 3/19, and that enabling pivots did not touch because the model
+    # barely used them (3-7%).
+    #
+    # The oldest frame is 9 s and ~4 m back, which is a difference a picture can show.
+    if MENU_FRAMES > 1 and len(image_paths) > 1:
+        frames = [image_paths[0], newest]
+    else:
+        frames = [newest]
     remembering = len(frames) > 1
     # The goal-direction variant swaps BOTH halves or neither. Asking for the open SET while
     # still asking only for the target's distance would drop the one channel the change

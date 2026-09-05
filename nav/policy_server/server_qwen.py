@@ -1276,7 +1276,8 @@ def menu_plan(image_paths: list[str], instruction: str,
             speed_level=level if ask_speed else None, stalled_s=stalled_s,
             thinking=(seen_think, sel_think), history=hist,
             pivot_rad=pivot, pivot_labels=pivot_labels,
-            drawn=drawn if clearance else None, clearance=clearance)
+            drawn=drawn if clearance else None, clearance=clearance,
+            heading=heading)
     return plan, note, pivot
 
 
@@ -1289,7 +1290,13 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             pivot_rad: float = 0.0,
             pivot_labels: tuple[int, int] | None = None,
             drawn: list[int] | None = None,
-            clearance: list[float] | None = None) -> None:
+            clearance: list[float] | None = None,
+            # A PARAMETER, not a closure read. It was written as a bare `heading` in the
+            # record dict below, which is a local of the decision function and not of this
+            # one, so every call raised NameError -- swallowed by the except, printed once
+            # per decision, and silently costing the entire per-decision log. 2647 records
+            # were lost this way before anyone read the server log instead of the file.
+            heading: str | None = None) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed

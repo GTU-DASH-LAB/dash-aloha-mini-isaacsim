@@ -9,6 +9,7 @@ forbids. `requests` is not worth that.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
@@ -104,8 +105,10 @@ class PolicyClient:
 
     def predict(
         self,
-        image_paths: list[str],
+        image_paths: list[str] | None = None,
+        *,
         instruction: str,
+        images: list[bytes] | None = None,
         robot_state: list[float] | None = None,
         current_step: int | None = None,
         time_delay: float = 0.0,
@@ -124,6 +127,15 @@ class PolicyClient:
 
         Waypoints are body-frame FLU displacements, same convention DynaNav's Nova
         Carter behaviour consumes.
+
+        FRAMES GO ONE OF TWO WAYS, and which one you can use is a fact about your
+        deployment, not a preference. `image_paths` names files the SERVER opens on its
+        OWN disk: correct and cheaper when the caller and the server share a filesystem,
+        which is the simulator's situation. `images` carries the encoded frames
+        themselves, for the case that made this parameter necessary -- the robot has the
+        camera, the workstation has the GPU, and they share no disk. Pass exactly one.
+        Either way the order is oldest-first and it is load-bearing: the policy reads
+        position in the list as time.
 
         `time_delay` and the dx,dy tail of `robot_state` are not decoration: the server
         runs `predict_async`, so the plan comes back built on a KV cache that is roughly
@@ -167,10 +179,22 @@ class PolicyClient:
         asynchronous by design, so sending it True does not make that baseline synchronous
         and a run must not be labelled as though it had.
         """
+        if (image_paths is None) == (images is None):
+            raise ValueError(
+                "pass exactly one of image_paths= (server reads them off its own disk) "
+                "or images= (raw encoded frames, for a robot that shares no filesystem "
+                "with the server)")
+
         return self._post(
             "/predict",
             {
-                "image_paths": image_paths,
+                "image_paths": image_paths or [],
+                # Encoded here rather than by the caller so the wire format stays this
+                # module's business. `images` is a list of ENCODED frames -- the bytes of
+                # a JPEG or PNG, not a raw pixel buffer -- oldest first, same order and
+                # same meaning as image_paths.
+                "images_b64": ([base64.b64encode(b).decode("ascii") for b in images]
+                               if images is not None else None),
                 "instruction": instruction,
                 "robot_state": robot_state if robot_state is not None else [0.0] * 6,
                 "current_step": current_step,

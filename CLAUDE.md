@@ -506,6 +506,54 @@ that affect the *rest* of this repo:
     closes that to 0.8 cm and 1.9 cm. Budget the staleness against it: the beam revisits a
     given bearing every 100 ms, which at the 1.5 m/s cap is 15 cm of travel that the stop
     distance has to absorb.
+- **The lidar shipped into BOTH loops, and the 19-episode A/B is a dead heat: 10/19
+  against 10/19, with five episodes won and five lost.** One `SweepingLidar2D` feeds the
+  guard's wedge and a per-arc clearance filter on the VLM's menu, so both layers see the
+  same returns at the same instants; `EpisodeResult.lidar` labels every run (`"fan"` vs
+  `"c1@0.30"`) so a mixed results directory cannot be scored as one experiment. Compare
+  with `nav/tools/compare_lidar_arms.py --history`. Read the totals against the noise
+  floor before reading anything into them: three clean prior ladders scored **2/13, 8/13,
+  8/13** on this stack, so five flips each way is what noise looks like, not a finding.
+  - **The one row that can carry information is `hospital_exit_room`, and it passed on
+    the lidar arm only.** It is 0/3 across every prior ladder — never passed under any
+    configuration — so unlike everywhere else, the prior does not already contain both
+    outcomes. Fan 2.28 m, lidar **1.50 m**. n=1, and it should be repeated before it is
+    quoted as a capability; but it is the only place a single ladder could have said
+    anything a repeat could not. `warehouse_aisle6`, the other 0/3 row, still fails both
+    (and is *worse* on the lidar arm, 3.68 → 12.04 m).
+  - **The guard's own number moved in the predicted direction and by a lot: 1369 → 4567
+    interventions, 3.3×.** This is the half of the change that does not pass through a
+    VLM, so it is the cleanest statement about the sensor itself. More returns finding
+    more obstacles is exactly what 500 points/rev against 7 rays should buy; a large
+    *fall* would have meant the robot stopped reaching obstacles rather than stopped
+    hitting them.
+- **Disbelieve an aggregate whose shape no real difference has — one blown-up trace
+  inverted two of them.** The first emailed report said "path driven: fan 1063 m, c1@0.30
+  19952 m", a 19× gap between two arms whose per-episode `closed` values were nearly
+  identical. `outdoor_pillars` on the lidar arm ends **17.9 km out**, its last trace
+  samples stepping **85 m each and accelerating**, against 0.7 m maximum on the same
+  episode's fan arm. A kinematic base is teleported, so nothing bounds how far it can be
+  flung once integration diverges, and the trace records the flight as a drive — which
+  makes `path_m`, `closest_m` and `closed_frac` all void on that row. Excluding it, path
+  is **713 m against 970** (the arm that looked 19× longer is *shorter*) and mean-closed
+  goes from **−3.7 pp to −0.3**. So the entire "the lidar closes less of the gap" signal
+  was one explosion. `summarize_runs.score()` now flags it by testing path against what
+  the speed cap physically permits over the run's own duration, 2× slack, 32× margin. The
+  pass denominator deliberately keeps such episodes — the robot really did not arrive, it
+  fails symmetrically, and dropping it would inflate both arms — while the distance
+  aggregates drop them, and `Comparison.blown()` voids *both* arms of an affected episode
+  because a row with one surviving half is not a comparison. Same class as the deferred
+  `warehouse_aisle6` 152995 m case.
+- **`summarize_runs.py` scored `closest <= 1.5` against a hardcoded constant that was a
+  second copy of `episodes.yaml`.** `run_navigation.py` latches arrival on the episode's
+  *own* `success_threshold_m`, and the outdoor set overrides it in **both** directions:
+  4.0 m for `outdoor_umbrellas`/`_pillars`/`_library`/`_ramp_fountain`, but **1.0 m** for
+  `outdoor_upsway` and **2.0 m** for `outdoor_upsway_far`. The tight ones are what made
+  it a bug rather than an inconsistency — a run touching 1.2 m on a 1.0 m episode read as
+  a pass in the summary and a fail in the harness that produced it. No verdict on record
+  changed (the over-credit was latent), and the threshold now rides on the row so a table
+  can say why a 3.99 m pass sits above a 1.89 m fail. **Grep for a constant's value, not
+  its name** — this file already says so about the horizon, and the same shape recurred.
 - **FastAPI + `from __future__ import annotations` = request models must be module
   level.** A pydantic model defined *inside* the route factory cannot be resolved by
   `get_type_hints()` against the function's module globals. FastAPI does not raise — it

@@ -1,3 +1,6 @@
 [submodule "third_party/lerobot_alohamini"]
 	path = third_party/lerobot_alohamini
 	url = https://github.com/liyiteng/lerobot_alohamini.git
+[submodule "third_party/TIC-VLA"]
+	path = third_party/TIC-VLA
+	url = https://github.com/ucla-mobility/TIC-VLA.git

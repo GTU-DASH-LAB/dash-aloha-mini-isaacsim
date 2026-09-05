@@ -43,14 +43,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
+import sys
 from pathlib import Path
 
 import yaml
 
-DYNANAV_ROOT = Path(
-    os.environ.get("TICVLA_DYNANAV_ROOT", "/home/gtu-dsa/robotics/TIC-VLA/DynaNav")
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402
+
+DYNANAV_ROOT = paths.dynanav_root()
 CONFIG = DYNANAV_ROOT / "configs/benchmark_full.yaml"
 REPO = Path(__file__).resolve().parent.parent.parent
 OUT = REPO / "nav/config/episodes.yaml"
@@ -73,6 +74,21 @@ def find_results() -> Path:
     if not candidates:
         raise SystemExit(f"no full benchmark results under {DYNANAV_ROOT}/benchmark_results")
     return candidates[-1]
+
+
+def portable_scene(scene: str) -> str:
+    """Write the DynaNav root back out as a variable rather than as this machine's path.
+
+    DynaNav's results JSON records whatever absolute path the benchmark ran against, so
+    the generated episode table used to carry four copies of one person's home directory
+    -- which is a file that cannot be checked out anywhere else and run. `episode._expand`
+    resolves the variable back through `nav/paths.py`, so the local scenes now follow the
+    submodule wherever it lands. Omniverse URLs contain no local root and pass through.
+    """
+    root = str(DYNANAV_ROOT).rstrip("/")
+    if scene.startswith(root + "/"):
+        return "${TICVLA_DYNANAV_ROOT}" + scene[len(root):]
+    return scene
 
 
 def scene_name(scene_url: str) -> str:
@@ -244,7 +260,7 @@ def to_yaml(rows: list[dict]) -> str:
             f"path {r['dynanav_path_m']} m, {r['dynanav_duration_s']} s",
             f"    # ours: turn {r['turn_deg']:+.1f} deg, straight {r['straight_m']} m, "
             f"detour {r['detour']}x, difficulty {r['difficulty']}",
-            f'    scene: "{r["scene"]}"',
+            f'    scene: "{portable_scene(r["scene"])}"',
             f"    start: {r['start']}",
             f"    start_yaw_deg: {r['start_yaw_deg']}",
             f"    goal: {r['goal']}",

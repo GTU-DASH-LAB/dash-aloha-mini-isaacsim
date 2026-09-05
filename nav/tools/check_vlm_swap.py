@@ -46,8 +46,11 @@ import sys
 import time
 from pathlib import Path
 
-CKPT = Path("/home/gtu-dsa/robotics/models/TIC-VLA-model.ckpt")
-BASELINE = Path("/home/gtu-dsa/robotics/models/InternVL3-1B")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402
+
+CKPT = paths.model_root() / "TIC-VLA-model.ckpt"
+BASELINE = paths.model_root() / "InternVL3-1B"
 
 # The budget a generation has to beat: a plan that outlives its own replacement.
 #

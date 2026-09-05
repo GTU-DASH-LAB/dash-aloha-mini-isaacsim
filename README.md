@@ -81,6 +81,40 @@ DynaNav's own 0.88).
 and
 [`docs/nav_demo_hospital_down_hallway2.mp4`](docs/nav_demo_hospital_down_hallway2.mp4).)
 
+## Cloning
+
+```bash
+git clone --recurse-submodules <this repo>
+```
+
+Two submodules, **both optional**, and it is worth knowing which you need before you
+fetch either:
+
+| submodule | needed for | size |
+|---|---|---|
+| `third_party/TIC-VLA` | reproducing the simulated navigation benchmark — the DynaNav episode definitions and the office/outdoor `.usd` scenes | several GB, mostly scene assets |
+| `third_party/lerobot_alohamini` | the LeRobot data-collection path | small |
+
+Neither is needed to run the navigation policy, and **neither is needed on a real
+robot** — see [`robot/README.md`](robot/README.md). A plain `git clone` gives you a
+working repo with both directories empty; fetch one later with:
+
+```bash
+git submodule update --init third_party/TIC-VLA
+```
+
+Everything else this code needs lives outside git — the model weights, the Isaac Sim
+install, the virtualenvs. `nav/paths.py` resolves all of them, and running it prints
+what it found and what is missing:
+
+```bash
+python3 nav/paths.py
+```
+
+Each root takes an environment variable (`TICVLA_ROOT`, `QVLA_MODEL_ROOT`,
+`ISAACSIM_ROOT`) if yours live somewhere else. Nothing is hardcoded to one machine any
+more; the workstation's own paths survive only as a last-resort fallback.
+
 ## Quick start
 
 `assets/usd/scene.usda` is already committed and ready to use as-is — the default

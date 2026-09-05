@@ -8,10 +8,17 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+# `nav/`, one level up, holds the code shared between the simulator, the policy server
+# and the robot package. Same insert the policy server does, for the same reason: running
+# a file here puts only this directory on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "episodes.yaml"
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
@@ -108,10 +115,16 @@ def _expand(scene: str) -> str:
 
     DynaNav's own config uses this variable, so we honour it rather than hard-coding
     a path that would only be right on this machine.
+
+    The root is resolved LAZILY -- only when a scene actually names it. Most episodes
+    load their stage from an Omniverse URL and need no local checkout at all, so a repo
+    without the TIC-VLA submodule can still run those; it is specifically the four office
+    episodes that cannot. Resolving eagerly would have made the whole episode table
+    unloadable for want of a dependency three quarters of it does not use.
     """
-    default_root = "/home/gtu-dsa/robotics/TIC-VLA/DynaNav"
+    if "${TICVLA_DYNANAV_ROOT}" in scene:
+        scene = scene.replace("${TICVLA_DYNANAV_ROOT}", str(paths.dynanav_root()))
     env = dict(os.environ)
-    env.setdefault("TICVLA_DYNANAV_ROOT", default_root)
     for key, value in env.items():
         scene = scene.replace("${" + key + "}", value)
     return scene

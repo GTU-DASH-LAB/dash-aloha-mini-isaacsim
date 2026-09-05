@@ -51,8 +51,9 @@ says nothing about why.
 
 ## The four surgery points, each verified by grep
 
-TIC-VLA is vendored **read-only** at `/home/gtu-dsa/robotics/TIC-VLA`, so none of this is
-edited in place. Q-VLA subclasses and overrides from `nav/qvla/`.
+TIC-VLA is a **read-only** submodule at `third_party/TIC-VLA` (resolved through
+`nav/paths.py`, which still honours the older `/home/gtu-dsa/robotics/TIC-VLA` checkout),
+so none of this is edited in place. Q-VLA subclasses and overrides from `nav/qvla/`.
 
 | # | where | what is wrong | fix |
 |---|---|---|---|

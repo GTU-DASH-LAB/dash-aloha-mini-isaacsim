@@ -41,18 +41,19 @@ from pydantic import BaseModel, Field
 # TIC-VLA's DynaNav modules use bare imports of their siblings (`from vision_utils
 # import ...`, `from ticvla_vlm import ...`), so the DynaNav directory itself has to be
 # on sys.path -- importing it as a package does not work.
-DYNANAV_ROOT = os.environ.get(
-    "TICVLA_DYNANAV_ROOT", "/home/gtu-dsa/robotics/TIC-VLA/DynaNav"
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402
+
+DYNANAV_ROOT = str(paths.dynanav_root())
 sys.path.insert(0, DYNANAV_ROOT)
 
 from ticvla import TICVLA  # noqa: E402
 
 BASE_MODEL_PATH = os.environ.get(
-    "TICVLA_BASE_MODEL_PATH", "/home/gtu-dsa/robotics/models/InternVL3-1B"
+    "TICVLA_BASE_MODEL_PATH", str(paths.model_root() / "InternVL3-1B")
 )
 CHECKPOINT_PATH = os.environ.get(
-    "TICVLA_CHECKPOINT_PATH", "/home/gtu-dsa/robotics/models/TIC-VLA-model.ckpt"
+    "TICVLA_CHECKPOINT_PATH", str(paths.model_root() / "TIC-VLA-model.ckpt")
 )
 # launch.sh pins CUDA_VISIBLE_DEVICES=1, so cuda:0 here is physically GPU1. That is
 # safe *only* because this process never starts Kit -- see

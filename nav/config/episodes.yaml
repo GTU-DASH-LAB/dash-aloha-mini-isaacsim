@@ -28,7 +28,7 @@ episodes:
   office_nearest_elevator:
     # episode_28  |  DynaNav: spl 1.0, path 14.46 m, 21.9 s
     # ours: turn -2.3 deg, straight 15.1 m, detour 0.96x, difficulty 1.19
-    scene: "/home/gtu-dsa/robotics/TIC-VLA/DynaNav/assets/office.usd"
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
     start: [-2.85, 9.6, 0.01]
     start_yaw_deg: -132.0
     goal: [-13.4, -1.2, 0.01]
@@ -67,7 +67,7 @@ episodes:
   office_passing_hallway:
     # episode_49  |  DynaNav: spl 1.0, path 35.21 m, 51.9 s
     # ours: turn -4.3 deg, straight 36.4 m, detour 0.97x, difficulty 1.92
-    scene: "/home/gtu-dsa/robotics/TIC-VLA/DynaNav/assets/office.usd"
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
     start: [-15.2, 12.7, 0.01]
     start_yaw_deg: 90.0
     goal: [-12.5, 49, 0.01]
@@ -106,7 +106,7 @@ episodes:
   office_hallway_turn:
     # episode_39  |  DynaNav: spl 1.0, path 13.17 m, 20.0 s
     # ours: turn +12.3 deg, straight 13.74 m, detour 0.96x, difficulty 2.15
-    scene: "/home/gtu-dsa/robotics/TIC-VLA/DynaNav/assets/office.usd"
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
     start: [-10.6, -12.1, 0.01]
     start_yaw_deg: -90.0
     goal: [-7.68, -25.53, 0.01]
@@ -119,7 +119,7 @@ episodes:
   office_hallway_turn2:
     # episode_37  |  DynaNav: spl 1.0, path 12.71 m, 19.3 s
     # ours: turn +12.9 deg, straight 13.06 m, detour 0.97x, difficulty 2.2
-    scene: "/home/gtu-dsa/robotics/TIC-VLA/DynaNav/assets/office.usd"
+    scene: "${TICVLA_DYNANAV_ROOT}/assets/office.usd"
     start: [-10.6, -12.8, 0.01]
     start_yaw_deg: -90.0
     goal: [-7.68, -25.53, 0.01]

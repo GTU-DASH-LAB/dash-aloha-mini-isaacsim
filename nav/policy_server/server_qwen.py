@@ -80,9 +80,13 @@ from arc_menu import (  # noqa: E402
     speed_for, speed_from_level, stop_label,
 )
 
-MODEL_PATH = os.environ.get(
-    "QVLA_MODEL", "/home/gtu-dsa/robotics/models/Qwen3.8-27B-NVFP4"
-)
+# The bare default is the Hugging Face id the shipping profile names, not a path on one
+# machine: `launch_qwen.sh` always sets QVLA_MODEL from
+# nav/config/profiles/baseline.yaml, so this fallback is only ever reached by someone
+# running this file by hand -- and for them, a name that resolves through the HF cache
+# works everywhere, whereas the local NVFP4 directory that used to sit here works in
+# exactly one place. Point QVLA_MODEL at a directory to load local weights instead.
+MODEL_PATH = os.environ.get("QVLA_MODEL", "Qwen/Qwen3.8-27B-FP8")
 # 200704 px = 448x448. On this vision tower a frame costs exactly
 # pixels / (patch_size * spatial_merge)^2 = pixels / 1024 tokens, so this is 196
 # tokens per frame -- the same budget InternVL3-1B feeds today. Native 1920x1080 would

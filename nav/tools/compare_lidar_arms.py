@@ -122,20 +122,43 @@ class Comparison:
         seen = [d for d in self.history if ep in d]
         return (sum(1 for d in seen if d[ep]), len(seen)) if seen else None
 
+    def blown(self) -> list[str]:
+        """Episodes where either arm's physics let go. Paired, so one bad arm voids both.
+
+        Voiding the twin as well is the point rather than an over-reaction: the whole
+        value of this table is that a row compares two runs of the SAME episode, and a
+        surviving half is no longer a comparison of anything.
+        """
+        return [e for e in self.order
+                if self.arm_a[e]["blown_up"] or self.arm_b[e]["blown_up"]]
+
     def totals(self) -> dict:
+        """Pass counts over every episode; distance aggregates over the valid ones.
+
+        The split is deliberate and the two halves are not interchangeable. A blown-up
+        run did genuinely not reach its goal, so dropping it from the pass denominator
+        would inflate the rate on both arms -- and it fails symmetrically, so leaving it
+        in costs nothing. But its `path_m` and `closed_frac` are records of a flight, and
+        summing those does not add noise, it inverts the answer: one such episode made
+        the lidar arm read 19952 m against 1063, where the other eighteen read 713
+        against 970.
+        """
         n = len(self.order) or 1
+        valid = [e for e in self.order if e not in self.blown()]
+        v = len(valid) or 1
         return {
             "n": len(self.order),
+            "n_valid": len(valid),
             "a_pass": sum(1 for e in self.order if self.arm_a[e]["success"]),
             "b_pass": sum(1 for e in self.order if self.arm_b[e]["success"]),
-            "a_closed": sum(self.arm_a[e]["closed_frac"] for e in self.order) / n * 100,
-            "b_closed": sum(self.arm_b[e]["closed_frac"] for e in self.order) / n * 100,
-            "a_guard": sum(self.arm_a[e]["guard"] for e in self.order),
-            "b_guard": sum(self.arm_b[e]["guard"] for e in self.order),
-            "a_path": sum(self.arm_a[e]["path_m"] for e in self.order),
-            "b_path": sum(self.arm_b[e]["path_m"] for e in self.order),
-            "a_spl": sum(self.arm_a[e]["spl"] for e in self.order) / n,
-            "b_spl": sum(self.arm_b[e]["spl"] for e in self.order) / n,
+            "a_closed": sum(self.arm_a[e]["closed_frac"] for e in valid) / v * 100,
+            "b_closed": sum(self.arm_b[e]["closed_frac"] for e in valid) / v * 100,
+            "a_guard": sum(self.arm_a[e]["guard"] for e in valid),
+            "b_guard": sum(self.arm_b[e]["guard"] for e in valid),
+            "a_path": sum(self.arm_a[e]["path_m"] for e in valid),
+            "b_path": sum(self.arm_b[e]["path_m"] for e in valid),
+            "a_spl": sum(self.arm_a[e]["spl"] for e in valid) / v,
+            "b_spl": sum(self.arm_b[e]["spl"] for e in valid) / v,
         }
 
     def won(self) -> list[str]:
@@ -245,6 +268,18 @@ def main() -> None:
                   "could not:")
             print("  everywhere else the prior already contains both outcomes, so a flip "
                   "is noise.")
+
+    if c.blown():
+        print(f"\n  PHYSICS BLEW UP, distance aggregates exclude these "
+              f"({len(c.blown())} of {t['n']}):")
+        for e in c.blown():
+            for lbl, arm in ((c.a_label, c.arm_a), (c.b_label, c.arm_b)):
+                if arm[e]["blown_up"]:
+                    print(f"    {e:<26} {lbl:<9} path {arm[e]['path_m']:.0f} m, "
+                          f"largest single step {arm[e]['max_step_m']:.1f} m")
+        print("  A teleported base has nothing bounding how far it can be flung, so the")
+        print("  trace records the flight as a drive. `path_m`, `closest_m` and `closed`")
+        print("  are all void on such a row -- they describe the explosion, not driving.")
 
     if c.only_a or c.only_b:
         print("\n  NOT PAIRED -- these are excluded from every number above, and a "

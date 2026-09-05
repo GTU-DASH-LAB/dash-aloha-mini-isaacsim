@@ -115,7 +115,7 @@ def para(text: str, colour: str = MUTED, size: str = "12.5px") -> str:
             f'line-height:1.6;color:{colour};">{text}</p>')
 
 
-def build(c, counters: dict | None, when: str) -> str:
+def build(c, counters: dict | None, when: str, correction: str = "") -> str:
     t = c.totals()
     delta = t["b_pass"] - t["a_pass"]
     dcolour = WIN if delta > 0 else LOSS if delta < 0 else MUTED
@@ -139,6 +139,18 @@ def build(c, counters: dict | None, when: str) -> str:
         f'{escape(c.controller)}</code> &nbsp;·&nbsp; both arms re-run fresh, same '
         f'server, same policy</p>'
     )
+
+    # A correction rides ABOVE the numbers it corrects. A reader who reaches the fixed
+    # aggregates first has no reason to revisit the ones already sitting in their inbox.
+    if correction:
+        P.append(
+            f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%" '
+            f'style="border-collapse:collapse;margin:0 0 20px;"><tr>'
+            f'<td style="background:{WARN_BG};border:1px solid {WARN_RULE};'
+            f'border-left:3px solid {LOSS};padding:14px 16px;font-family:{SANS};'
+            f'font-size:12.5px;line-height:1.65;color:{WARN_INK};">{correction}</td>'
+            f'</tr></table>'
+        )
 
     # --- headline -------------------------------------------------------------------
     P.append(
@@ -233,20 +245,29 @@ def build(c, counters: dict | None, when: str) -> str:
         # up (4.0 m) and down (1.0 m). Shown per row because otherwise a `3.99 m` marked
         # pass sitting under a `1.89 m` marked fail reads as a scoring error.
         thr = a["threshold_m"]
+        # A blown-up row keeps its place and its flip -- both arms genuinely failed to
+        # arrive -- but its distances are struck through, because they measure a flight.
+        void = a["blown_up"] or b["blown_up"]
+        strike = "text-decoration:line-through;opacity:0.55;" if void else ""
+        name = (escape(ep) + (f' <span style="color:{LOSS};font-weight:700;">⚠</span>'
+                              if void else ""))
         P.append(
             f"<tr>"
-            + cell(escape(ep), extra=zebra + "white-space:nowrap;")
+            + cell(name, extra=zebra + "white-space:nowrap;")
             + cell(f"{thr:.1f} m", mono=True,
                    colour=INK if abs(thr - 1.5) > 1e-6 else FAINT,
                    align="center", extra=zebra)
             + cell(was_txt, mono=True, colour=was_col, align="center", extra=zebra)
-            + cell(verdict(a), mono=True, align="center", extra=zebra)
-            + cell(verdict(b), mono=True, align="center", extra=zebra)
+            + cell(verdict(a), mono=True, align="center", extra=zebra + strike)
+            + cell(verdict(b), mono=True, align="center", extra=zebra + strike)
             + cell(flip_html, align="center", extra=zebra)
-            + cell(f"{ca:.0f}%", mono=True, colour=MUTED, align="right", extra=zebra)
-            + cell(f"{cb:.0f}%", mono=True, colour=MUTED, align="right", extra=zebra)
+            + cell(f"{ca:.0f}%", mono=True, colour=MUTED, align="right",
+                   extra=zebra + strike)
+            + cell(f"{cb:.0f}%", mono=True, colour=MUTED, align="right",
+                   extra=zebra + strike)
             + cell(signed(d), mono=True, align="right",
-                   colour=WIN if d > 1 else LOSS if d < -1 else FAINT, extra=zebra)
+                   colour=WIN if d > 1 else LOSS if d < -1 else FAINT,
+                   extra=zebra + strike)
             + "</tr>"
         )
     P.append(
@@ -333,9 +354,45 @@ def build(c, counters: dict | None, when: str) -> str:
             )
         P.append("</table>")
 
+    # --- the physics let go, said before the aggregates that exclude it --------------
+    if c.blown():
+        rows = []
+        for ep in c.blown():
+            for lbl, arm in ((c.a_label, c.arm_a), (c.b_label, c.arm_b)):
+                if arm[ep]["blown_up"]:
+                    rows.append(
+                        f'<code style="font-family:{MONO};">{escape(ep)}</code> on arm '
+                        f'<b>{escape(lbl)}</b> — path <b>{arm[ep]["path_m"]:,.0f} m</b>, '
+                        f'largest single trace step <b>{arm[ep]["max_step_m"]:.0f} m</b> '
+                        f'(the other arm of the same episode: '
+                        f'{(c.arm_b if arm is c.arm_a else c.arm_a)[ep]["max_step_m"]:.1f}'
+                        f' m)'
+                    )
+        P.append(
+            f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%" '
+            f'style="border-collapse:collapse;margin:30px 0 0;"><tr>'
+            f'<td style="background:{WARN_BG};border:1px solid {WARN_RULE};'
+            f'border-left:3px solid {LOSS};padding:13px 16px;font-family:{SANS};'
+            f'font-size:12.5px;line-height:1.65;color:{WARN_INK};">'
+            f'<b>The physics let go on {len(c.blown())} of {t["n"]} episodes, and the '
+            f'aggregates below exclude them.</b><br>' + "<br>".join(rows) + "<br><br>"
+            f'A kinematic base is teleported, so nothing in the simulator bounds how far '
+            f'it can be flung — the trace then records the flight as if it were a drive. '
+            f'On such a row <code style="font-family:{MONO};">path</code>, '
+            f'<code style="font-family:{MONO};">closest</code> and '
+            f'<code style="font-family:{MONO};">closed</code> all describe the explosion '
+            f'rather than any navigation, which is why they are struck through above. '
+            f'<b>This is not a cosmetic outlier:</b> summing it in made the lidar arm '
+            f'read 19,952 m against 1,063, where the other eighteen episodes read '
+            f'713 against 970 — and it moved the mean-closed difference from −3.7 pp to '
+            f'−0.3. The pass counts are unaffected; both arms fail that episode either '
+            f'way.</td></tr></table>'
+        )
+
     # --- aggregates that speak about the sensor rather than the policy ---------------
     P.append(section(
-        "Aggregates",
+        f"Aggregates — over the {t['n_valid']} episodes whose physics held"
+        + ("" if t["n_valid"] == t["n"] else f", not all {t['n']}"),
         "<b>Guard interventions is the one number here that does not pass through the "
         "VLM</b> — the guard is the half of this change that is pure geometry. More "
         "returns should mean <i>more</i> interventions; a large drop would mean the "
@@ -447,13 +504,17 @@ def build(c, counters: dict | None, when: str) -> str:
     return "".join(P)
 
 
-def plain(c, when: str) -> str:
+def plain(c, when: str, correction: str = "") -> str:
     """The text/plain fallback. Says what happened on its own, per notify_run's rule."""
     t = c.totals()
     lines = [
         f"2D lidar A/B ladder, {t['n']} paired episodes, controller {c.controller}",
         when,
         "",
+    ]
+    if correction:
+        lines += ["CORRECTION -- this supersedes the earlier message.", correction, ""]
+    lines += [
         f"  A {c.a_label:<10} {t['a_pass']}/{t['n']}   mean closed {t['a_closed']:.0f}%",
         f"  B {c.b_label:<10} {t['b_pass']}/{t['n']}   mean closed {t['b_closed']:.0f}%",
         f"  difference       {t['b_pass'] - t['a_pass']:+d}",
@@ -474,6 +535,9 @@ def plain(c, when: str) -> str:
             aa, bb = c.arm_a[ep]["success"], c.arm_b[ep]["success"]
             lines.append(f"    {ep:<26} A {'pass' if aa else 'fail'}   "
                          f"B {'pass' if bb else 'fail'}")
+    if c.blown():
+        lines += ["", f"  PHYSICS BLEW UP on {', '.join(c.blown())} -- distance",
+                  "  aggregates exclude them; pass counts are unaffected."]
     lines += ["", "Full table in the HTML part, or:",
               "  python3 nav/tools/compare_lidar_arms.py --history"]
     return "\n".join(lines)
@@ -489,11 +553,14 @@ def main() -> int:
     ap.add_argument("--health", default="http://127.0.0.1:8766/health")
     ap.add_argument("--send", action="store_true", help="mail it via notify_run.py")
     ap.add_argument("--subject", default=None)
+    ap.add_argument("--correction", default="",
+                    help="HTML notice placed above the numbers, for a re-send that "
+                         "supersedes an earlier message")
     args = ap.parse_args()
 
     c = pair_arms(args.a, args.b, args.controller, history=True)
     when = datetime.datetime.now().strftime("%d %B %Y, %H:%M")
-    body = build(c, health(args.health), when)
+    body = build(c, health(args.health), when, correction=args.correction)
     args.out.write_text(body)
     print(f"wrote {args.out} ({len(body) / 1024:.1f} KB)")
 
@@ -508,7 +575,7 @@ def main() -> int:
         # second copy of either.
         subprocess.run(
             [sys.executable, str(REPO / "nav/tools/notify_run.py"),
-             "--subject", subject, "--body", plain(c, when),
+             "--subject", subject, "--body", plain(c, when, args.correction),
              "--html", str(args.out)],
             check=True,
         )

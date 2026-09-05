@@ -42,6 +42,10 @@ def load_config() -> dict:
     return yaml.safe_load(CONFIG.read_text()).get("episodes", {})
 
 
+def load_defaults() -> dict:
+    return yaml.safe_load(CONFIG.read_text()).get("defaults", {})
+
+
 def success_threshold(spec: dict | None) -> float:
     """The episode's OWN arrival radius, which is not 1.5 m for six of the nineteen.
 
@@ -57,9 +61,8 @@ def success_threshold(spec: dict | None) -> float:
     runner correctly denied, and it does it silently -- a run that touched 1.2 m and
     drove away would have read as a pass here and a fail in the harness that produced it.
     """
-    defaults = yaml.safe_load(CONFIG.read_text()).get("defaults", {})
     return float((spec or {}).get("success_threshold_m",
-                                  defaults.get("success_threshold_m", 1.5)))
+                                  load_defaults().get("success_threshold_m", 1.5)))
 
 
 def reference(spec: dict | None) -> dict:
@@ -115,6 +118,30 @@ def score(path: Path, cfg: dict) -> dict | None:
         (initial - closest) / initial if initial == initial and initial > 1e-6 else 0.0
     )
 
+    # --- did the physics let go? -----------------------------------------------------
+    # A kinematic base is teleported, so nothing in the sim bounds how far it can end up
+    # from where it was: when the integration diverges the robot is flung, and the trace
+    # records the flight as if it were a drive. Measured on outdoor_pillars, arm B: the
+    # last samples step 85 m EACH, ending 17.9 km out, against 0.7 m maximum on the very
+    # same episode's other arm.
+    #
+    # This is not a cosmetic outlier. Such a run's `path_m` is meaningless, and so are
+    # `closest_m` and `closed_frac` -- closest approach becomes a property of the
+    # explosion's trajectory rather than of any navigation. Summed into an aggregate it
+    # does not merely add noise, it INVERTS the answer: including this one episode made
+    # the lidar arm look like it drove 19952 m against 1063, when excluding it the arm
+    # drove 713 m against 970, and it moved the mean-closed delta from -3.7 pp to -0.3.
+    #
+    # The test is against what the speed cap physically permits over the run's own
+    # duration, with 2x of slack so no legitimate run can trip it. The margin here is
+    # 32x, so there is no borderline case to tune.
+    elapsed = d.get("elapsed_s") or 0.0
+    cap = float(load_defaults().get("max_speed_mps", 1.5))
+    reach_bound = 2.0 * cap * elapsed
+    blown_up = bool(elapsed > 0 and path_len > reach_bound > 0)
+    max_step = max((math.dist(a[:2], b[:2]) for a, b in zip(trace, trace[1:])),
+                   default=float("nan"))
+
     plans = d.get("plans") or []
     asked = [p[1] for p in plans]
     guide = [p[4] for p in plans if len(p) > 4 and p[4] is not None]
@@ -142,6 +169,10 @@ def score(path: Path, cfg: dict) -> dict | None:
         # the outdoor rows read as a scoring error next to the 1.5 m indoor ones.
         "threshold_m": threshold,
         "path_m": path_len,
+        # True when the trace is a flight rather than a drive. Every distance-derived
+        # field on this row is void when it is set -- see the comment above.
+        "blown_up": blown_up,
+        "max_step_m": max_step,
         "spl": spl,
         "closed_frac": closed,
         "calls": d.get("policy_calls", 0),

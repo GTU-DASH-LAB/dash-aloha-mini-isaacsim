@@ -17,6 +17,9 @@ from the Isaac Sim UI.
   Quick Start below)
 - [`nav/README.md`](nav/README.md) — language-driven navigation (TIC-VLA + DynaNav),
   see below
+- [`robot/README.md`](robot/README.md) — **putting that policy on a real robot**: the
+  three interfaces you implement against your own camera and motor SDK, and how to bring
+  it up without Isaac Sim, the submodules, or a GPU on the robot itself
 
 Status: Phases 0-4 done and verified (import, physics, terminal control). Phase 5 (UI
 control) has the underlying mechanism verified but not click-tested in an actual GUI

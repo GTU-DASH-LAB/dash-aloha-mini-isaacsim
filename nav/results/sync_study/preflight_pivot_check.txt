@@ -1,0 +1,6 @@
+-- checking 20260901-231507_office_hallway_turn2_braking.json
+   menu             pivots=True angle=30.0 deg stop_label=10
+   turns            served=1 executed=1 of 15 decisions
+   result           SUCCESS at 1.50 m, guard 0, recoveries 1
+
+-- PIVOTS CONFIRMED END TO END (1 turns chosen, served and performed)

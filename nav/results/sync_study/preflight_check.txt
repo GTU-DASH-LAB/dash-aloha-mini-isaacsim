@@ -1,0 +1,13 @@
+-- checking 20260902-072052_office_hallway_turn2_braking.json
+   plan_mode        bounded
+   plan_period_s    3.0
+   decisions        22
+   spacing          3.00-3.00 s
+   staleness        0.00-3.00 s (first 0.00)
+   think_wall_s     23.8 of wall_s 191.23965454101562
+   server           predictions=22 generations=22 bounded_calls=22
+   bound engaged    0 stalls, 0.0 s total
+   VERDICT          the bound never engaged: every generation fitted inside a period,
+                    so this was free async with a safety guarantee.
+
+-- BOUNDED ASYNC CONFIRMED

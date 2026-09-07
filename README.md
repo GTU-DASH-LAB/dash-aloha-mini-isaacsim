@@ -1,8 +1,46 @@
 # dash-aloha-mini-isaacsim
 
-Simulating **AlohaMini1** (mobile base + vertical lift + two SO-101 arms) in NVIDIA
-Isaac Sim 6.0.1, with full rigid-body physics, controllable from a terminal script and
-from the Isaac Sim UI.
+**AlohaMini1** — a mobile base with a vertical lift and two SO-101 arms — simulated in
+NVIDIA Isaac Sim 6.0.1 with full rigid-body physics, and driven from a typed sentence.
+The policy is never given a goal coordinate. It gets its own camera and the words.
+
+![A warehouse run: the robot's camera with seven coloured candidate paths drawn on the floor, next to a third-person view of the robot driving toward the aisle](docs/media/nav_warehouse_aisle05.gif)
+
+> **“Proceed to the traffic cones at the entrance of Aisle 05 (the second aisle from the
+> right).”** — the entire input, alongside the camera frame.
+>
+> **Left is everything the policy gets** — the robot's own camera, with the candidate
+> paths drawn onto the floor and the one it picked lit up. **Right is a third-person view
+> it never sees**, recorded so a viewer can check whether the robot then went where it
+> said it would. Episode `warehouse`: arrived **1.50 m** from the cones over 15.4 m of
+> path. Shown at 5× speed.
+
+Three more, same two views stacked — the camera and its menu on top, the third-person
+view below:
+
+<table>
+<tr>
+<td width="33%"><img width="100%" src="docs/media/nav_hospital_wheelchairs.gif" alt="Hospital run: the robot drives past wheelchairs toward a water dispenser by a window"></td>
+<td width="33%"><img width="100%" src="docs/media/nav_office_hallway_turn.gif" alt="Office run: the robot drives down a hallway and turns left at the end"></td>
+<td width="33%"><img width="100%" src="docs/media/nav_hospital_vending_pivot.gif" alt="Hospital run with pivot options: two menu items are turn-in-place arrows instead of arcs"></td>
+</tr>
+<tr>
+<td valign="top"><b><code>hospital_past_wheelchairs</code></b><br>“…stop at the water dispenser by the window.” 13.9 m of path, 31 s. <i>5×</i></td>
+<td valign="top"><b><code>office_hallway_turn</code></b><br>“…then turn left at the end to approach the red emergency exit door.” A corner, not a straight line. <i>7×</i></td>
+<td valign="top"><b><code>hospital_vending_machine</code></b><br>The pivot variant — menu items <b>1</b> and <b>6</b> are turn-in-place arrows, not arcs. <i>5×</i></td>
+</tr>
+</table>
+
+The policy behind all four clips is a **frozen Qwen3.8-27B**: no fine-tuning, no
+trajectory data, no action head. The whole thing is arcs drawn on the robot's own camera
+and two calls asking which number to take. It scores **8 of 13** on the benchmark ladder,
+against 6/13 for the fine-tuned VLA it replaced — the first three clips are episodes from
+that scored run, the fourth is a variant arm that also offers turn-in-place. How it got
+there, including the measurements that killed the more obvious approaches, is in
+[`nav/README.md`](nav/README.md).
+
+The same robot is also a manipulator — two SO-101 arms and a 0–0.6 m lift, driven from a
+terminal REPL or a gamepad:
 
 ![Robot after a control sequence: lift extended, arms moved, base driven](docs/control_demo.png)
 
@@ -15,8 +53,8 @@ from the Isaac Sim UI.
   from [liyiteng/alohamini](https://github.com/liyiteng/alohamini) (Apache-2.0)
 - [`scripts/control/control_terminal.py`](scripts/control/control_terminal.py) — terminal control (see
   Quick Start below)
-- [`nav/README.md`](nav/README.md) — language-driven navigation (TIC-VLA + DynaNav),
-  see below
+- [`nav/README.md`](nav/README.md) — language-driven navigation: the arc menu, TIC-VLA,
+  and the DynaNav benchmark, see below
 - [`robot/README.md`](robot/README.md) — **putting that policy on a real robot**: the
   three interfaces you implement against your own camera and motor SDK, and how to bring
   it up without Isaac Sim, the submodules, or a GPU on the robot itself
@@ -29,10 +67,12 @@ No ROS2 dependency by default. Isaac Sim 6.0.1 install expected at `~/isaacsim`.
 
 ## Language-driven navigation
 
-The robot also drives itself from a typed sentence, using **TIC-VLA** (a
-vision-language-action policy) and benchmark environments/instructions from
-**DynaNav**. Full detail — the architecture, the version-pairing constraints that force
-it into two separate processes, every measured result — lives in
+The clips above. Two policies have driven this, both scored on benchmark
+environments/instructions from **DynaNav**: **TIC-VLA**, a fine-tuned
+vision-language-action model with a trained action head, and the **arc menu**, a frozen
+Qwen3.8-27B that never saw a trajectory. Full detail — the architecture, the
+version-pairing constraints that force it into two separate processes, every measured
+result — lives in
 [`nav/README.md`](nav/README.md), [`nav/plan.md`](nav/plan.md), and the "Language-driven
 navigation" section of [`CLAUDE.md`](CLAUDE.md). Short version:
 
@@ -45,10 +85,13 @@ navigation" section of [`CLAUDE.md`](CLAUDE.md). Short version:
   since the runner teleports to each episode's own start pose before every run; the UI
   can then switch between every episode sharing that stage without a rebuild.
 - Current result on the 13-episode ladder (easiest-first by our own difficulty
-  ranking): **6/13 succeed**, mean SPL 0.52 on the 11 episodes DynaNav also scores —
-  two of those (`hospital_forward_staircase`, `hospital_exit_room`) beat DynaNav's own
-  SPL outright. Full table and the two failure modes behind the other seven are in
-  `nav/plan.md`'s Phase 18.
+  ranking): **8/13 with the arc menu**, up from **6/13 with TIC-VLA**. Under TIC-VLA the
+  mean SPL was 0.52 on the 11 episodes DynaNav also scores, two of them
+  (`hospital_forward_staircase`, `hospital_exit_room`) beating DynaNav's own SPL
+  outright. Full tables, and the failure modes behind the ones that still fail, are in
+  `nav/plan.md`'s Phase 18 and the "Language-driven navigation" section of `CLAUDE.md`.
+  Read `n=1` on this stack as noise: the same episode and sentence can succeed twice and
+  fail once, because generation timing decides which plan is in hand at which step.
 
 ```bash
 nav/sim/build_nav_scene.sh hospital     # once per environment (hospital/office/warehouse)
@@ -58,31 +101,33 @@ nav/run.sh --episode hospital_down_hallway
 Then open `http://127.0.0.1:8080` — every episode in the loaded environment is
 clickable and runnable from there; the others are listed with the relaunch command.
 
-**Two full runs, recorded from the live UI, third-person view on:**
+**Two full TIC-VLA runs at full resolution**, recorded from the live UI with the
+third-person view on — download to play, since GitHub will not play a video that lives
+in a repo:
 
-<table>
-<tr><td width="50%">
+- [`docs/nav_demo_hospital_forward_staircase.mp4`](docs/nav_demo_hospital_forward_staircase.mp4)
+  — turn into a side hallway toward a staircase, `+66.1°`, one of the harder episodes by
+  turn size. **Succeeds**, SPL 0.90, beating DynaNav's own 0.88.
+- [`docs/nav_demo_hospital_down_hallway2.mp4`](docs/nav_demo_hospital_down_hallway2.mp4)
+  — straight hallway approach to a bed beside a door, `32.5 m` start. **Succeeds**,
+  SPL 1.00, matching DynaNav.
 
-`hospital_forward_staircase` — turn into a side hallway toward a staircase, `+66.1°`
-turn, one of the harder episodes by turn size. **Succeeds** (SPL 0.90, beating
-DynaNav's own 0.88).
+The clips at the top of this file are cut from arc-menu runs recorded the same way —
+[`docs/media/README.md`](docs/media/README.md) says which run each one is and how to cut
+another. Every run writes its menus and decisions as it goes, so any run can be replayed
+into a video of what the model saw and chose:
 
-<video src="docs/nav_demo_hospital_forward_staircase.mp4" controls muted playsinline width="100%"></video>
+```bash
+python3 nav/tools/make_run_video.py --latest      # or --all
+```
 
-</td><td width="50%">
-
-`hospital_down_hallway2` — straight hallway approach to a bed beside a door,
-`32.5 m` start. **Succeeds** (SPL 1.00, matching DynaNav).
-
-<video src="docs/nav_demo_hospital_down_hallway2.mp4" controls muted playsinline width="100%"></video>
-
-</td></tr>
-</table>
-
-(If your Markdown viewer doesn't render inline `<video>`, the files are at
-[`docs/nav_demo_hospital_forward_staircase.mp4`](docs/nav_demo_hospital_forward_staircase.mp4)
-and
-[`docs/nav_demo_hospital_down_hallway2.mp4`](docs/nav_demo_hospital_down_hallway2.mp4).)
+That tool is a debugging instrument first. A benchmark row says an episode closed 87% of
+its gap with 506 collision-guard stops; it cannot say whether the model kept picking a
+curve into a wall, lost the corridor at one specific corner, or was steering fine while
+the controller scraped. Those have different fixes, and only the video separates them —
+which is also why the third-person panel is recorded at all. A scrape, a pivot in place
+and a reverse out of a wedge are all invisible from the camera doing the deciding,
+because that camera moves with the robot.
 
 ## Cloning
 

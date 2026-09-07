@@ -87,6 +87,23 @@ class PolicyClient:
         """
         return self._post("/reset", {"run": run} if run else {})
 
+    def menu_speed(self, cruise_mps: float) -> dict[str, Any]:
+        """Retune the cruise speed without reloading the weights.
+
+        The arc menu has no speed channel: the model picks a DIRECTION and the pace comes
+        from the server's configuration. So a caller that caps speed only on its own side
+        leaves the server planning 3 m arcs at a pace the robot never drives, and
+        `BrakingPursuitController` takes `min(v_max, plan_speed(waypoints))` against a
+        number describing somebody else's robot. Real hardware is where that bites, since
+        `robot.yaml` is edited mid-drive and a restart there costs a model load.
+
+        Only the arc-menu server implements this; `server.py` answers 404 as a
+        `PolicyServerError`. Between episodes, not during a scored one -- every decision
+        records the speed it used, but `summarize_runs.py` cannot know a run changed
+        pace halfway and will report it as one measurement.
+        """
+        return self._post("/menu_speed", {"cruise_mps": float(cruise_mps)})
+
     def replan(self) -> dict[str, Any]:
         """Throw away the cached plan MID-episode and leave everything else alone.
 

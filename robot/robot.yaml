@@ -1,0 +1,41 @@
+# Limits the robot is driven under. Edited while it is driving -- the runner notices the
+# file changing and applies the new values within a control tick, so this is the file to
+# keep open in one terminal while you watch the robot in the other.
+#
+# `robot/tools/set_limit.py cruise_mps 0.2` and the control API write this same file.
+#
+# What is NOT here: anything that changes what the policy IS -- the model, the thinking
+# level, the arc set, the frame count. Those are pinned in
+# nav/config/profiles/baseline.yaml, next to the scores they earned. These are limits on
+# the vehicle, which is a different question and depends on a chassis nobody upstream has
+# seen. See robot/config.py for what each one costs you.
+
+limits:
+  # START HERE. False = the whole loop runs and the base is held at zero, which is how
+  # you check that the camera is up, the policy answers, and the arrows point where you
+  # expect, without the robot moving. Set true when you have done all three.
+  #
+  # This is a software flag and it is not an e-stop. If the software is what failed, this
+  # cannot help you. Have a hardware cutoff within reach before the first `true`.
+  enabled: false
+
+  # Deliberately slower than the 0.45 m/s the benchmark ran at. Start below what you
+  # think is right: a first drive at walking pace tells you as much about whether the
+  # frame convention is correct, and leaves time to reach the cutoff when it is not.
+  cruise_mps: 0.25
+  max_speed_mps: 0.45
+  max_yaw_rate_radps: 1.0
+
+  # Higher than the simulator's 0.6 m. A scan-driven guard reads a buffer holding one
+  # revolution, so a bearing can be ~100 ms old; the stop distance has to cover the
+  # travel in that time.
+  guard_stop_m: 0.8
+  guard_slow_m: 1.8
+  guard_fan_half_angle_deg: 35.0
+  # Where your chassis ends. Returns inside this are self-hits and are discarded --
+  # without it a robot that can see its own bumper guards against itself and never moves.
+  chassis_radius_m: 0.35
+
+  control_hz: 20.0
+  decision_period_s: 3.0
+  watchdog_s: 1.0

@@ -1,0 +1,42 @@
+        PER-EPISODE, ONE CHARACTER PER SEED        
+  seeds [0, 1, 2]   Y = reached the goal, . = did not, ? = no run on disk
+
+episode                         ref  refrep     all
+---------------------------------------------------
+hospital_down_hallway2          .Y.     .??     ...
+hospital_past_wheelchairs       .YY     .??     Y..
+hospital_forward_staircase      Y..     .??     ...
+hospital_exit_room              Y.Y     Y??     Y..
+warehouse                       Y..     .??     ...
+warehouse_aisle6                YY.     Y??     ...
+---------------------------------------------------
+solved / runs                  9/18     2/6    2/18
+
+  ref       coarse 7, no turns, 1 frame
+  refrep    ref again, seed 0 -- the determinism check, not a policy
+  all       fine 11, 15 deg turns, 2 frames
+
+
+ARM SCOREBOARD
+
+arm          solved   closest   closed     spl   guard   turns
+--------------------------------------------------------------
+ref          9/18        5.75     75%    0.414    3642       0
+refrep       2/6         6.48     71%    0.279    1531       0
+all          2/18        9.61     60%    0.090    3423      78
+
+  closest = mean closest approach to the goal, metres (lower is better)
+  closed  = mean fraction of the starting gap the robot actually closed
+  turns   = in-place turns chosen, summed; -- means the arm had none to offer
+
+
+REPRODUCIBILITY  --  the same configuration run twice, seed 0 both times
+
+  identical settings, identical seed, same six episodes: 4/6 agree
+    hospital_forward_staircase     ref Y  refrep .   <- differs
+    warehouse                      ref Y  refrep .   <- differs
+
+  closest-approach difference: max 17.446 m, mean 3.812 m
+  SOMETHING OUTSIDE THE SEED IS STILL MOVING. Until it is explained, an
+  arm that differs by fewer episodes than this line does has not been
+  shown to differ at all.

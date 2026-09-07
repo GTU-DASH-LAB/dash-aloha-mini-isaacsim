@@ -1,0 +1,181 @@
+QWEN3.8-27B MENU NAVIGATION -- CAMPAIGN ANALYSIS
+13 episodes (hospital / office / warehouse), 1 run each, sync planning, 3.0 s period
+generated 2026-09-02
+
+====================================================================================================
+1. THE HEADLINE: NOTHING IS DISTINGUISHABLE FROM ANYTHING ELSE
+====================================================================================================
+
+episode                     baseline med  p3.0 med      p3.0 high     pivot med     pivot high    bounded med   
+----------------------------------------------------------------------------------------------------------------
+hospital_down_hallway       OK   1.5      OK   1.5      OK   1.5      OK   1.5      OK   1.5      OK   1.5      
+hospital_down_hallway2      OK   1.5      FAIL 13.5     OK   1.5      FAIL 11.0     FAIL 9.7      FAIL 15.9     
+hospital_exit_room          FAIL 17.4     OK   1.5      FAIL 36.3     OK   1.5      FAIL 42.7     FAIL 17.2     
+hospital_forward_staircase  FAIL 23.6     FAIL 22.7     FAIL 22.3     FAIL 23.2     FAIL 18.9     FAIL 23.8     
+hospital_past_wheelchairs   OK   1.5      OK   1.5      FAIL 2.8      FAIL 5.0      OK   1.5      FAIL 5.6      
+hospital_vending_machine    FAIL 1.6      OK   1.5      OK   1.5      FAIL 1.9      OK   1.5      OK   1.5      
+hospital_vending_machine2   OK   1.5      OK   1.5      OK   1.5      OK   1.5      OK   1.5      FAIL 6.9      
+office_hallway_turn         OK   1.5      OK   1.5      OK   1.5      OK   1.5      OK   1.5      OK   1.5      
+office_hallway_turn2        FAIL 4.7      OK   1.5      OK   1.5      OK   1.5      OK   1.5      OK   1.5      
+office_nearest_elevator     OK   1.5      OK   1.5      OK   1.5      OK   1.5      FAIL 7.1      OK   1.5      
+office_passing_hallway      OK   1.5      OK   1.5      FAIL 11.8     OK   1.5      FAIL 13.7     OK   1.5      
+warehouse                   OK   1.5      FAIL 12.5     OK   1.5      FAIL 13.1     OK   1.5      FAIL 10.4     
+warehouse_aisle6            OK   1.5      FAIL 32.2     FAIL 9999.0   FAIL 16.4     FAIL 28.4     FAIL 25.8     
+----------------------------------------------------------------------------------------------------------------
+SUCCESS                     9/13          9/13          8/13          7/13          7/13          6/13          
+turns chosen                0             0             0             24            21            0             
+guard interventions         1380          956           3364          195           982           1495          
+
+Every arm lands between 6/13 and 9/13. Per episode, across the six arms:
+
+  always succeeds (2):  hospital_down_hallway, office_hallway_turn
+  always fails    (1):  hospital_forward_staircase
+  FLIPS           (10):
+      warehouse_aisle6               1/6
+      hospital_down_hallway2         2/6
+      hospital_exit_room             2/6
+      hospital_past_wheelchairs      3/6
+      warehouse                      3/6
+      hospital_vending_machine       4/6
+      office_passing_hallway         4/6
+      hospital_vending_machine2      5/6
+      office_hallway_turn2           5/6
+      office_nearest_elevator        5/6
+
+  46 of 78 runs succeeded overall (59%). Ten of thirteen episodes
+  changed verdict between arms. With one run per cell, a 9-vs-7 difference is inside
+  that per-episode variance -- it cannot be attributed to the configuration.
+
+  WHAT THIS MEANS FOR EVERY NUMBER BELOW: success counts are not yet a measurement.
+  Repeats (3+ seeds per episode) are the missing ingredient, not more configurations.
+
+====================================================================================================
+2. THE ONE REAL FINDING: 1 DECISION IN 5 WAS NEVER MADE
+====================================================================================================
+
+Replaying every decision log: 392 of 6673 menu decisions -- 5.9% -- named no label at
+all. The select call answered with prose instead of a number, truncated mid-sentence by
+the 8-token answer budget. menu_plan recorded a parse failure and the robot silently
+reused the plan it already had. Where it happened is the finding:
+
+    clean prompt (no history note, not stalled)      0.3%     7 / 2363
+    history note present, robot still moving         3.9%     8 /  204
+    robot STALLED, history says 'not working'        9.2%   377 / 4106
+    the decision right after a wedge recovery       20.5%     9 /   44
+    the decision right after a balk recovery        22.4%    17 /   76
+
+Thirty times more often exactly when the robot was in trouble -- because those are the
+prompts that carry an extra paragraph, and a longer prompt pulls harder toward
+summarising it than answering it. And it latches: no answer means reusing the plan that
+was already not working, which keeps the robot stalled, which keeps the note in the
+prompt. That is the 16-35% frozen fraction the failing episodes all shared.
+
+FIX: end the prompt mid-sentence at 'The number is ', so the next token cannot be
+'Based' -- it has to be a digit. The same device the waypoint formats have always used.
+
+    unparsed decisions      before 42/396 (10.6%)   after 0/363 (0.0%)
+    steering reversals      before 5%              after 2%
+    (so forcing the answer made the policy MORE consistent, not more erratic)
+
+It is a genuine bug fix and it did not move success: 9/13 -> 9/13. It won three
+episodes that had been stuck facing a wall and lost three long-corridor ones. The most
+likely reading is that the parse failure had been acting as accidental MOMENTUM -- 'no
+answer' meant 'keep doing what you were doing', which is the right answer in a long
+straight aisle and the wrong one in a corner.
+
+====================================================================================================
+3. WHY MORE REASONING DID NOT HELP (medium -> high)
+====================================================================================================
+
+high spends 5x the thinking time of medium and buys nothing:
+
+                            p3.0 med      p3.0 high     pivot med     pivot high    
+    success                 9/13          8/13          7/13          7/13          
+    think seconds/episode   72            368           83            404           
+    policy calls/episode    29            29            31            31            
+    guard interventions     74            259           15            76            
+
+Same number of decisions, five times the deliberation, no gain -- and 3.5x MORE
+collisions on the no-pivot arm. The decision logs say why. Every high decision really
+did produce a reasoning block (100% of them), and the answer channel was clean (0%
+unparsed at both levels), so this is not a plumbing failure. It is what the reasoning
+SPENDS ITSELF ON:
+
+    pivot high: 408 reasoning blocks, mean 749 chars
+        cut off mid-sentence by the budget    364  (89%)
+        spent restating what the menu IS       66  (16%)
+        contains an unresolved 'Wait...'      130  (32%)
+    p3.0 high: 374 reasoning blocks, mean 754 chars
+        cut off mid-sentence by the budget    346  (93%)
+        spent restating what the menu IS       60  (16%)
+        contains an unresolved 'Wait...'      123  (33%)
+
+NINE OUT OF TEN REASONING BLOCKS NEVER FINISH. The 180-token budget runs out while the
+model is still orienting itself, and think_then_answer then force-closes the block and
+demands an answer. So the answer is drawn from a context that ends in the middle of a
+doubt. A representative one, verbatim, cut exactly where the budget ended:
+
+    "The instruction says to go straight ahead... The target is not visible yet, so I
+     should not stop (not 8). Looking at the image, the open doorway is straight ahead.
+     The paths drawn: 1, 7, 4 are roughly straight ahead through the doorway. 7 is the
+     most straight/centered path... Let me look carefully. Path 7 is green, going
+     straight up through the doorway center. Path 1 is cyan,"
+
+That is the whole mechanism. The model spends its budget re-deriving the menu contract
+('the numbered circle is the END of the path... Wait, actually the description says...'
+appears in 16% of blocks verbatim), reaches the image last, and is interrupted there.
+Reasoning did not fail because the model reasons badly -- it failed because it was
+stopped before the part that looks at the picture, EVERY TIME.
+
+Three consequences, in order of how cheaply they can be tested:
+  a. the budget is in the worst possible place: too big to be free, too small to finish.
+     Either 0 (medium, which ties high on success at 1/5 the cost) or big enough to
+     close the block on its own. There is no value in the middle, and high is the middle.
+  b. the menu contract should be established ONCE, not re-derived per decision. 16% of
+     every reasoning budget is spent re-reading the system prompt back to itself.
+  c. an unfinished thought is worse than no thought. medium (no reasoning, forced answer)
+     beat high on success in both pairs and had 3.5x fewer collisions on p3.0.
+
+====================================================================================================
+4. THE IN-PLACE TURN: WORKS MECHANICALLY, DOES NOT PAY YET
+====================================================================================================
+
+The model used it: 24 turns at medium, 21 at high, across 13 episodes. The server's
+count of turns handed out equals the robot's count of turns performed, so the action
+reaches the wheels. And it does what it was built to do:
+
+    guard interventions, medium:  no turns   956   with turns   195
+    guard interventions, high:    no turns  3364   with turns   982
+
+Five to thirteen times fewer collisions. That is the largest and least noisy effect in
+the whole campaign -- the robot genuinely stops grinding along furniture, because it
+now has a way to face somewhere else without driving three metres first.
+
+It did not convert into success (7/13 both levels). It won nothing the answer prefill
+had not already won, and it lost hospital_past_wheelchairs with ZERO turns chosen --
+which cannot be the turn's fault and is either the changed STOP rule or plain variance.
+
+====================================================================================================
+5. WHAT IS ACTUALLY BLOCKING 13/13
+====================================================================================================
+
+Not thinking time -- 5x of it changes nothing. Not the answer channel -- that is fixed
+and verified at 0% loss. The residue is:
+
+  * hospital_forward_staircase fails in 6 of 6 arms, always ~19-24 m out. This is not
+    noise and not a policy problem; it is the only episode no configuration has ever
+    solved and it deserves its own look.
+  * warehouse_aisle6 succeeded once in six and produced a final distance of 152995 m in
+    p3.0_high -- that is a physics/pose blow-up, not a result, and it is polluting the
+    path-length statistics for that arm.
+  * ten episodes flip between arms, so the top-line number is currently reporting
+    variance, not policy quality.
+
+NEXT, as requested:
+  1. halve the turn to 15 degrees -- 30 may overshoot past the opening it was aiming at
+  2. put the intermediate curvatures on the menu, so the steering resolution matches
+     what the robot can actually drive instead of seven coarse buckets
+  3. feed the previous frame alongside the current one, so the selector has a memory of
+     what it just did rather than inferring it from a text history line
+  4. test all three on the problem episodes FIRST, with repeats, before any full ladder
+

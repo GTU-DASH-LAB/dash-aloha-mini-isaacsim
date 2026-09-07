@@ -7,7 +7,7 @@ camera-framing bug and a physics explosion at spawn. So we do not just check tha
 stage opens; we measure how big it is and whether its references actually resolved.
 
 Usage:
-    /home/gtu-dsa/robotics/isaacsim-6.0.1/python.sh nav/tools/check_scene_compat.py
+    "$(python3 nav/paths.py --isaacsim-python)" nav/tools/check_scene_compat.py
     ... --scene /path/to/other.usd
 """
 
@@ -15,8 +15,12 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
-DYNANAV = "/home/gtu-dsa/robotics/TIC-VLA/DynaNav"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402
+
+DYNANAV = str(paths.dynanav_root())
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default=f"{DYNANAV}/assets/office.usd")

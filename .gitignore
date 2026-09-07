@@ -3,3 +3,19 @@ __pycache__/
 *.pyc
 .venv/
 *.usd.bak
+.scratch/
+
+# The fourth nav scene, and the ONLY one of the four kept out of git. Its three siblings
+# -- nav_hospital, nav_office, nav_warehouse -- are tracked at 518 lines each; this one is
+# 44 lines, because the scene pipeline was never run on it. No joint drives, no wheel
+# colliders, no camera_nav. `nav/tools/run_sync_study.sh` and `run_bounded_study.sh` both
+# name it as the leading suspect for the 36 km and 51 km path lengths two outdoor episodes
+# recorded, and for the 17.9 km `outdoor_pillars` blow-up in the baseline profile's
+# caveats.
+#
+# Committing it is the worse option in both directions: it would sit beside three working
+# scenes under a matching name with nothing marking it as a stub, and it references the
+# TIC-VLA submodule by absolute path, so on anyone else's machine it resolves to nothing.
+# Rebuild it with `nav/sim/build_nav_scene.sh outdoor_small` when the pipeline is fixed;
+# until then the outdoor 1/6 result should be read as a scene problem, not a policy one.
+assets/usd/nav_outdoor_small.usda

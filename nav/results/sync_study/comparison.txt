@@ -1,0 +1,47 @@
+SYNCHRONOUS-PLANNING STUDY
+
+SCOREBOARD
+
+condition          n  success   closest    spl   guard   calls   think   turns
+----------------------------------------------------------------------------------
+async medium      13     7/13    4.06 m   0.49     134     180       -       -
+async high        13     2/13    7.18 m   0.13     276     209       -       -
+async very_high   13     2/13    6.81 m   0.11     402     205       -       -
+bound3 medium     14     6/14    5.92 m   0.40     107      28      3%     0.0
+bound3 high                                 -- not run --
+sync3 medium      13     9/13    4.76 m   0.63      74      29     25%     0.0
+sync3 high        13     8/13    5.00 m   0.61     259      29     61%     0.0
+sync1 medium                                -- not run --
+sync1 high                                  -- not run --
+pivot3 medium     14     7/14    5.25 m   0.43      14      29     27%     3.4
+pivot3 high       14     7/14    6.01 m   0.48      70      29     64%     3.0
+
+closest = mean closest approach to the goal (threshold 1.5 m); lower is better.
+guard   = mean collision-guard interventions per episode.
+calls   = mean policy calls per episode; it is a DECISION COUNT, and the period
+          sets it directly, so it is context for the other columns and not a
+          score. think = share of wall time the robot stood still deciding.
+turns   = mean in-place turns per episode; blank where the menu did not offer
+          them. Read it next to success: an unchanged score with turns near 0
+          means the prompt failed, and with turns high means the action did.
+Path length and wall time are deliberately absent: neither is comparable across
+these regimes. See this file's docstring.
+
+PER EPISODE -- closest approach in metres, * marks a success
+
+episode                              asyncmedium       asynchigh  asyncvery_high    bound3medium     sync3medium       sync3high    pivot3medium      pivot3high
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+office_nearest_elevator                    1.50*           1.49*           1.49*           1.49*           1.50*           1.50*           1.50*           3.82 
+hospital_down_hallway                      1.50*           7.52            1.95            1.50*           1.50*           1.50*           1.50*           1.50*
+hospital_down_hallway2                     1.97           10.71            9.41           13.93            9.52            1.50*           9.47            8.97 
+office_passing_hallway                     1.50*           7.75            3.45            1.50*           1.50*           2.53            1.50*           2.60 
+hospital_vending_machine                   1.50*           1.68            3.53            1.50*           1.50*           1.50*           1.63            1.50*
+hospital_vending_machine2                  1.50*           1.50*           3.70            3.08            1.50*           1.50*           1.50*           1.50*
+office_hallway_turn                        1.50*           1.98            1.50*           1.50*           1.50*           1.50*           1.50*           1.50*
+office_hallway_turn2                       1.76            3.97           11.63            1.50*           1.50*           1.50*           1.50*           1.50*
+hospital_past_wheelchairs                  2.47            3.04            3.54            3.86            1.50*           2.76            5.00            1.50*
+hospital_forward_staircase                 1.49*          16.11           16.68           17.58           17.86           17.88           19.37           18.90 
+hospital_exit_room                        17.20           17.47           22.13           17.17            1.50*          17.45            1.50*          16.76 
+warehouse                                  3.03            4.75            4.74            3.70            5.41            1.50*           5.83            1.50*
+warehouse_aisle6                          15.84           15.33            4.73            8.62           15.61           12.34           16.41           16.60 
+?                                              -               -               -              -                -               -              -               - 

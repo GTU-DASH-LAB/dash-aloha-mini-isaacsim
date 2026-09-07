@@ -9,9 +9,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 VENV_PY=${VENV_PY:-/home/gtu-dsa/envs/tic-vla/bin/python}
-export TICVLA_DYNANAV_ROOT=${TICVLA_DYNANAV_ROOT:-/home/gtu-dsa/robotics/TIC-VLA/DynaNav}
-export TICVLA_BASE_MODEL_PATH=${TICVLA_BASE_MODEL_PATH:-/home/gtu-dsa/robotics/models/InternVL3-1B}
-export TICVLA_CHECKPOINT_PATH=${TICVLA_CHECKPOINT_PATH:-/home/gtu-dsa/robotics/models/TIC-VLA-model.ckpt}
+# Resolved rather than hardcoded: nav/paths.py prefers the third_party/TIC-VLA submodule
+# and falls back to this machine's historical checkout, so this launcher works both here
+# and in a fresh clone. `server.py` resolves the same way on its own -- exporting it here
+# only makes the value visible to DynaNav's code, which reads this variable by name.
+#
+# Assigned in two steps for the reason launch_qwen.sh spells out: `X=${X:-$(cmd)}` hides
+# a failing cmd from `set -e`, and an empty root here would be exported into DynaNav's
+# own code, which reads this variable by name and would look for its assets under /.
+if [ -z "${TICVLA_DYNANAV_ROOT:-}" ]; then
+  TICVLA_DYNANAV_ROOT="$(python3 ../paths.py --dynanav)"
+fi
+export TICVLA_DYNANAV_ROOT
 export NAV_POLICY_PORT=${NAV_POLICY_PORT:-8765}
 
 # GPU1 is on a PCIe x4 link, which throttles host<->device transfer but NOT compute.

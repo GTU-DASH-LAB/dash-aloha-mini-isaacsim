@@ -1,0 +1,8 @@
+-- arcs 7  pivots (6, 7)  STOP 10
+-- one shuffle: arcs [8, 4, 3, 9, 2, 5, 1] + pivots [6, 7]
+-- rendering onto /tmp/alohamini-nav-frames/nav_000033.jpg
+   wrote /home/gtu-dsa/robotics/dash-aloha-mini-isaacsim/nav/results/sync_study/pivot_menu_sample/menu_no_pivots.jpg
+   wrote /home/gtu-dsa/robotics/dash-aloha-mini-isaacsim/nav/results/sync_study/pivot_menu_sample/menu_with_pivots.jpg
+   wrote /home/gtu-dsa/robotics/dash-aloha-mini-isaacsim/nav/results/sync_study/pivot_menu_sample/menu_with_pivots_asmodel.jpg
+
+-- PIVOT MENU OK

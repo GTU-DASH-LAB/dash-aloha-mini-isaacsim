@@ -1,8 +1,32 @@
-# Run artifacts: every one of these is regenerable from a run and none is small.
-# Videos in particular are ~6 MB each and a full ladder makes thirteen of them.
+# Run artifacts. What stays out is the bulk and the machine-local scratch; what stays in
+# is the reasoning -- the .txt summaries and the sampled menu frames a campaign was
+# actually decided on.
+
+# Ignored by TYPE, not by location. The previous rule here was `videos/`, which was
+# correct for the layout it was written against and silently stopped covering anything
+# when the study runners began writing the mp4 next to the JSONs inside each arm
+# directory instead. That drift went unnoticed until `hard_study/` and `sync_study/`
+# turned out to be carrying 2.2 GB of untracked video between them. A rule that names a
+# place expires when the place moves; one that names the artifact does not.
+*.mp4
 *.json
 *.log
+ladder_progress.log
+
+# Old layout, still on disk. Kept as a rule so an archived tree does not reappear.
 videos/
 logs/
-ladder_progress.log
+
+# Machine-local process scratch. A .pid is not merely useless once committed, it is
+# actively wrong: it names a process id on ONE machine, and anything that reads it
+# elsewhere is signalling whatever unrelated process now holds that number.
+*.pid
+*.started
+
+# Kept, deliberately: the conclusions, and the evidence small enough to travel with them.
+# `comparison.txt` and `analysis.txt` are what a campaign is read from a year later --
+# the JSONs behind them are re-derivable in kind but not in value, and are the one thing
+# here worth revisiting if the repo ever wants its raw numbers under version control.
 !.gitignore
+!*.txt
+!*.jpg

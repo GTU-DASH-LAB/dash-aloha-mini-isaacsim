@@ -16,9 +16,16 @@ body exceeds 40 MB, and the rejection arrives as a 4xx after the whole payload h
 uploaded -- so an oversized attachment costs the upload AND loses the message. Anything
 above `MAX_ATTACH_MB` is named in the body by path instead of being sent.
 
+HTML IS AN ADDITION, NOT A REPLACEMENT. Resend sends whichever of `text`/`html` it is
+given, and a message carrying only `html` renders as an empty line in any client with
+images and rich text turned off -- which is the state a phone lock screen preview is in.
+So `--html` sets the rich part and the text part stays mandatory: the plain body is the
+fallback and must independently say what happened.
+
 Usage:
     python3 nav/tools/notify_run.py --subject "..." --body "..." [--attach video.mp4]
     ... | python3 nav/tools/notify_run.py --subject "..."          # body on stdin
+    python3 nav/tools/notify_run.py --subject "..." --body "..." --html report.html
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from html import escape
 from pathlib import Path
 
 KEYFILE = Path.home() / ".config/resend/api_key"
@@ -41,13 +49,16 @@ API = "https://api.resend.com/emails"
 MAX_ATTACH_MB = 12.0
 
 
-def send(subject: str, body: str, attach: list[Path] | None = None) -> bool:
+def send(subject: str, body: str, attach: list[Path] | None = None,
+         html: str | None = None) -> bool:
     """True if Resend accepted it. Never raises -- a failed email must not fail a run."""
     if not KEYFILE.is_file() or not KEYFILE.read_text().strip():
         print(f"[notify] no API key at {KEYFILE}", file=sys.stderr)
         return False
 
     payload: dict = {"from": FROM, "to": [TO], "subject": subject, "text": body}
+    if html:
+        payload["html"] = html
     skipped: list[str] = []
     files = []
     for p in attach or []:
@@ -63,7 +74,12 @@ def send(subject: str, body: str, attach: list[Path] | None = None) -> bool:
     if skipped:
         # Said in the body, not swallowed. "The video was too big" and "there was no
         # video" look identical from an inbox and mean different things about the run.
+        # Appended to BOTH parts: a client showing the html one would otherwise never
+        # see it, and this notice is the whole reason the cap is not silent.
         payload["text"] += "\n\nnot attached:\n  " + "\n  ".join(skipped)
+        if "html" in payload:
+            payload["html"] += ("<p><b>not attached:</b><br>"
+                                + "<br>".join(escape(s) for s in skipped) + "</p>")
     if files:
         payload["attachments"] = files
 
@@ -93,12 +109,16 @@ def main() -> int:
     ap.add_argument("--subject", required=True)
     ap.add_argument("--body", default=None, help="omit to read the body from stdin")
     ap.add_argument("--attach", action="append", default=[], type=Path)
+    ap.add_argument("--html", type=Path, default=None,
+                    help="file whose contents become the rich part. The plain body is "
+                         "still required and is what a text-only client shows.")
     args = ap.parse_args()
     body = args.body if args.body is not None else sys.stdin.read()
+    html = args.html.read_text() if args.html else None
     # 0 even on failure: this is called from a benchmark hook, and `set -e` turning a
     # bounced email into an aborted 13-episode ladder is a worse outcome than a missing
     # message. The stderr line above is the record.
-    send(args.subject, body, args.attach)
+    send(args.subject, body, args.attach, html=html)
     return 0
 
 

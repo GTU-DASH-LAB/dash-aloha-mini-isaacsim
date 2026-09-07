@@ -41,17 +41,20 @@ import math
 import os
 import statistics
 import sys
+from pathlib import Path
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")  # never launches Kit; safe to pin
 
 import torch  # noqa: E402
 
-sys.path.insert(0, os.environ.get("TICVLA_DYNANAV_ROOT",
-                                  "/home/gtu-dsa/robotics/TIC-VLA/DynaNav"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import paths  # noqa: E402
+
+sys.path.insert(0, str(paths.dynanav_root()))
 from ticvla import TICVLA  # noqa: E402
 
-BASE = "/home/gtu-dsa/robotics/models/InternVL3-1B"
-CKPT = "/home/gtu-dsa/robotics/models/TIC-VLA-model.ckpt"
+BASE = str(paths.model_root() / "InternVL3-1B")
+CKPT = str(paths.model_root() / "TIC-VLA-model.ckpt")
 HISTORY = (
     "From 0.0s to current timestamp time is 12.0s. (a list of waypoints 1s in between): "
     "(0.71, 0.02, 0.00), (0.68, -0.01, 0.00), (0.70, 0.03, 0.00), (0.66, 0.01, 0.00), "

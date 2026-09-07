@@ -48,7 +48,10 @@ Three things this file has to get right, none of them about prompting
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
+import hashlib
 import math
 import os
 import re
@@ -80,9 +83,13 @@ from arc_menu import (  # noqa: E402
     speed_for, speed_from_level, stop_label,
 )
 
-MODEL_PATH = os.environ.get(
-    "QVLA_MODEL", "/home/gtu-dsa/robotics/models/Qwen3.8-27B-NVFP4"
-)
+# The bare default is the Hugging Face id the shipping profile names, not a path on one
+# machine: `launch_qwen.sh` always sets QVLA_MODEL from
+# nav/config/profiles/baseline.yaml, so this fallback is only ever reached by someone
+# running this file by hand -- and for them, a name that resolves through the HF cache
+# works everywhere, whereas the local NVFP4 directory that used to sit here works in
+# exactly one place. Point QVLA_MODEL at a directory to load local weights instead.
+MODEL_PATH = os.environ.get("QVLA_MODEL", "Qwen/Qwen3.8-27B-FP8")
 # 200704 px = 448x448. On this vision tower a frame costs exactly
 # pixels / (patch_size * spatial_merge)^2 = pixels / 1024 tokens, so this is 196
 # tokens per frame -- the same budget InternVL3-1B feeds today. Native 1920x1080 would
@@ -260,7 +267,14 @@ class PredictRequest(BaseModel):
     implied anyway.
     """
 
-    image_paths: list[str] = Field(..., min_length=1)
+    # Paths the SERVER opens, oldest first. No longer required, because `images_b64` is
+    # the other way to supply the same thing -- exactly one of the two must be non-empty,
+    # which the handler checks. It stays first and stays the simulator's route: when both
+    # processes share a disk, handing over a filename beats copying a JPEG through JSON.
+    image_paths: list[str] = Field(default_factory=list)
+    # The same frames as base64, for a caller that does NOT share a filesystem with this
+    # server -- which is every real robot. Same order, oldest first. See `_materialize`.
+    images_b64: list[str] | None = None
     instruction: str
     robot_state: list[float] = Field(default_factory=lambda: [0.0] * 6)
     current_step: int | None = None
@@ -460,6 +474,112 @@ MENU_DIR = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
 # saw and chose -- which together are a complete, replayable record of the policy's side of
 # the run. `nav/tools/make_run_video.py` turns one into a video.
 RECORD = os.environ.get("QVLA_RECORD", "1") not in ("0", "", "false", "no")
+
+# --------------------------------------------------------------------------------------
+# IMAGES BY VALUE -- what makes this server usable from a robot that is not this machine
+# --------------------------------------------------------------------------------------
+# `image_paths` are paths the SERVER opens on its OWN disk. That is right for the
+# simulator, which runs beside the server and writes frames both processes can see, and
+# it is the single thing that stops a real robot from being just another client: the
+# robot has the camera, the workstation has the GPU, and they share no filesystem.
+#
+# So a request may carry the bytes instead. `images_b64` is decoded here, written to
+# scratch, and substituted into `image_paths` before anything downstream looks at it --
+# which is why the rest of the file is untouched by this feature. Sending paths still
+# works and is still what the simulator does; the two are alternatives, not layers.
+#
+# DEDUPED BY CONTENT, and that is not a micro-optimisation. The caller sends a HISTORY of
+# frames -- four samples at 3 s spacing -- so consecutive calls overlap in three of four
+# images. Keying the store by sha256 means a frame is written once and referenced by
+# every later call that includes it, which multiplies the effective depth of the ring
+# below by about four.
+UPLOAD_DIR = Path(os.environ.get("QVLA_UPLOAD_DIR", "/tmp/qvla-uploads"))
+# A ring, not a per-request temp directory that gets cleaned up on the way out. Cleaning
+# up on return is WRONG here and would be a race that only shows under load: `/predict`
+# hands the paths to a generation thread and returns immediately, so the files must
+# outlive the response. At the benchmark's 3 s cadence 96 distinct frames is ~5 minutes
+# of history, against generations that finish in seconds.
+UPLOAD_RING = max(8, int(os.environ.get("QVLA_UPLOAD_RING", "96")))
+# Refuse absurd frames rather than letting one bad client decode itself into swap. A
+# 448x448 JPEG -- what the vision tower actually consumes -- is tens of KB.
+UPLOAD_MAX_BYTES = int(os.environ.get("QVLA_UPLOAD_MAX_BYTES", str(16 * 1024 * 1024)))
+
+_uploads: collections.OrderedDict[str, Path] = collections.OrderedDict()
+_upload_lock = threading.Lock()
+
+
+def _sniff_suffix(data: bytes) -> str:
+    """Purely so the scratch directory is readable when something goes wrong.
+
+    PIL identifies the format from the content, so nothing downstream depends on this.
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    return ".img"
+
+
+def _store_image(data: bytes) -> Path:
+    """Write one frame to the ring and return its path. Identical bytes reuse the file."""
+    digest = hashlib.sha256(data).hexdigest()
+    with _upload_lock:
+        existing = _uploads.get(digest)
+        if existing is not None and existing.is_file():
+            # Re-sent frame: refresh its position so a frame still in the caller's
+            # history window cannot be evicted while it is still being referenced.
+            _uploads.move_to_end(digest)
+            return existing
+
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        path = UPLOAD_DIR / f"{digest[:16]}{_sniff_suffix(data)}"
+        # Write to a neighbour and rename, because a generation thread may be opening
+        # files from this directory right now and a half-written JPEG is a decode error
+        # attributed to the model.
+        tmp = path.with_suffix(path.suffix + ".part")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+
+        _uploads[digest] = path
+        while len(_uploads) > UPLOAD_RING:
+            _, victim = _uploads.popitem(last=False)
+            victim.unlink(missing_ok=True)
+        return path
+
+
+def _materialize(image_paths: list[str], images_b64: list[str] | None) -> list[str]:
+    """Resolve a request's images to paths on this machine, whichever form they arrived in.
+
+    Returns `image_paths` untouched when no bytes were sent, so the simulator's path is
+    byte-for-byte the code it was before.
+    """
+    if not images_b64:
+        return image_paths
+    if image_paths:
+        # Both would leave the ORDER ambiguous, and order is meaningful -- the history is
+        # oldest-first and `menu_plan` takes [0] as the baseline and [-1] as now. Refuse
+        # rather than pick an interleaving the caller did not ask for.
+        raise HTTPException(
+            status_code=400,
+            detail="send image_paths or images_b64, not both: their combined order is "
+                   "undefined and the frame order is what the policy reads as time")
+
+    out: list[str] = []
+    for i, blob in enumerate(images_b64):
+        try:
+            data = base64.b64decode(blob, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=400,
+                                detail=f"images_b64[{i}] is not valid base64: {exc}")
+        if not data:
+            raise HTTPException(status_code=400, detail=f"images_b64[{i}] is empty")
+        if len(data) > UPLOAD_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"images_b64[{i}] is {len(data)} bytes, over the "
+                       f"{UPLOAD_MAX_BYTES} limit (QVLA_UPLOAD_MAX_BYTES)")
+        out.append(str(_store_image(data)))
+    return out
 
 _TASK_ARC = """
 The four images are consecutive frames from your forward camera, oldest first, about 3 seconds apart. The last one is NOW.
@@ -1123,7 +1243,21 @@ def menu_plan(image_paths: list[str], instruction: str,
     # request carrying one frame gets the one-frame prompt no matter what MENU_FRAMES says.
     # The two must agree, because the two-frame system prompt tells the model to describe
     # the SECOND image, and there is no second image to describe.
-    frames = image_paths[-MENU_FRAMES:] if MENU_FRAMES > 1 else [newest]
+    # The baseline is the OLDEST frame in the history, not the previous one. `image_paths`
+    # arrives at 3 s spacing, so `[-2:]` compared two images 3 s and -- at 0.45 m/s -- about
+    # 1.35 m apart. In a 32 m corridor that is 4% of the way and the two pictures are
+    # indistinguishable, so the model answered "is not making progress" on 30-70% of
+    # decisions. It was answering correctly; the question was badly posed. It then chose
+    # STOP on 14-20% of decisions, which made the robot genuinely motionless and the NEXT
+    # comparison even more certainly "no progress" -- a self-confirming spiral that cost
+    # the ladder 10/19 -> 3/19, and that enabling pivots did not touch because the model
+    # barely used them (3-7%).
+    #
+    # The oldest frame is 9 s and ~4 m back, which is a difference a picture can show.
+    if MENU_FRAMES > 1 and len(image_paths) > 1:
+        frames = [image_paths[0], newest]
+    else:
+        frames = [newest]
     remembering = len(frames) > 1
     # The goal-direction variant swaps BOTH halves or neither. Asking for the open SET while
     # still asking only for the target's distance would drop the one channel the change
@@ -1276,7 +1410,8 @@ def menu_plan(image_paths: list[str], instruction: str,
             speed_level=level if ask_speed else None, stalled_s=stalled_s,
             thinking=(seen_think, sel_think), history=hist,
             pivot_rad=pivot, pivot_labels=pivot_labels,
-            drawn=drawn if clearance else None, clearance=clearance)
+            drawn=drawn if clearance else None, clearance=clearance,
+            heading=heading)
     return plan, note, pivot
 
 
@@ -1289,7 +1424,13 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             pivot_rad: float = 0.0,
             pivot_labels: tuple[int, int] | None = None,
             drawn: list[int] | None = None,
-            clearance: list[float] | None = None) -> None:
+            clearance: list[float] | None = None,
+            # A PARAMETER, not a closure read. It was written as a bare `heading` in the
+            # record dict below, which is a local of the decision function and not of this
+            # one, so every call raised NameError -- swallowed by the except, printed once
+            # per decision, and silently costing the entire per-decision log. 2647 records
+            # were lost this way before anyone read the server log instead of the file.
+            heading: str | None = None) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -1472,6 +1613,14 @@ def health() -> dict:
                 "menu_seed": int(os.environ.get("QVLA_MENU_SEED", "0")),
                 "recent": list(_state["recent"])} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
+            # Whether this server can be driven by a client that does not share its
+            # filesystem. Reported rather than assumed because the alternative is a robot
+            # discovering it mid-episode, as a 400 on a frame it cannot resend any other
+            # way -- and because `wait_until_ready` already reads this response, so a
+            # remote client can refuse to start instead of failing on the first decision.
+            "accepts_image_bytes": True,
+            "upload_ring": UPLOAD_RING,
+            "upload_max_bytes": UPLOAD_MAX_BYTES,
             "predictions": _state["predictions"],
             "generations": _state["generations"],
             # Worth reading after every run. A high failure rate means the benchmark
@@ -1615,6 +1764,7 @@ class RawRequest(BaseModel):
     """
 
     image_paths: list[str] = Field(default_factory=list)
+    images_b64: list[str] | None = None
     system: str = ""
     user: str
     prefill: str = ""
@@ -1627,6 +1777,7 @@ def raw(req: RawRequest) -> dict:
     """Generate freely. Refuses rather than racing a benchmark for the same GPU."""
     if _state["model"] is None:
         raise HTTPException(status_code=503, detail="model not loaded")
+    req.image_paths = _materialize(req.image_paths, req.images_b64)
     missing = [p for p in req.image_paths if not Path(p).is_file()]
     if missing:
         raise HTTPException(status_code=400, detail=f"image paths not found: {missing[:3]}")
@@ -1646,11 +1797,18 @@ def raw(req: RawRequest) -> dict:
 def predict(req: PredictRequest) -> PredictResponse:
     if _state["model"] is None:
         raise HTTPException(status_code=503, detail="model not loaded")
+    # Before anything else touches the request: from here down `req.image_paths` is a
+    # list of files on this machine regardless of which form the caller used.
+    req.image_paths = _materialize(req.image_paths, req.images_b64)
+    if not req.image_paths:
+        raise HTTPException(status_code=400,
+                            detail="no images: send image_paths or images_b64")
     missing = [p for p in req.image_paths if not Path(p).is_file()]
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"image paths not found (is the scratch dir shared?): {missing[:3]}")
+            detail=f"image paths not found (is the scratch dir shared? a robot on "
+                   f"another machine should send images_b64): {missing[:3]}")
 
     t0 = time.perf_counter()
     think = _state["think"]

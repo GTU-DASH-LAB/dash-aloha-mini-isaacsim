@@ -1,0 +1,187 @@
+# The shipping configuration. This is the one that was measured, and the numbers at the
+# bottom are the numbers it scored.
+#
+# WHY A FILE AND NOT A PARAGRAPH IN A README.
+# Every setting here is an environment variable, which means every setting here can be
+# wrong in a shell without anything saying so. This repo has already paid for that twice:
+# a ladder labelled `very_high` run against a server still holding `medium`, and a whole
+# 19-episode campaign run with `QVLA_MENU_FRAMES` at its default 1 while the experiment
+# it was supposed to be testing was the memory frame. Both produced complete, plausible,
+# wrong tables. So the config lives in one file, `nav/tools/profile.py env` turns it into
+# the exports, and `nav/tools/profile.py check` reads it back off a live `/health` and
+# refuses on mismatch. Nothing here is meant to be typed by hand.
+#
+# The keys under `health:` are named after the fields `/health` actually returns, not
+# after the environment variables that set them. That is deliberate: the check has to
+# compare against what the server ended up with, not against what we asked for.
+
+profile: baseline
+description: >-
+  Frozen Qwen3.8-27B-FP8 as an arc-menu selector, medium thinking, no lidar, no memory
+  frame, no pivots. The best configuration measured on the 19-episode set as of
+  2026-09-05.
+
+# --------------------------------------------------------------------------------------
+# What to export before starting the policy server (`nav/policy_server/launch_qwen.sh`).
+# --------------------------------------------------------------------------------------
+env:
+  # The model is frozen -- there is no fine-tune, no action expert, no checkpoint. The
+  # whole policy is the prompt in `nav/arc_menu.py` plus this model's weights, which is
+  # why swapping the model is a one-line change and swapping the prompt is not.
+  QVLA_MODEL: Qwen/Qwen3.8-27B-FP8
+
+  # `menu`, not `pairs`. The model picks one of seven pre-drawn arcs instead of writing
+  # coordinates. The two are not comparable measurements and `/health` reports which one
+  # ran so a result file can never be misattributed.
+  QVLA_FORMAT: menu
+
+  # 10 s horizon, ~2.1 s of decode. The horizon is not a tuning knob -- it is sized off
+  # inference latency, because `/predict` serves `full[ceil(time_delay/DT):]` and a
+  # horizon shorter than the generation leaves a one-point plan, which `plan_speed` reads
+  # as 0.0 m/s and `braking` clamps to a full stop. `high` and `very_high` raise the
+  # horizon with the budget for exactly this reason; they were measured and did not win.
+  QVLA_THINK_LEVEL: medium
+
+  # Seven arcs. `fine` was measured and is not better; more arcs is a longer menu for the
+  # same picture, and the model's errors are not "the right arc was missing".
+  QVLA_MENU_ARCS: coarse
+
+  # 0.45 m/s cruise. Changeable at runtime without a reload -- `POST /menu_speed` with
+  # {"cruise_mps": <float>} -- which is the knob a person tuning on a real robot wants.
+  # This value is the startup default, not a ceiling on that endpoint.
+  QVLA_MENU_SPEED: "0.45"
+
+  # ONE frame. No memory frame. This is the setting that looks most obviously wrong and
+  # is the most firmly established: three separate arms tried to give the policy a second
+  # frame and all three regressed. See `rejected:` below for the numbers and the reason.
+  QVLA_MENU_FRAMES: "1"
+
+  # No in-place turn on the menu. Offered, measured, taken on only 3-7% of decisions, and
+  # every arm carrying it scored worse. It is not that pivots are useless -- it is that
+  # the failures they would fix are not the failures this stack has.
+  QVLA_MENU_PIVOTS: "0"
+
+  # Greedy. A non-zero temperature makes two runs of the same episode two different
+  # measurements, and the whole 19-episode set is already at the edge of its noise floor.
+  QVLA_TEMPERATURE: "0"
+
+  # Deterministic menu rendering. The arcs are drawn in a fixed order with fixed colours;
+  # seed 0 is what every recorded result was produced under.
+  QVLA_MENU_SEED: "0"
+
+  # GPU1 alone, 30 of its 31.36 GiB. Both halves are load-bearing and were each wrong
+  # once: spanning both cards routes FP8 off DeepGEMM onto Triton at ~4x the cost, and a
+  # device left in the map at 0 can still be spilled onto -- one spilled layer loses the
+  # DeepGEMM path for the entire model. Safe to set CUDA_VISIBLE_DEVICES here ONLY
+  # because this process never imports Isaac Sim.
+  NAV_POLICY_GPU: "1"
+  QVLA_MAX_MEMORY: "0:30"
+
+  NAV_POLICY_PORT: "8766"
+
+# --------------------------------------------------------------------------------------
+# Sim-side settings (`nav/sim/run_navigation.py`). Not read by the real-robot package,
+# which supplies its own sensors -- kept here so the measured result is reproducible.
+# --------------------------------------------------------------------------------------
+sim_env:
+  # Lidar OFF. The 19-episode A/B against `c1@0.30` is a dead heat -- 10/19 both ways,
+  # five episodes won and five lost, against a measured noise floor of 2/13, 8/13, 8/13
+  # on three prior clean ladders. Off is the default because a dead heat does not justify
+  # a sensor, not because the sensor was shown to hurt. The one row that could carry
+  # information (`hospital_exit_room`, 0/3 across every prior ladder, passed on the lidar
+  # arm only) is n=1 and wants a repeat before it is quoted.
+  NAV_LIDAR: "0"
+
+# --------------------------------------------------------------------------------------
+# What `/health` must report back. `nav/tools/profile.py check` compares these exactly.
+# --------------------------------------------------------------------------------------
+health:
+  model: Qwen/Qwen3.8-27B-FP8
+  format: menu
+  think_level: medium
+  horizon_s: 10.0
+  n_waypoints: 100
+  arc_set: coarse
+  n_arcs: 7
+  menu_frames: 1
+  menu_pivots: false
+  menu_seed: 0
+  menu_speed_mps: 0.45
+
+# --------------------------------------------------------------------------------------
+# The measurement. Recorded so nobody has to re-run 19 episodes to find out what this
+# configuration is worth, and so a future arm has something to beat.
+# --------------------------------------------------------------------------------------
+measured:
+  date: 2026-09-05
+  arm: fan                    # `EpisodeResult.lidar` label for the no-lidar arm
+  controller: braking
+  episodes: 19
+  passed: 10
+  indoor: "9/13"
+  outdoor: "1/6"
+  # Read the totals against this before reading anything into a 1-2 episode difference.
+  # Three clean prior ladders on this same stack scored 2/13, 8/13 and 8/13, so a swing
+  # of five episodes either way is what noise looks like here.
+  noise_floor_indoor: ["2/13", "8/13", "8/13"]
+  compare_with: nav/tools/compare_lidar_arms.py --history
+
+# --------------------------------------------------------------------------------------
+# Arms that were measured and lost. Here so they are not re-run by someone reading the
+# settings above and thinking they look conservative.
+# --------------------------------------------------------------------------------------
+rejected:
+  - arm: c1@0.30
+    change: NAV_LIDAR=1, 500 points/rev, 0.30 m mount
+    result: "10/19 (8/13 indoor, 2/6 outdoor) -- a dead heat, five won and five lost"
+    verdict: >-
+      No supportable difference. Guard interventions went 1369 -> 4567 (3.3x), which is
+      the cleanest statement about the sensor itself and moved in the predicted
+      direction, but it did not turn into episodes.
+
+  - arm: mem2
+    change: QVLA_MENU_FRAMES=2
+    result: "3/19 -- 2 episodes won, 9 lost, mean closed 83% -> 67%"
+    verdict: >-
+      A perception with no matching action. The second frame let the model see it had
+      overshot; the menu is seven forward arcs and a STOP, with no "go back", so the only
+      expressible response to "I have driven past it" was the one guaranteeing failure.
+      Worse, the two frames were 3 s and ~1.35 m apart in a 32 m corridor -- 4% of the
+      way, and indistinguishable -- so the model answered "not making progress" on 30-70%
+      of decisions. It was answering correctly; the question was badly posed. It then
+      chose STOP, which made the robot genuinely motionless and the next comparison more
+      certainly "no progress". A self-confirming spiral.
+
+  - arm: mem2piv
+    change: QVLA_MENU_FRAMES=2 + QVLA_MENU_PIVOTS=1
+    result: "killed after 3 episodes, tracking worse than mem2"
+    verdict: >-
+      The hypothesis was that mem2 failed for want of a "turn around" action. It was
+      tested against the wrong signal: pivots were taken on 3-7% of decisions because the
+      dominant signal was the FALSE "no progress", which a pivot does not address.
+
+  - arm: mem2wide
+    change: QVLA_MENU_FRAMES=2 with the baseline widened to the oldest frame (9 s, ~4 m)
+    result: "0/4 on the validation subset"
+    verdict: >-
+      Fixing the false signal unmasked a true one that routes to the same bad action.
+      "No progress" fell 69.6% -> 43.9%, but STOP ROSE to 33.3% because "driven past"
+      surfaced (7.0% -> 20.6%). The frame-widening fix is still in the code and is
+      correct; with QVLA_MENU_FRAMES=1 that path is bit-for-bit identical to before, so
+      it costs this profile nothing.
+
+# --------------------------------------------------------------------------------------
+# Known measurement limits. Stated because a gap in the evidence reads as agreement.
+# --------------------------------------------------------------------------------------
+caveats:
+  - >-
+    The baseline arm's per-decision STOP rate cannot be compared against the memory arms.
+    A NameError in the server's `_record` (fixed in 9b006f8) silently emptied
+    `decisions.jsonl` for that entire campaign -- 2647 records. The episode-level results
+    are unaffected; only the decision-level diagnostics are gone.
+  - >-
+    `warehouse_aisle6` has an unexplained physics blow-up (152995 m of recorded path) and
+    `outdoor_pillars` had one on the lidar arm (17.9 km, trace samples stepping 85 m and
+    accelerating). `summarize_runs.score()` flags these against what the speed cap
+    physically permits, and the distance aggregates drop them; the pass denominator keeps
+    them, because the robot really did not arrive.

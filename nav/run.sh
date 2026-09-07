@@ -14,7 +14,14 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_SH="${ISAACSIM_PYTHON:-/home/gtu-dsa/robotics/isaacsim-6.0.1/python.sh}"
+# Resolved through nav/paths.py so a clone elsewhere only has to set ISAACSIM_ROOT
+# (or ISAACSIM_PYTHON) instead of editing this script. Two steps, not
+# `${X:-$(cmd)}`: that form hides a failing resolve from `set -e` and would run
+# the pipeline below with an empty interpreter path.
+if [ -z "${ISAACSIM_PYTHON:-}" ]; then
+  ISAACSIM_PYTHON="$(python3 "$REPO/nav/paths.py" --isaacsim-python)"
+fi
+PYTHON_SH="$ISAACSIM_PYTHON"
 POLICY_PORT="${NAV_POLICY_PORT:-8765}"
 UI_PORT="${NAV_UI_PORT:-8080}"
 

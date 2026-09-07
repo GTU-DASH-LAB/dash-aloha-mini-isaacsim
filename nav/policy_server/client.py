@@ -9,6 +9,7 @@ forbids. `requests` is not worth that.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
@@ -86,6 +87,23 @@ class PolicyClient:
         """
         return self._post("/reset", {"run": run} if run else {})
 
+    def menu_speed(self, cruise_mps: float) -> dict[str, Any]:
+        """Retune the cruise speed without reloading the weights.
+
+        The arc menu has no speed channel: the model picks a DIRECTION and the pace comes
+        from the server's configuration. So a caller that caps speed only on its own side
+        leaves the server planning 3 m arcs at a pace the robot never drives, and
+        `BrakingPursuitController` takes `min(v_max, plan_speed(waypoints))` against a
+        number describing somebody else's robot. Real hardware is where that bites, since
+        `robot.yaml` is edited mid-drive and a restart there costs a model load.
+
+        Only the arc-menu server implements this; `server.py` answers 404 as a
+        `PolicyServerError`. Between episodes, not during a scored one -- every decision
+        records the speed it used, but `summarize_runs.py` cannot know a run changed
+        pace halfway and will report it as one measurement.
+        """
+        return self._post("/menu_speed", {"cruise_mps": float(cruise_mps)})
+
     def replan(self) -> dict[str, Any]:
         """Throw away the cached plan MID-episode and leave everything else alone.
 
@@ -104,8 +122,10 @@ class PolicyClient:
 
     def predict(
         self,
-        image_paths: list[str],
+        image_paths: list[str] | None = None,
+        *,
         instruction: str,
+        images: list[bytes] | None = None,
         robot_state: list[float] | None = None,
         current_step: int | None = None,
         time_delay: float = 0.0,
@@ -124,6 +144,15 @@ class PolicyClient:
 
         Waypoints are body-frame FLU displacements, same convention DynaNav's Nova
         Carter behaviour consumes.
+
+        FRAMES GO ONE OF TWO WAYS, and which one you can use is a fact about your
+        deployment, not a preference. `image_paths` names files the SERVER opens on its
+        OWN disk: correct and cheaper when the caller and the server share a filesystem,
+        which is the simulator's situation. `images` carries the encoded frames
+        themselves, for the case that made this parameter necessary -- the robot has the
+        camera, the workstation has the GPU, and they share no disk. Pass exactly one.
+        Either way the order is oldest-first and it is load-bearing: the policy reads
+        position in the list as time.
 
         `time_delay` and the dx,dy tail of `robot_state` are not decoration: the server
         runs `predict_async`, so the plan comes back built on a KV cache that is roughly
@@ -167,10 +196,22 @@ class PolicyClient:
         asynchronous by design, so sending it True does not make that baseline synchronous
         and a run must not be labelled as though it had.
         """
+        if (image_paths is None) == (images is None):
+            raise ValueError(
+                "pass exactly one of image_paths= (server reads them off its own disk) "
+                "or images= (raw encoded frames, for a robot that shares no filesystem "
+                "with the server)")
+
         return self._post(
             "/predict",
             {
-                "image_paths": image_paths,
+                "image_paths": image_paths or [],
+                # Encoded here rather than by the caller so the wire format stays this
+                # module's business. `images` is a list of ENCODED frames -- the bytes of
+                # a JPEG or PNG, not a raw pixel buffer -- oldest first, same order and
+                # same meaning as image_paths.
+                "images_b64": ([base64.b64encode(b).decode("ascii") for b in images]
+                               if images is not None else None),
                 "instruction": instruction,
                 "robot_state": robot_state if robot_state is not None else [0.0] * 6,
                 "current_step": current_step,

@@ -52,6 +52,7 @@ import base64
 import binascii
 import collections
 import hashlib
+import json
 import math
 import os
 import re
@@ -850,11 +851,27 @@ def reframe(plan: np.ndarray, dx: float, dy: float, dyaw: float,
 # --------------------------------------------------------------------------------------
 # Model
 # --------------------------------------------------------------------------------------
+def _is_quantized(path: str) -> bool:
+    """Does this checkpoint need `qwen_load`'s quantization fixes?
+
+    Derived from the checkpoint rather than taken from a second environment variable that
+    has to agree with `QVLA_MODEL`. A flag saying "this one is FP8" is a copy of a fact
+    the config already states, and this repo has paid twice for a constant that was a
+    second copy of something -- the summary's hardcoded success threshold and the three
+    separate copies of the plan horizon. Both failed by disagreeing silently.
+    """
+    cfg = Path(path) / "config.json"
+    if not cfg.is_file():
+        return True     # a hub id, which for this server has only ever meant the FP8 27B
+    try:
+        return "quantization_config" in json.loads(cfg.read_text())
+    except (OSError, json.JSONDecodeError):
+        return True
+
+
 def _load_model() -> None:
     if _state["model"] is not None:
         return
-    from qwen_load import load_qwen
-
     t0 = time.time()
     print(f"[qvla-server] loading {MODEL_PATH}", flush=True)
     # QVLA_MAX_MEMORY="0:19,1:22" caps per device. Without a cap, device_map="auto" takes
@@ -863,11 +880,36 @@ def _load_model() -> None:
     mm = os.environ.get("QVLA_MAX_MEMORY", "").strip()
     max_memory = ({int(k): float(v) for k, v in
                    (kv.split(":") for kv in mm.split(",") if kv)} if mm else None)
-    # load_qwen carries the two fixes without which this checkpoint is either unloadable
-    # or silently broken -- see qwen_load.py. The second one matters here specifically:
-    # a model whose gate_proj lost its FP8 scale still runs at full speed and emits
-    # gibberish, which a navigation benchmark would score as "the policy drove badly".
-    proc, model = load_qwen(MODEL_PATH, max_memory=max_memory, max_pixels=MAX_PIXELS)
+
+    if _is_quantized(MODEL_PATH):
+        from qwen_load import load_qwen
+        # load_qwen carries the two fixes without which this checkpoint is either
+        # unloadable or silently broken -- see qwen_load.py. The second one matters here
+        # specifically: a model whose gate_proj lost its FP8 scale still runs at full
+        # speed and emits gibberish, which a navigation benchmark would score as "the
+        # policy drove badly".
+        proc, model = load_qwen(MODEL_PATH, max_memory=max_memory, max_pixels=MAX_PIXELS)
+    else:
+        # An unquantized candidate from the survey (`nav/vlm_survey.md`). It needs none of
+        # load_qwen's fixes, and running it THROUGH them would be worse than useless:
+        # `patch_transformers_fp8` and the skip-list repair are shaped for one checkpoint's
+        # bug, and a candidate is measured here precisely to see what it does unmodified.
+        #
+        # Everything downstream reads `_state`, so this is the whole swap -- the menu, the
+        # SIDED chain, STOP gating, the wedge recovery and the speed channel are the same
+        # code for every backend. That is the point: a closed-loop number for a candidate
+        # has to come from the same policy the baseline's 8/13 came from, or it is a
+        # comparison of two policies rather than of two models.
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+        proc = AutoProcessor.from_pretrained(MODEL_PATH, max_pixels=MAX_PIXELS)
+        model = AutoModelForImageTextToText.from_pretrained(
+            MODEL_PATH, dtype=torch.bfloat16,
+            device_map=("auto" if max_memory else "cuda:0"),
+            max_memory=({i: f"{g}GiB" for i, g in max_memory.items()}
+                        if max_memory else None))
+        model.eval()
+        print(f"[qvla-server] unquantized backend, bf16, "
+              f"{sum(p.numel() for p in model.parameters()) / 1e9:.2f}B params", flush=True)
     _state["proc"], _state["model"] = proc, model
     print(f"[qvla-server] ready in {time.time() - t0:.1f}s", flush=True)
 
@@ -1443,7 +1485,6 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
     if not RECORD or run_dir is None:
         return
     try:
-        import json
         with open(run_dir / "decisions.jsonl", "a") as fh:
             fh.write(json.dumps({
                 "step": step, "menu": Path(menu).name, "instruction": instruction,

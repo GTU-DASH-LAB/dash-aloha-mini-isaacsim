@@ -14,13 +14,28 @@ work. It is run on two populations:
   OPEN     frames down a clear corridor, where straight is the right answer. Without these
            a model that always swerves would look like it was avoiding something.
 
-The mirror control is what makes this trustworthy. Every blocked frame I found happens to
-open to the LEFT, so a model with a mild left bias would score 100% while seeing nothing.
-Flipping the frame horizontally moves the free space to the right and leaves the flat-floor
-projection exactly as valid -- the camera model is symmetric about its optical axis. A
-model that reads the image must NEGATE its chosen curvature when the image flips. That test
-needs no human labels at all, which is its own recommendation given that the labels below
-are mine.
+The mirror control is what makes this trustworthy. A model with a mild left bias would
+score well on a left-opening frame while seeing nothing. Flipping the frame horizontally
+moves the free space to the right and leaves the flat-floor projection exactly as valid --
+the camera model is symmetric about its optical axis. A model that reads the image must
+NEGATE its chosen curvature when the image flips. That test needs no human labels at all,
+which is its own recommendation given that the labels are hand-made.
+
+**The labels live in `nav/config/probe_frames.json`, fingerprinted, and this file refuses
+to run if the frames have changed.** They used to be a literal list here, and that cost a
+whole benchmark run: the capture under `/tmp/alohamini-nav-frames` was regenerated on
+2026-09-05 from a different set of episodes, five days after the labels were written, so
+frame 160 stopped being "corner, light-blue wall fills the right" and became a staircase
+in a different building. Nothing raised. The probe kept scoring choices against
+descriptions of pictures that no longer existed, and the 27B's own DIGIT row fell from
+22/100/20/0 to 8/100/0/0 -- which reads exactly like a model regression and was a ground
+truth regression. `keep straight` stayed at 100% throughout, because that column only asks
+whether straight was picked and a straight-preferring model scores it whatever the frame
+shows; so the one column that still looked healthy was the one that could not fail.
+
+A hand label is a claim about a specific image, and `/tmp` is not a place where a specific
+image stays put. The manifest carries a SHA of every frame it labelled, and a mismatch is
+a hard error rather than a quiet re-scoring against the wrong picture.
 
 Also asked, on the blocked frames only: "Go straight ahead." A model that drives into the
 wall because it was told to is obeying language at the cost of safety, and which way that
@@ -42,19 +57,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arc_menu import make_arcs, render_menu  # noqa: E402
 from probe_arc_selection import SYSTEM, ask  # noqa: E402
 
-# Straight ahead ends in a wall or a door. `open_side` is +1 when the walkable floor is to
-# the LEFT, -1 to the right, 0 when both sides are open and only "not straight" is scored.
-# Read off nav/tools/ contact sheets at 940x528; see the commit message for what each shows.
-BLOCKED = [
-    (160, +1),   # corner, light-blue wall fills the right, opening on the left
-    (200, +1),   # same corner, one step further in
-    (240, +1),   # brown wall/door across the front and right, white floor to the left
-    (280, +1),   # same, closer
-    (400, 0),    # red fire door dead ahead in an alcove, floor on both sides
-    (640, +1),   # white wall dead ahead, dark doorway to the left
-]
-# Clear corridor: straight is correct, and these keep a permanently-swerving model honest.
-OPEN = [0, 320, 360, 600, 680, 840]
+MANIFEST = Path(__file__).resolve().parent.parent / "config" / "probe_frames.json"
+
+
+def load_frames(manifest: Path = MANIFEST) -> tuple[list[tuple[int, int]], list[int]]:
+    """Read the labelled frames and verify each one is still the picture that was labelled.
+
+    Returns `(BLOCKED, OPEN)` in the shapes the rest of this file and `probe_arc_repair`
+    expect. Raises rather than degrading: a wrong label produces a plausible number, and a
+    plausible number is the failure this repo keeps paying for. Refusing to run is cheap.
+    """
+    import hashlib
+
+    doc = json.loads(manifest.read_text())
+    frame_dir = Path(doc["frame_dir"])
+    drift: list[str] = []
+    for entry in doc["blocked"] + doc["open"]:
+        f = frame_dir / f"nav_{entry['frame']:06d}.jpg"
+        if not f.is_file():
+            drift.append(f"{f} is missing")
+            continue
+        got = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
+        if got != entry["sha16"]:
+            drift.append(f"nav_{entry['frame']:06d}.jpg changed "
+                         f"({entry['sha16']} -> {got}); it was labelled "
+                         f"{entry['desc']!r}")
+    if drift:
+        raise SystemExit(
+            f"\n{manifest} was labelled against a different capture:\n  "
+            + "\n  ".join(drift)
+            + f"\n\nThe labels are claims about specific images. Re-label against the "
+              f"current {frame_dir} and rewrite the manifest -- do NOT run the probe, "
+              f"the obstacle columns would score against pictures that no longer exist.\n")
+    return ([(e["frame"], e["open_side"]) for e in doc["blocked"]],
+            [e["frame"] for e in doc["open"]])
+
+
+BLOCKED, OPEN = load_frames()
 
 
 def flip(src: str, dst: str) -> str:

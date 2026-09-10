@@ -1,0 +1,77 @@
+{
+  "frame_dir": "/tmp/alohamini-nav-frames",
+  "labelled_on": "2026-09-10",
+  "labelled_by": "contact sheets at 320-420 px to shortlist, then every BLOCKED frame opened at full 1920x1080 before its open_side was written down",
+  "rejected": "820 looked blocked on a contact sheet and is a wide lobby at full size; 640 is a corner with no open side at all. Both were dropped rather than labelled 0 -- a frame nothing is open in cannot score open-side, and mirroring a symmetric wall is not a mirror test.",
+  "sign": "open_side +1 = the open floor is to the robot's LEFT, -1 = RIGHT, 0 = no clear side",
+  "blocked": [
+    {
+      "frame": 40,
+      "open_side": 1,
+      "sha16": "ecfe1190ee2f9415",
+      "desc": "hospital atrium: the staircase and its pillar fill the right third; open floor to the left"
+    },
+    {
+      "frame": 100,
+      "open_side": -1,
+      "sha16": "e4a7820334e552c9",
+      "desc": "hospital atrium: staircase and wall corner fill the left and centre-left; open floor to the right"
+    },
+    {
+      "frame": 120,
+      "open_side": 1,
+      "sha16": "0068efe44c877ce3",
+      "desc": "hospital corridor: a wall corner fills the right half; the corridor runs away to the left"
+    },
+    {
+      "frame": 140,
+      "open_side": -1,
+      "sha16": "c4195616e733e158",
+      "desc": "the same corner as 100, one step further in"
+    },
+    {
+      "frame": 160,
+      "open_side": -1,
+      "sha16": "d4a9364191c61b3a",
+      "desc": "nose-on to the staircase, it fills the left and centre; floor open to the right"
+    },
+    {
+      "frame": 880,
+      "open_side": 1,
+      "sha16": "6a303a56ce5ec888",
+      "desc": "office lobby: a curved dark-red wall fills the right third; open office floor to the left"
+    }
+  ],
+  "open": [
+    {
+      "frame": 0,
+      "sha16": "57e050494d415bde",
+      "desc": "hospital atrium, open floor straight ahead"
+    },
+    {
+      "frame": 80,
+      "sha16": "a81688bb7db77243",
+      "desc": "hospital atrium, open floor straight ahead past a vending machine on the right"
+    },
+    {
+      "frame": 200,
+      "sha16": "f2be5839e2fa1636",
+      "desc": "hospital atrium, open floor straight ahead toward a distant corridor"
+    },
+    {
+      "frame": 680,
+      "sha16": "c7a0f84daceea7f3",
+      "desc": "office atrium, a long open tiled floor straight ahead"
+    },
+    {
+      "frame": 700,
+      "sha16": "9d8bbed5264f85cd",
+      "desc": "office floor, open straight ahead between desks"
+    },
+    {
+      "frame": 800,
+      "sha16": "abd11d582048a950",
+      "desc": "office lobby, a long open aisle straight ahead"
+    }
+  ]
+}

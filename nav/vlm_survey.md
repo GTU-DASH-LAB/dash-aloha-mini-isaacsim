@@ -318,12 +318,21 @@ The 4 B answers a menu pick in **0.06 s against 0.32 s**, in **8.27 GiB against 
 which frees a whole card, since the 27 B needs all of GPU1 and the 4 B does not. On the
 selection probe that costs four points on one instruction out of six.
 
-**Why this is not a small finding for this stack:** the repair probe's own verdict, on
-every model including the baseline, is *"filter the menu geometrically before it is drawn,
-and leave the model the job it does at 100%: choosing a direction from the instruction."*
-That filter already exists — `SweepingLidar2D` feeds a per-arc clearance filter on the
-VLM's menu (see `CLAUDE.md`). In the configuration this repo actually runs, the model is
-asked to do the job the 4 B does at parity and not the job only the 27 B can do.
+**Why this looked like a bigger finding than it is — and the correction that decides it.**
+The repair probe's own verdict, on every model including the baseline, is *"filter the menu
+geometrically before it is drawn, and leave the model the job it does at 100%: choosing a
+direction from the instruction."* That filter is written — `SweepingLidar2D` feeds a
+per-arc clearance filter on the VLM's menu — and **it is switched off in the configuration
+every number in this repo was measured under.** `nav/config/profiles/baseline.yaml` pins
+`NAV_LIDAR: "0"`, so `run_navigation.py:622` never constructs the sensor and `:957` sends
+`scan_points=None`; with no scan the server has nothing to compute clearance from and the
+menu is drawn whole. That is deliberate — it is the arm that keeps every earlier ladder
+number comparable — but it inverts the reading. The shipping policy does **not** hand the
+geometry to a filter and keep only the instruction for the model. It asks the model for
+both, which makes the SIDED column load-bearing, and SIDED is the column where all five
+candidates lose. So the honest prediction going into the ladder is not "the swap is free":
+it is that the 4 B should lose episodes, in proportion to how often an episode needs free
+space read off the frame rather than a direction read off a sentence.
 
 **What this does NOT establish.** Both probes are open-loop, deterministic, 144 and 288
 calls, and they measure a decision, not an episode. Nothing here has driven a robot. The

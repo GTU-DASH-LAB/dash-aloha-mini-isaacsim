@@ -1383,6 +1383,43 @@ that affect the *rest* of this repo:
   banning the client string, not the key, and the one-line error names neither.
   `scripts/notify-progress.sh` never hit it because curl sends its own User-Agent. Any new
   Python caller of that API needs one set explicitly.
+- **A 4 B matches the 27 B at turning a WORD into an arc and not at seeing FREE SPACE, and
+  in the shipping profile the second half is the one that decides the ladder.** Full
+  survey in [`nav/vlm_survey.md`](nav/vlm_survey.md); the facts that outlive it:
+  - **`NAV_LIDAR: "0"` in `baseline.yaml` means the per-arc geometric clearance filter
+    NEVER RUNS.** The filter is written — `run_navigation.py` builds `SweepingLidar2D` and
+    posts `scan_points`, and the server computes clearance from it — but with the sensor
+    off it posts `None` and the whole menu is drawn. So "the model only has to pick a
+    direction, the geometry is filtered for it" is false for every number this repo has
+    recorded. The survey asserted it and had to be corrected; check the profile, not the
+    code, before repeating it.
+  - **The open-loop probe predicted the closed-loop result through the right variable, and
+    that is the reusable part.** `probe_arc_repair.py`'s SIDED `avoid wall` fell 67% → 22%
+    between the 27 B and `qwen3vl-4b`; the 19-episode ladder then went **10/19 → 4/19**
+    with **guard interventions 1 369 → 14 474 (10.6×)**. 288 calls and four minutes
+    anticipated four hours. Run the probe before booking the ladder.
+  - **Read the guard column, not the pass count.** 3/13 indoor sits *inside* the recorded
+    2/13 – 8/13 noise floor, so the pass count alone settles nothing at n=1 per arm. The
+    guard counts events rather than episodes, cannot be gamed by stopping early, and is
+    downstream of the model's choices — it is where a 19-episode ladder has thousands of
+    samples instead of nineteen.
+  - **Physics blow-ups are a VERTICAL divergence and the rate is model-dependent.** Five
+    of the candidate's 19 rows record 17–194 km of "path"; `base_z_span_m` on them is
+    11.7 km to 972 km against 0.003–0.03 m on every clean row. Against 1 in 57 across
+    three 27 B ladders. Not steering — the kinematic base's known z drift — but something
+    about driving into more geometry raises how often it triggers.
+  - **An arm is a MODEL and a sensor.** A ladder run with a different VLM and `NAV_LIDAR=0`
+    writes `lidar: "fan"` exactly like every 27 B run, so `compare_lidar_arms.py` silently
+    re-captioned "4 B without lidar vs 27 B with lidar" as a sensor comparison. It now
+    refuses an arm spanning two `policy` labels and prints each arm's timestamp span.
+  - **A result file does not record the menu configuration, and two 19-episode fan ladders
+    on disk score 10/19 and 3/19 with identical labels.** `EpisodeResult` carries `policy`,
+    `controller` and `lidar` but not `QVLA_MENU_FRAMES`, `_PIVOTS` or `_THINK_LEVEL`, so
+    the second is almost certainly the rejected `mem2` arm and nothing on disk says so.
+    Consequence: **"newest run per episode" is correct only in the minutes after both
+    ladders finish.** The recorded fan baseline is the ladder `20260904-232005 ..
+    20260905-022414` — 10/19, indoor 9/13, outdoor 1/6, guard 1369, all four matching
+    `baseline.yaml`. Identify a ladder by its window, not by asking a tool for the latest.
 
 ## Next step
 

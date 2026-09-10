@@ -25,6 +25,15 @@ so a one- or two-episode difference in either direction is not a result. What th
 can settle is a LARGE difference, and the direction of a consistent small one across many
 episodes -- which is why the totals line prints both arms' `closed` mean.
 
+AN ARM IS A MODEL AND A SENSOR, NOT A SENSOR. `lidar` was made the arm key back when the
+model could not change; the VLM survey then ran a 19-episode ladder with `qwen3vl-4b` and
+`NAV_LIDAR=0`, which writes `lidar: "fan"` like every 27 B run before it. `--a fan` picked
+it up as the newest fan run per episode and this table quietly became "4 B without lidar
+against 27 B with lidar", still captioned as a sensor comparison. That is the same shape
+of error the `lidar` label was introduced to prevent, one level up. So the arm is now
+keyed on BOTH fields: a `--policy` substring narrows it, and an arm whose matched runs
+span more than one `policy` label is refused rather than averaged.
+
 IMPORTABLE ON PURPOSE. `report_lidar_arms.py` renders the same comparison as HTML for
 email, and the pairing rules here -- the 25-minute clustering, the clean-ladder filter,
 the refusal to backfill `lidar: ""` -- are exactly the kind of thing CLAUDE.md records as
@@ -171,17 +180,40 @@ class Comparison:
         return [f"{sum(d.values())}/{len(d)}" for d in self.history]
 
 
+def _one_policy(arm: dict[str, dict], label: str, flag: str) -> None:
+    """Refuse an arm assembled out of two different models.
+
+    The newest-run-per-episode rule is what makes a stray old run harmless, and it is
+    also what lets a NEWER run of a different model take rows over. Nothing in the
+    `lidar` label distinguishes them, so the only safe move is to stop: an arm that
+    spans two policies is not one experiment, and the aggregate it would print is a
+    number with no configuration behind it.
+    """
+    seen = sorted({r["policy"] for r in arm.values()})
+    if len(seen) > 1:
+        counts = {p: sum(1 for r in arm.values() if r["policy"] == p) for p in seen}
+        raise SystemExit(
+            f"arm {flag} {label!r} spans {len(seen)} policies and is not one experiment:\n"
+            + "".join(f"    {n:>3} episodes  {p}\n" for p, n in counts.items())
+            + f"  narrow it with --policy, e.g. --policy '{seen[0].split(' [')[0]}'."
+        )
+
+
 def pair_arms(a: str = "fan", b: str = "c1@0.30", controller: str = "braking",
-              history: bool = True) -> Comparison:
+              history: bool = True, policy: str = "") -> Comparison:
     cfg = load_config()
     # Sorted by filename, which is the timestamp, so the LAST match per episode is the
     # newest run of that arm. Both arms are re-run for a comparison; an older stray run
     # of the same label would otherwise be paired against a fresh one from the other.
     rows = [r for r in (score(p, cfg) for p in sorted(RESULTS.glob("*.json"))) if r]
     rows = [r for r in rows if r["controller"] == controller]
+    if policy:
+        rows = [r for r in rows if policy in r["policy"]]
 
     arm_a = {r["episode"]: r for r in rows if r["lidar"] == a}
     arm_b = {r["episode"]: r for r in rows if r["lidar"] == b}
+    _one_policy(arm_a, a, "--a")
+    _one_policy(arm_b, b, "--b")
     both = [e for e in arm_a if e in arm_b]
     if not both:
         raise SystemExit(
@@ -213,12 +245,16 @@ def main() -> None:
     ap.add_argument("--a", default="fan", help="reference arm's `lidar` label")
     ap.add_argument("--b", default="c1@0.30", help="treatment arm's `lidar` label")
     ap.add_argument("--controller", default="braking")
+    ap.add_argument("--policy", default="",
+                    help="substring of the `policy` label both arms must carry, e.g. "
+                         "'Qwen3.8-27B'. Needed once a second model has run either arm.")
     ap.add_argument("--history", action="store_true",
                     help="add a column of how often each episode passed on the ladders "
                          "recorded BEFORE the sensor existed")
     args = ap.parse_args()
 
-    c = pair_arms(args.a, args.b, args.controller, history=args.history)
+    c = pair_arms(args.a, args.b, args.controller, history=args.history,
+                  policy=args.policy)
 
     hcol = f"{'was':>7}" if args.history else ""
     print(f"\n  {'episode':<26}{hcol}{'A ' + c.a_label:>14}{'B ' + c.b_label:>14}   "
@@ -246,6 +282,20 @@ def main() -> None:
 
     print(f"\n  won  ({len(c.won())}): {', '.join(c.won()) or '-'}")
     print(f"  lost ({len(c.lost())}): {', '.join(c.lost()) or '-'}")
+
+    # WHICH RUNS THESE ARE. The selection rule is newest-run-per-episode, which is right
+    # the moment both ladders finish and drifts afterwards: re-run six episodes tomorrow
+    # and this table silently becomes six rows of tomorrow against thirteen of today. It
+    # cannot be read off the totals -- `baseline.yaml` records the fan arm at 10/19 and
+    # this tool prints 1/19 for the same label, because six later single-episode reruns
+    # took those rows. So print the span and let a wide one be visible. One tight cluster
+    # per arm is one ladder; anything else is a pooled table wearing a ladder's caption.
+    print()
+    for label, arm in ((c.a_label, c.arm_a), (c.b_label, c.arm_b)):
+        stamps = sorted(r["file"][:15] for r in arm.values())
+        span = f"{stamps[0]} .. {stamps[-1]}" if stamps else "-"
+        pol = sorted({r["policy"] for r in arm.values()})
+        print(f"  runs used, {label:<9} {len(arm):>3}   {span}   {pol[0] if pol else '-'}")
 
     if args.history:
         print(f"\n  `was` is the pass rate over {len(c.history)} clean single-pass "

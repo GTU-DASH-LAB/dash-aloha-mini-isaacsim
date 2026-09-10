@@ -161,7 +161,11 @@ def main() -> int:
         # and three clean prior ladders of the SAME configuration scored 2/13, 8/13, 8/13.
         # A tighter threshold would report noise as a regression.
         quality = all(s[k] >= b[k] - 0.05 for k in ("avoid", "keep", "side", "mirror"))
-        better = any(s[k] > b[k] + 0.05 for k in ("side", "mirror"))
+        # A quality WIN has to survive the parity gate too. Without it, a model that
+        # beats the baseline on mirror by 6 points while losing `keep` by 89 reads as
+        # "QUALITY" -- which is the don't-average-the-columns error wearing a different
+        # hat. SmolVLM2 is exactly that case, so the guard is not hypothetical.
+        better = quality and any(s[k] > b[k] + 0.05 for k in ("side", "mirror"))
         faster = s["lat"] < b["lat"] * 0.8
         lighter = 0 < gib < 28.75 * 0.5
 
@@ -173,13 +177,30 @@ def main() -> int:
         if quality and lighter:
             wins.append(f"FOOTPRINT ({28.75 / gib:.1f}x)")
 
-        # Name the positional prior explicitly. It is the one failure that an averaged
-        # score rewards, and it is what DIGIT does on the baseline itself.
-        prior = s["keep"] > 0.9 and s["side"] < CHANCE["side"] + 0.1
-        note = "  <- centre-arc prior, not comprehension" if prior else ""
+        # Name the positional priors explicitly. They are the failures an averaged score
+        # rewards, and there are TWO of them -- opposite answers, identical emptiness.
+        # `keep` at 100% with `side` near chance is the centre-arc prior, and it is what
+        # DIGIT does on the baseline itself. Its mirror image scores `avoid` near 100%
+        # with `keep` near zero, which looks like two wins on this table and is a model
+        # that swerves at everything. The open-corridor frames exist to catch it.
+        notes = []
+        if s["keep"] > 0.9 and s["side"] < CHANCE["side"] + 0.1:
+            notes.append("centre-arc prior, not comprehension")
+        if s["avoid"] > 0.8 and s["keep"] < 0.3:
+            notes.append("edge-arc prior -- swerves at everything, incl. clear corridors")
         if s["unparsed"] > 0:
-            note += f"  [{s['unparsed']} unparsed -- format, not navigation]"
-        verdict = " + ".join(wins) if wins else ("comparable" if quality else "worse")
+            notes.append(f"{s['unparsed']} unparsed -- format, not navigation")
+        note = ("  <- " + "; ".join(notes)) if notes else ""
+
+        if wins:
+            verdict = " + ".join(wins)
+        elif quality:
+            verdict = "comparable"
+        else:
+            # Say WHICH columns fell, so "worse" is a reading rather than a label.
+            lost = [f"{k} {(s[k] - b[k]) * 100:+.0f}pp"
+                    for k in ("avoid", "keep", "side", "mirror") if s[k] < b[k] - 0.05]
+            verdict = "worse (" + ", ".join(lost) + ")"
         print(f"  {r['tag']:18} {verdict}{note}")
 
     if args.md:

@@ -177,12 +177,25 @@ would mean measuring something else:
 
 ### The four columns that matter
 
-From `probe_arc_repair.py`, and the baseline's own numbers are the target to beat:
+From `probe_arc_repair.py`, and the baseline's own numbers are the target to beat — **all
+of them re-measured on 2026-09-10, because the labels this probe used had drifted**:
 
 | variant | avoid wall | keep straight | open side | mirror | latency |
 |---|---|---|---|---|---|
-| DIGIT — one call, bare digit | 22% | 100% | 20% | 0% | 0.31 s |
-| **SIDED** — describe *and name the open side*, then choose | **100%** | **92%** | **90%** | **83%** | 2.10 s |
+| DIGIT — one call, bare digit | 8% | 100% | 25% | 0% | 0.32 s |
+| **SIDED** — describe *and name the open side*, then choose | **67%** | **100%** | **69%** | **50%** | 2.30 s |
+
+**This is a different frame set, not a regression.** `CLAUDE.md` records SIDED at
+100/92/90/83, measured 2026-08-31; `/tmp/alohamini-nav-frames` was regenerated on
+2026-09-05 from a different splice of episodes and the hand labels were never rewritten,
+so for five days the probe scored choices against descriptions of pictures that no longer
+existed. See `nav/config/probe_frames.json`, which now carries a SHA-16 of every frame it
+labelled and refuses to run on a mismatch. The new six blocked frames span three
+environments and include a staircase taken nose-on; they are simply harder than the old
+set. **A number measured against different ground truth is not comparable to one measured
+against this ground truth, in either direction** — the only baseline the candidates are
+scored against is the one in the table above, taken in the same session, on the same
+frames, through the same probes.
 
 Chance is 43% on `open side` and ~0% on `mirror`. **`mirror` is the column to read first**
 — it asks whether the choice negates when the frame is mirrored, needs no human labels,
@@ -190,7 +203,10 @@ and cannot be scored by a positional prior. The original obstacle probe scored 0
 while looking fine elsewhere.
 
 And from `probe_arc_selection.py`: left / right / straight at **100%** each against 43%
-chance, median latency **0.31 s**.
+chance, mean κ separating left from right by **+1.190** of a 1.20 menu span, median
+latency **0.32 s**. That probe renders its own scenes from instructions and does not touch
+the hand labels, so it was unaffected by the drift — and it reproduced the recorded
++1.190 exactly, which is the check that says the harness itself is sound.
 
 ### What "beats Qwen" would mean
 
@@ -219,3 +235,110 @@ say so rather than reporting a single scalar.
 - **Do not average the four columns.** `keep straight` at 100% with `open side` at 20% is
   the exact signature of a model that always picks the centre arc — a positional prior,
   not comprehension. The baseline's own DIGIT row is that failure.
+
+---
+
+## 6. The result
+
+All five loaded, all five ran both probes, **0 parse failures and 0 unparsed answers
+anywhere** — 6 models × 2 probes × 288 calls. One dependency was missing (`num2words`,
+required by SmolVLM's processor and not by any other); nothing else needed a patch, a
+`trust_remote_code`, or a prompt change. Measured 2026-09-10, candidates on GPU0 at
+`:8767`, the 27 B on GPU1 at `:8766`, same frames, same seed, same 448×448 cap, greedy.
+
+### 6.1 Does the WORD reach the CURVE? (`probe_arc_selection`)
+
+This is the job the arc policy actually runs at 100% and the one the whole architecture
+rests on. Chance for a side-correct pick is 43%.
+
+| model | GiB | left | right | straight | L−R mean κ | latency |
+|---|---|---|---|---|---|---|
+| **`baseline-qwen27b`** | 28.75 | **100%** | **100%** | **100%** | **+1.190** | 0.32 s |
+| `qwen3vl-8b` | 16.33 | **100%** | **100%** | **100%** | +0.744 | **0.09 s** |
+| `qwen3vl-4b` | 8.27 | **100%** | 96% | **100%** | +0.554 | **0.06 s** |
+| `internvl3.5-4b` | 8.82 | 88% | 54% | 33% | +0.298 | 0.21 s |
+| `smolvlm2-2.2b` | 4.19 | 71% | 42% | 4% | +0.129 | 0.20 s |
+| `gemma3-4b` | 8.01 | 25% | 79% | 38% | +0.065 | 0.11 s |
+
+**Two candidates pass and they are both Qwen3-VL.** The 8 B matches the baseline's
+100/100/100 at **3.6× the speed and 1.76× less memory**; the 4 B gives up four points on
+`right` for **5.3× the speed and 3.5× less memory**. Both keep the sign separation well
+clear of zero — the menu spans 1.20, so +0.744 and +0.554 are real, if softer than the
+27 B's +1.190, which is nearly the whole span.
+
+The other three fail, and each fails differently. `gemma3-4b` is the flattest: +0.065 of
+separation with `right` at 79% and `left` at 25% is not a weak left/right map, it is a
+right-ish prior that scores whenever the answer happens to be right. `smolvlm2-2.2b`
+answers the **same label for every instruction** on most scenes — its per-scene rows read
+`neutr=5 left=5 right=5 strai=5` — so its 71% on `left` is what a fixed answer scores
+against a shuffled menu, not comprehension. `internvl3.5-4b` separates the sides (+0.298)
+but scores `straight` at 33%, which is the instruction that should be easiest.
+
+### 6.2 Can it see free space? (`probe_arc_repair`, SIDED)
+
+| model | params | GiB | avoid wall | keep straight | open side | mirror | latency |
+|---|---|---|---|---|---|---|---|
+| **`baseline-qwen27b`** | 27.0 B | 28.75 | **67%** | **100%** | **69%** | **50%** | 2.30 s |
+| `smolvlm2-2.2b` | 2.25 B | 4.19 | 89% | 11% | 61% | 56% | 0.54 s |
+| `gemma3-4b` | 4.3 B | 8.01 | 53% | 53% | 61% | 39% | 0.89 s |
+| `internvl3.5-4b` | 4.73 B | 8.82 | 3% | 100% | 44% | 22% | 0.84 s |
+| `qwen3vl-8b` | 8.77 B | 16.33 | 39% | 89% | 36% | 28% | 0.36 s |
+| `qwen3vl-4b` | 4.44 B | 8.27 | 22% | 94% | 36% | 22% | 0.41 s |
+
+**Nothing beats the baseline here, and the ways of failing are worth more than the
+ranking.** Three distinct shapes, none of them "a bit worse":
+
+- **Centre-arc prior** — `internvl3.5-4b` (100% keep, 3% avoid) and `qwen3vl-4b` (94/22).
+  It picks the middle arc and scores `keep straight` perfectly by doing nothing. This is
+  the baseline's own DIGIT failure, and it is why these columns must never be averaged.
+- **Edge-arc prior** — `smolvlm2-2.2b` (89% avoid, **11% keep**). Read the first two
+  columns alone and it beats the 27 B on wall avoidance; read the third and it is a model
+  that swerves at everything, including a clear corridor. **This is exactly what the
+  open-corridor frames were put in for**, and without them SmolVLM2 would have been
+  written up as the surprise winner of this survey. Its 56% `mirror` beating the
+  baseline's 50% is the same illusion: a model that always turns *away* from image mass
+  negates when the image is mirrored without seeing anything.
+- **Near chance across the board** — `gemma3-4b` (53/53/61/39). No prior, no signal.
+
+`avoid` and `keep` trade against each other along one axis — where a model sits on it is a
+bias, and only `open side` and `mirror` say whether anything was read off the picture. On
+those two the baseline leads every candidate by 8–33 pp and 6–28 pp, with the single
+exception of SmolVLM2's mirror, explained above.
+
+### 6.3 So is there anything better than Qwen? — yes, on one of the two jobs
+
+**Split the question, because the answer splits.**
+
+| the job | winner | margin |
+|---|---|---|
+| turn an instruction into an arc (`selection`, DIGIT path) | **`qwen3vl-4b`** / `qwen3vl-8b` | same accuracy, **5.3× / 3.6× faster**, **3.5× / 1.76× lighter** |
+| read free space off the frame (`repair`, SIDED path) | **the 27 B, unbeaten** | +8…33 pp on `open side`, +6…28 pp on `mirror` |
+
+The 4 B answers a menu pick in **0.06 s against 0.32 s**, in **8.27 GiB against 28.75** —
+which frees a whole card, since the 27 B needs all of GPU1 and the 4 B does not. On the
+selection probe that costs four points on one instruction out of six.
+
+**Why this is not a small finding for this stack:** the repair probe's own verdict, on
+every model including the baseline, is *"filter the menu geometrically before it is drawn,
+and leave the model the job it does at 100%: choosing a direction from the instruction."*
+That filter already exists — `SweepingLidar2D` feeds a per-arc clearance filter on the
+VLM's menu (see `CLAUDE.md`). In the configuration this repo actually runs, the model is
+asked to do the job the 4 B does at parity and not the job only the 27 B can do.
+
+**What this does NOT establish.** Both probes are open-loop, deterministic, 144 and 288
+calls, and they measure a decision, not an episode. Nothing here has driven a robot. The
+13-episode ladder is the test that would settle it, and the honest prior is that this
+stack is noisy: three clean ladders of the *same* configuration scored 2/13, 8/13, 8/13.
+A swap that looks free at 0.06 s could still lose episodes to the softer κ separation
+(+0.554 against +1.190) once a controller integrates those choices over 30 m. **Run the
+ladder before believing the table.**
+
+Two smaller results worth keeping:
+
+- **Size is not the axis.** The 8 B is better than the 4 B on selection (+0.744 vs
+  +0.554) and no better on free space (36% side, both). The 2.2 B and the three 4 Bs span
+  the entire range of outcomes between them. What separates the passes from the failures
+  here is the *lineage* — both passes are Qwen3-VL — not the parameter count, which is
+  the question holding three lineages at 4 B was designed to answer.
+- **On-disk size is not the inference footprint.** SmolVLM2 ships fp32: 8.4 GiB on disk,
+  larger than any 4 B here, and 4.19 GiB once loaded in bf16.

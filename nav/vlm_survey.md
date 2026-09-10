@@ -9,6 +9,13 @@ A 27B holding **28.75 GiB** is a strange thing to be at the bottom of a robot. T
 document asks whether something an order of magnitude smaller can do the same job, picks
 five candidates, and defines the test.
 
+**The answer, up front: no — and the interesting part is that it splits.** `qwen3vl-4b`
+matches the 27 B at turning an instruction into an arc, at 5.3× the speed in 3.5× less
+memory, and is far worse at seeing free space (§6). Put on the real ladder it scores
+**4/19 against 10/19**, with guard interventions up **10.6×** through exactly the channel
+the open-loop probe flagged (§7). A 288-call probe costing four minutes predicted a
+four-hour ladder, which is the reusable result here.
+
 ---
 
 ## 1. What a candidate actually has to do
@@ -340,7 +347,8 @@ calls, and they measure a decision, not an episode. Nothing here has driven a ro
 stack is noisy: three clean ladders of the *same* configuration scored 2/13, 8/13, 8/13.
 A swap that looks free at 0.06 s could still lose episodes to the softer κ separation
 (+0.554 against +1.190) once a controller integrates those choices over 30 m. **Run the
-ladder before believing the table.**
+ladder before believing the table.** — It was run; §7 is the result, and it is 4/19
+against the baseline's 10/19.
 
 Two smaller results worth keeping:
 
@@ -351,3 +359,132 @@ Two smaller results worth keeping:
   the question holding three lineages at 4 B was designed to answer.
 - **On-disk size is not the inference footprint.** SmolVLM2 ships fp32: 8.4 GiB on disk,
   larger than any 4 B here, and 4.19 GiB once loaded in bf16.
+
+---
+
+## 7. The ladder — `qwen3vl-4b` in the closed loop
+
+The table above says run the ladder before believing it, so the ladder was run: the full
+19 episodes, `braking`, the pinned baseline profile with **exactly one variable changed**
+(`nav/tools/profile.py check` confirmed the live `/health` deviated from
+`nav/config/profiles/baseline.yaml` in `model` and nothing else). The candidate is the
+open-loop winner, `qwen3vl-4b`. Server counters over the ladder: **4910 predictions, 4910
+generations, 0 parse failures, 0 generation errors.**
+
+| | 27 B baseline | `qwen3vl-4b` |
+|---|---|---|
+| passed | **10 / 19** | **4 / 19** |
+| indoor | **9 / 13** | 3 / 13 |
+| outdoor | 1 / 6 | 1 / 6 |
+| guard interventions | **1 369** | **14 474** (10.6×) |
+| mean gap closed (14 rows clean on both arms) | **85%** | 56% |
+| physics blow-ups | 0 | **5** |
+| ladder wall time | 2.96 h | 4.06 h |
+
+Episode by episode, the newest run of each arm (baseline ladder `20260904-232005 ..
+20260905-022414`, candidate `20260910`):
+
+| episode | 27 B | `qwen3vl-4b` | flip | guard 27 B | guard 4 B |
+|---|---|---|---|---|---|
+| `office_nearest_elevator` | ✓ 1.50 m | 6.04 m | **LOST** | 0 | 0 |
+| `hospital_down_hallway` | ✓ 1.50 m | 28.12 m | **LOST** | 0 | 838 |
+| `hospital_down_hallway2` | ✓ 1.50 m | 24.49 m | **LOST** | 0 | 283 |
+| `office_passing_hallway` | ✓ 1.50 m | 5.02 m ✱ | **LOST** | 4 | 270 |
+| `hospital_vending_machine` | 1.89 m | **✓ 1.50 m** | WON | 0 | 0 |
+| `hospital_vending_machine2` | ✓ 1.50 m | ✓ 1.50 m | = | 0 | 0 |
+| `office_hallway_turn` | 2.83 m | 2.12 m | = | 321 | 777 |
+| `office_hallway_turn2` | ✓ 1.49 m | 2.41 m | **LOST** | 23 | 410 |
+| `hospital_past_wheelchairs` | ✓ 1.50 m | ✓ 1.49 m | = | 0 | 0 |
+| `hospital_forward_staircase` | ✓ 1.50 m | 18.08 m | **LOST** | 9 | 914 |
+| `hospital_exit_room` | 2.28 m | 17.35 m | = | 562 | 822 |
+| `warehouse` | ✓ 1.50 m | 14.65 m | **LOST** | 0 | 748 |
+| `warehouse_aisle6` | 3.68 m | 19.25 m | = | 450 | **9 410** |
+| `outdoor_umbrellas` | ✓ 3.99 m | 11.57 m ✱ | **LOST** | 0 | 0 |
+| `outdoor_pillars` | 6.06 m | 29.02 m ✱ | = | 0 | 0 |
+| `outdoor_library` | 14.29 m | **✓ 4.00 m** | WON | 0 | 0 |
+| `outdoor_upsway` | 2.86 m | 3.69 m | = | 0 | 2 |
+| `outdoor_upsway_far` | 9.43 m | 2.27 m ✱ | = | 0 | 0 |
+| `outdoor_ramp_fountain` | 14.17 m | 27.60 m ✱ | = | 0 | 0 |
+
+✱ = physics blow-up; every distance on that row is void (see below).
+
+### 7.1 Read the guard column, not the pass count
+
+**The pass count alone does not settle this, and saying it does would be the same error
+this document has warned about twice.** Three clean prior ladders of one configuration
+scored 2/13, 8/13 and 8/13 indoor. The candidate's 3/13 sits *inside* that spread. Two
+episodes flipped its way, eight against; n=1 per arm, and `predict()` being deterministic
+does not make a run deterministic.
+
+What is outside the noise is the number that does not pass through a threshold at all.
+**Guard interventions went 1 369 → 14 474.** The guard is a raycast that fires when the
+robot is about to drive into something; it does not know what a goal is, it cannot be
+gamed by stopping early, and it counts events rather than episodes, so 19 runs give it
+thousands of samples instead of 19. A 10.6× rise says the robot is being steered into
+obstacles an order of magnitude more often. `warehouse_aisle6` alone fires **9 410**
+times against 450.
+
+And that is exactly the channel §6.2 measured. SIDED `avoid wall` is **67% → 22%**: on
+the open-loop probe the 4 B drove the straight arc into a visible wall on 78% of blocked
+frames. §6.3, corrected, predicted this would be load-bearing rather than absorbed by a
+geometric filter, because the shipping profile pins `NAV_LIDAR: "0"` and the filter never
+runs. **The 288-call probe predicted the 19-episode result through the right variable** —
+which is the most useful thing in this document, since the probe costs four minutes and
+the ladder costs four hours.
+
+The continuous score agrees and is not threshold-bound: mean gap closed **85% → 56%**
+over the fourteen rows clean on both arms.
+
+### 7.2 The five blow-ups are vertical, and they are not scored as navigation
+
+Five candidate rows record impossible paths — `office_passing_hallway` 17 348 m,
+`outdoor_umbrellas` 20 046 m, `outdoor_pillars` 34 599 m, `outdoor_ramp_fountain`
+19 781 m, and `outdoor_upsway_far` **194 378 m**. `summarize_runs.score()` flags all five
+against what the speed cap physically permits, so their distance aggregates are excluded
+above; the pass denominator keeps them, because the robot really did not arrive.
+
+The divergence is in **z**, not in the plane. `base_z_span_m` on those rows is 11.7 km,
+15.3 km, 19.8 km, 23.4 km and **972 km**, with single steps up to 492 m, against
+0.003–0.03 m on every clean row. So this is the kinematic base's known vertical drift
+(CLAUDE.md: teleporting the root has no contact response, and refreshing z every step
+caused drift), not a steering failure — the same class as the deferred `warehouse_aisle6`
+152 995 m case.
+
+**What is new is the rate: 5 in 19, against 1 in 57 across three 27 B ladders.** Four of
+the five are outdoors, where the guard's planar fan at 0.30 m cannot see a kerb, a ramp
+or a step at all. The plausible chain is that the candidate reaches such geometry far
+more often — which is what the guard column says about the geometry the fan *can* see —
+and a kinematic base driven onto it climbs. That chain is a hypothesis, stated as one:
+nothing here isolates it, and the blown rows themselves have guard 0 precisely because
+the obstacle was below the rays.
+
+Note the arithmetic of it: `outdoor_upsway_far` reached **2.27 m** on a 2.0 m threshold —
+27 cm short — and then flew. Whether that row is "nearly a pass" is unanswerable, which
+is why it is scored as a fail and its distances are void rather than quoted.
+
+### 7.3 The honest answer to the question this branch asked
+
+**Is there a lightweight VLM that beats Qwen here? On the whole job, no.**
+
+- **Turning a word into an arc**, `qwen3vl-4b` matches the 27 B at 100/96/100 for **5.3×
+  the speed and 3.5× less memory**. That result stands, and it is worth having: it means
+  the *instruction* half of this policy does not need 28.75 GiB.
+- **Reading free space off the frame**, it does not come close — and in the configuration
+  that actually ships, that half decides the ladder. 10/19 → 4/19, guard ×10.6.
+
+So the swap is not free and the survey's own §6.3 caveat was the right one. The two ways
+forward that this result actually supports, in order of what the evidence says:
+
+1. **Turn the filter on and re-run.** `NAV_LIDAR=1` gives the server a real scan and the
+   menu is filtered geometrically before the model sees it — which is precisely the job
+   the 4 B fails and the sensor does not. The lidar A/B on the 27 B was a dead heat, so
+   nothing is expected from it there; on the 4 B it is aimed at the measured deficit. This
+   is the one experiment where the open-loop table predicts a large effect.
+2. **`qwen3vl-8b` on the same ladder.** It is better than the 4 B on both probes (avoid
+   39% vs 22%, κ +0.744 vs +0.554) at 16.33 GiB, still half the baseline and still
+   single-card. It was not run here because the 4 B was the open-loop winner and the
+   ladder costs four hours; the 4 B's result makes the 8 B the interesting row rather
+   than a redundant one.
+
+Not supported by anything measured: prompt changes. §6.2's failure is a perceptual one on
+identical pixels and identical wording to the model that gets it right.

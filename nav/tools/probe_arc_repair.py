@@ -48,7 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import make_arcs, render_menu  # noqa: E402
-from probe_arc_obstacles import BLOCKED, OPEN, flip  # noqa: E402
+from probe_arc_obstacles import BLOCKED, FRAME_DIR, OPEN, flip  # noqa: E402
 from probe_arc_selection import SYSTEM  # noqa: E402
 from probe_free_space import DESCRIBE, SYSTEM as PLAIN_SYSTEM  # noqa: E402
 
@@ -141,7 +141,9 @@ VARIANTS = {"DIGIT": v_digit, "THINK": v_think, "CHAIN": v_chain, "SIDED": v_sid
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frame-dir", default="/tmp/alohamini-nav-frames")
+    ap.add_argument("--frame-dir", default=str(FRAME_DIR),
+                    help="Defaults to the directory the manifest labelled, so the "
+                         "SHA check and the pixels can never come from two places.")
     ap.add_argument("--perms", type=int, default=3)
     ap.add_argument("--instruction", default="Drive safely.")
     ap.add_argument("--host", default="127.0.0.1")

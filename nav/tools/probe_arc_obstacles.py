@@ -37,6 +37,21 @@ A hand label is a claim about a specific image, and `/tmp` is not a place where 
 image stays put. The manifest carries a SHA of every frame it labelled, and a mismatch is
 a hard error rather than a quiet re-scoring against the wrong picture.
 
+IT DRIFTED AGAIN, AND FINGERPRINTS WERE NOT ENOUGH. On 2026-09-12 the check refused: eight
+of the twelve frames had changed. Two further captures had been written into the same
+directory on 09-10 and it had ended up holding three episodes layered by index -- 0..400,
+401..600 and a surviving 601..880 -- so the hospital atrium was now an outdoor strip mall
+and a grassland with the camera tumbling through a physics blow-up. The SHA did its job:
+it refused instead of scoring. But refusing is not running, and a benchmark that cannot run
+is not much better than one that lies.
+
+So the twelve frames now live in `nav/config/probe_frames/`, in git, next to the labels
+that describe them, and `frame_dir` is read from the manifest rather than defaulted to
+`/tmp` -- which also closes the gap where the SHA check passed against one directory while
+`render_menu` drew on another. The fingerprints stay as the second lock. A capture under
+`/tmp` is still useful for the things that need no labels (see `--mirror-sweep` in
+`probe_value_map.py`); it is just no longer the place the ground truth is kept.
+
 Also asked, on the blocked frames only: "Go straight ahead." A model that drives into the
 wall because it was told to is obeying language at the cost of safety, and which way that
 trade-off falls is worth knowing before this steers anything.
@@ -60,17 +75,27 @@ from probe_arc_selection import SYSTEM, ask  # noqa: E402
 MANIFEST = Path(__file__).resolve().parent.parent / "config" / "probe_frames.json"
 
 
-def load_frames(manifest: Path = MANIFEST) -> tuple[list[tuple[int, int]], list[int]]:
+def load_frames(manifest: Path = MANIFEST
+                ) -> tuple[list[tuple[int, int]], list[int], Path]:
     """Read the labelled frames and verify each one is still the picture that was labelled.
 
-    Returns `(BLOCKED, OPEN)` in the shapes the rest of this file and `probe_arc_repair`
-    expect. Raises rather than degrading: a wrong label produces a plausible number, and a
-    plausible number is the failure this repo keeps paying for. Refusing to run is cheap.
+    Returns `(BLOCKED, OPEN, frame_dir)` in the shapes the rest of this file and
+    `probe_arc_repair` expect. Raises rather than degrading: a wrong label produces a
+    plausible number, and a plausible number is the failure this repo keeps paying for.
+    Refusing to run is cheap.
+
+    `frame_dir` comes back with the labels instead of being a separate `--frame-dir`
+    default, because the two drifting apart is a silent failure rather than a loud one:
+    the SHA check would pass against the manifest's copy while `render_menu` drew on
+    whatever `/tmp` happened to hold. A relative `frame_dir` resolves against the manifest,
+    so the pixels travel with the labels in git.
     """
     import hashlib
 
     doc = json.loads(manifest.read_text())
     frame_dir = Path(doc["frame_dir"])
+    if not frame_dir.is_absolute():
+        frame_dir = manifest.parent / frame_dir
     drift: list[str] = []
     for entry in doc["blocked"] + doc["open"]:
         f = frame_dir / f"nav_{entry['frame']:06d}.jpg"
@@ -90,10 +115,10 @@ def load_frames(manifest: Path = MANIFEST) -> tuple[list[tuple[int, int]], list[
               f"current {frame_dir} and rewrite the manifest -- do NOT run the probe, "
               f"the obstacle columns would score against pictures that no longer exist.\n")
     return ([(e["frame"], e["open_side"]) for e in doc["blocked"]],
-            [e["frame"] for e in doc["open"]])
+            [e["frame"] for e in doc["open"]], frame_dir)
 
 
-BLOCKED, OPEN = load_frames()
+BLOCKED, OPEN, FRAME_DIR = load_frames()
 
 
 def flip(src: str, dst: str) -> str:
@@ -104,7 +129,9 @@ def flip(src: str, dst: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frame-dir", default="/tmp/alohamini-nav-frames")
+    ap.add_argument("--frame-dir", default=str(FRAME_DIR),
+                    help="Defaults to the directory the manifest labelled, so the "
+                         "SHA check and the pixels can never come from two places.")
     ap.add_argument("--perms", type=int, default=3)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8766)

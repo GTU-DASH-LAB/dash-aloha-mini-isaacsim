@@ -472,19 +472,166 @@ is why it is scored as a fail and its distances are void rather than quoted.
 - **Reading free space off the frame**, it does not come close — and in the configuration
   that actually ships, that half decides the ladder. 10/19 → 4/19, guard ×10.6.
 
-So the swap is not free and the survey's own §6.3 caveat was the right one. The two ways
-forward that this result actually supports, in order of what the evidence says:
+So the swap is not free and the survey's own §6.3 caveat was the right one. What the result
+actually supports:
 
-1. **Turn the filter on and re-run.** `NAV_LIDAR=1` gives the server a real scan and the
-   menu is filtered geometrically before the model sees it — which is precisely the job
-   the 4 B fails and the sensor does not. The lidar A/B on the 27 B was a dead heat, so
-   nothing is expected from it there; on the 4 B it is aimed at the measured deficit. This
-   is the one experiment where the open-loop table predicts a large effect.
-2. **`qwen3vl-8b` on the same ladder.** It is better than the 4 B on both probes (avoid
+1. **`qwen3vl-8b` on the same ladder.** It is better than the 4 B on both probes (avoid
    39% vs 22%, κ +0.744 vs +0.554) at 16.33 GiB, still half the baseline and still
    single-card. It was not run here because the 4 B was the open-loop winner and the
    ladder costs four hours; the 4 B's result makes the 8 B the interesting row rather
    than a redundant one.
+2. **Nothing that needs a second sensor.** An earlier draft of this section put
+   `NAV_LIDAR=1` first, on the argument that the geometric filter does the exact job the
+   4 B fails. Fouad has ruled that line out, so the free-space deficit has to be closed
+   from the camera or not at all — which is the question §8 goes and tests against the
+   published alternative.
 
 Not supported by anything measured: prompt changes. §6.2's failure is a perceptual one on
 identical pixels and identical wording to the model that gets it right.
+
+---
+
+## 8. The four ObjectNav systems, and the one piece of them that runs here
+
+Fouad asked for four more:
+
+| System | SR | SPL | What it uses |
+| --- | --- | --- | --- |
+| WMNav | 58.1 | 31.2 | VLM world model + curiosity value map |
+| OpenFMNav | 54.9 | 24.4 | LLM + VLM detector |
+| VLFM | 52.5 | 30.4 | BLIP-2 + value map |
+| L3MVN | 50.4 | 23.1 | LLM + semantic map |
+
+**None of the four runs against this stack as published, for the same three reasons each
+time.** They are Habitat agents: a discrete action space (`move_forward` 0.25 m, turn ±30°,
+`stop`), episodes out of HM3D/MP3D, and a loop that is `habitat.Env.step()`. They are all
+RGB-**D**: every one of them builds its map by projecting a depth image, and `camera_nav`
+publishes RGB only. And they are a **different task** — ObjectNav succeeds by stopping
+within 1 m of *any* instance of a category, where our episodes name one coordinate with a
+per-episode `success_threshold_m`. A system that wins by finding any chair is not
+measurable on an episode that names one place.
+
+VLFM is the hardest of the four to port even so, because its low-level executor is a
+*trained* PointNav (VER/DDPPO) checkpoint whose observation space is depth plus a goal
+vector. That is weights, not a prompt, and it cannot be handed something else.
+
+**One warning about the numbers in that table.** Our baseline is 10/19 = 52.6%, which lands
+between VLFM's 52.5 and OpenFMNav's 54.9. That is a coincidence between two different
+tasks. Nothing below compares to those SRs and neither should anything else.
+
+### 8.1 What is portable, and it is exactly one thing
+
+VLFM's **semantic value function** is RGB-only and separable from the rest of it: a BLIP-2
+ITM cosine similarity between the current frame and a prompt naming the target, painted
+into a top-down map through a cone mask over the camera's FOV, with frontiers then ranked
+by that value. Depth enters only to build the occupancy map the frontiers come from and to
+trim the occluded part of the cone. Strip those and what is left is a pure function
+`(RGB, text) -> float` — no Habitat, no depth, no map, no PointNav head.
+
+`Salesforce/blip2-itm-vit-g`, 4.4 GB on disk, **1.17 B parameters**, loads in 2.6 s. That is
+its own result: it is 24× smaller than the 27 B baseline.
+
+`nav/tools/probe_value_map.py` measures it on our frames with the arc probes' own rules.
+Three readings, in increasing distance from VLFM as published:
+
+- **FRAME** — VLFM unmodified. One value for one whole frame; every blocked frame paired
+  against every open frame, asking whether the open one scores higher.
+- **SECTOR** — the adaptation, and the only invented part. VLFM gets directional resolution
+  by *turning*: score, yaw 30°, score again. With one frame per moment we crop instead — a
+  640 px window, **30.0° wide, one Habitat turn step** — centred on each of the seven arcs'
+  badge columns, which is the pixel each arc's number was actually drawn at. The argmax
+  window names an arc and that arc's κ is scored with `probe_arc_obstacles.py`'s metrics.
+- **MIRROR** — the label-free control. Flip the frame and a scorer that reads the image must
+  negate its chosen κ. The badge columns are symmetric about the optical axis, so a fixed
+  window index returns the *same* κ both ways: a positional prior scores 0% here, not 43%.
+  It is cheap enough to run on frames nobody labelled, so it is the only well-powered
+  column in the section — 56 frames rather than 12.
+
+The prompt keeps VLFM's sentence frame and swaps the noun, because our task has no object
+category: `"Seems like there is a clear path ahead."` against
+`"Seems like there is a wall blocking the way ahead."` Both BLIP-2 heads and both the
+positive score and the contrast are reported — four readouts off the same forward passes,
+all printed rather than the best one quoted.
+
+### 8.2 The result
+
+Both columns were measured on the **same twelve frames** (see §8.4 — the old ones no longer
+existed and the set was rebuilt, so the 27 B was re-run rather than quoted).
+
+| | 27 B arc selector | BLIP-2 value function |
+| --- | --- | --- |
+| ranks a blocked frame below an open one | **91%** (64/70 forced choice) | **75%** (27/36 pairs) |
+| avoided the straight arc on blocked frames | 11% (n=36) | **92%** (n=12) |
+| stayed straight on open frames | **100%** (n=36) | 33% (n=12) |
+| turned toward the labelled open side | 31% (n=36) | 42% (n=12) — chance is 43% |
+| choice negates when the image is flipped | **0/18 = 0%** | **47/56 = 84%** |
+| picks the same window both ways (a prior) | — | 1/56 = 2% |
+
+Across the four readouts the frame-level number spans 58–75% and the mirror sweep spans
+48–84%; `itc / clear` — the cosine head with the positive prompt, which is what VLFM
+actually calls — is the best on the 56-frame sweep and is the column quoted. It is chosen
+on the sweep and not on the six labelled frames on purpose: `itm / clear-wall` scored 6/6
+there and 70% over 56, which is what picking a winner off n=6 buys you.
+
+### 8.3 They fail in opposite directions, and that is the finding
+
+The 27 B **sees the wall and drives into it**. It names the obstacle in free text on 4 of 6
+blocked frames ("a large, black, reflective panel"), separates blocked from open at 91%,
+and then picks the straight arc anyway on 89% of blocked frames, does not change its answer
+when the image is mirrored (0/18), and drives at the wall 100% of the time when told to.
+The percept exists and never reaches the choice.
+
+The value function **reads the image and swerves at the wrong thing**. 84% of flips negate
+its choice and only 2% return the same window — so it is genuinely scoring pixels, which is
+the one thing the 27 B provably is not doing. But it swerves off 92% of blocked straights
+*and* 67% of open ones, and finds the labelled open side 42% of the time against 43%
+chance. That is the always-swerves model the OPEN frames exist to catch. It is measuring
+something real and that something is not free floor — which is consistent with what the
+function is for: BLIP-2 ITM was trained to score *semantic* agreement between a picture and
+a caption, and VLFM uses it to decide which frontier looks like it leads to a sofa, not
+which bearing is drivable. The drivability question is answered in VLFM by the occupancy
+map, and the occupancy map is built from depth.
+
+The two failures do not compose. Adding a "swerve toward salience" signal to a policy that
+always goes straight gives a policy that swerves toward salience.
+
+**So: no, none of the four beats the baseline here, and the reason is not that they are
+weak.** Three cannot be run at all without Habitat and depth; the fourth's one portable
+component is a semantic scorer being asked a geometric question.
+
+### 8.4 The labelled frames had rotted, again, and fingerprints were not enough
+
+`probe_value_map.py` refused on its first run: eight of the twelve labelled frames had
+changed SHA. `/tmp/alohamini-nav-frames` had been written into twice more on 2026-09-10 and
+had ended up holding three episodes layered by index — 0–400, 401–600, and a surviving
+601–880 — so the hospital atrium frames the manifest described were now an outdoor strip
+mall and a grassland with the camera tumbling through a physics blow-up.
+
+The fingerprints did their job; they refused instead of scoring against pictures that no
+longer existed, which is the exact failure they were added for. But refusing is not
+running. So:
+
+- the twelve frames now live in **`nav/config/probe_frames/`**, in git, next to the labels
+  that describe them, and `frame_dir` is read out of the manifest instead of defaulting to
+  `/tmp` — which also closes a second gap, where the SHA check could pass against one
+  directory while `render_menu` drew on another;
+- the set was rebuilt inside the one intact block, **3 frames open-left and 3 open-right**
+  so a constant side bias scores exactly 50%, with 680/700/800/880 carried over
+  bit-identical and keeping their original descriptions;
+- and every 27 B number in §8.2 was **re-measured**, not quoted. It reproduced: avoid 11%,
+  keep straight 100%, mirror 0/18, against 22/100/20/0 and 8/100/0/0 on the two earlier
+  captures. That the new labels reproduce the known behaviour is the best evidence
+  available that they are sound.
+
+**One honest limit on the blocked set.** On 790 and 880 the obstacle fills a side rather
+than the centre, and the 27 B's free text called both "clear" — arguably correctly. They
+are kept because they were labelled before any model answer was seen, and moving a label
+after reading the scores is how a benchmark stops being one. It does mean the "avoided the
+straight arc" column is measured against a set where two of six frames have a defensible
+straight.
+
+**What was not tested**, and should not be read into §8.2: VLFM's occupancy map, its
+frontier detection, its PointNav executor, or its value function on the task it was built
+for. The claim here is narrow — BLIP-2 ITM does not supply the free-space channel §6.2
+found missing — and it is the claim that decides whether porting the rest is worth four
+hours.

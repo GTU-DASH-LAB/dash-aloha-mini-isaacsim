@@ -16,6 +16,12 @@ memory, and is far worse at seeing free space (§6). Put on the real ladder it s
 the open-loop probe flagged (§7). A 288-call probe costing four minutes predicted a
 four-hour ladder, which is the reusable result here.
 
+**§8 and §9 then take the four published ObjectNav systems as far as each one ports** —
+VLFM's BLIP-2 value function as weights, WMNav's, OpenFMNav's and L3MVN's contributions as
+prompts, all on the same twelve labelled frames and the same four columns. None of them
+replaces the baseline. One thing survives and is free: **naming the goal in the instruction
+doubled obstacle avoidance** (§9.1).
+
 ---
 
 ## 1. What a candidate actually has to do
@@ -519,7 +525,9 @@ vector. That is weights, not a prompt, and it cannot be handed something else.
 between VLFM's 52.5 and OpenFMNav's 54.9. That is a coincidence between two different
 tasks. Nothing below compares to those SRs and neither should anything else.
 
-### 8.1 What is portable, and it is exactly one thing
+### 8.1 What is portable as a MODEL, and it is exactly one thing
+
+(Prompts port too, and §9 runs three sets of them. This section is about weights.)
 
 VLFM's **semantic value function** is RGB-only and separable from the rest of it: a BLIP-2
 ITM cosine similarity between the current frame and a prompt naming the target, painted
@@ -596,8 +604,10 @@ The two failures do not compose. Adding a "swerve toward salience" signal to a p
 always goes straight gives a policy that swerves toward salience.
 
 **So: no, none of the four beats the baseline here, and the reason is not that they are
-weak.** Three cannot be run at all without Habitat and depth; the fourth's one portable
-component is a semantic scorer being asked a geometric question.
+weak.** VLFM's one portable component is a semantic scorer being asked a geometric
+question. The other three cannot be run *as systems* without Habitat and depth — but that
+is a statement about their maps and their loops, not about their prompts, and §9 runs the
+prompts.
 
 ### 8.4 The labelled frames had rotted, again, and fingerprints were not enough
 
@@ -635,3 +645,186 @@ frontier detection, its PointNav executor, or its value function on the task it 
 for. The claim here is narrow — BLIP-2 ITM does not supply the free-space channel §6.2
 found missing — and it is the claim that decides whether porting the rest is worth four
 hours.
+
+## 9. WMNav, OpenFMNav and L3MVN, run — their prompts, our frames
+
+§8 stopped at "three of the four cannot be run here," which is true of the *systems* and
+was doing too much work. WMNav, OpenFMNav and L3MVN each contribute a **prompt** and a
+scoring loop around a frozen model, and a prompt ports perfectly: it is text, it costs
+nothing to move, and our policy server already runs a model for it to talk to. The Habitat
+loop and the depth-built map are what does not port.
+
+So `nav/tools/probe_objectnav_prompts.py` runs their prompts against the **same twelve
+labelled frames** in `nav/config/probe_frames/`, scored with `probe_arc_obstacles.py`'s
+four columns, on the same 27 B server, in one sitting. Every prompt is copied out of the
+repository that published it — including WMNav's doubled `{{'action': ...}}` braces and
+its "acheives" typo, because a tidied prompt is a different prompt.
+
+All three are object-goal navigators whose prompts say NAVIGATE TO THE NEAREST *{goal}*,
+and our frames name no object category. The goal noun is substituted as **`"open floor"`**,
+once, everywhere, and stated here rather than buried.
+
+### 9.1 The result
+
+| arm | avoid wall | keep straight | open side | mirror | no answer | s/call |
+| --- | --- | --- | --- | --- | --- | --- |
+| *chance* | *57%* | *43%* | *43%* | *0%* | | |
+| **qvla (ours)** — bare digit | 11% | **100%** | 31% | 0/18 = **0%** | 0/72 | **0.32** |
+| **WMNav `action`**, verbatim | **63%** | 94% | **67%** | 3/12 = 25% | **8/72** | 23.4 |
+| WMNav `action`, goal→neutral | 34% | 94% | 54% | 2/17 = 12% | 1/72 | 18.6 |
+| **WMNav `predicting`** (value map) | **92%** | 83% | **92%** | 5/6 = **83%** | 0/24 | 21.2 |
+| **OpenFMNav** `discover`→`scoring` | 91% | **18%** | 55% | 5/5 = 100% | 2/24 | 26.5 |
+
+The menu arms are 36 blocked decisions, 36 open and 18 mirror pairs (12 frames × 2 flips ×
+3 label shufflings). The two sector arms score one decision per frame per flip, so 12 / 12
+/ 6 — **and that small n is the whole story of §9.2.**
+
+Three things are real and survive everything below.
+
+**WMNav's `action` prompt repairs the obstacle blindness that §6.2 found, using nothing but
+wording.** Same model, same pixels, same shuffled labels: our bare-digit prompt avoids the
+wall on 11% of blocked frames and WMNav's on 63%, and the mirror control goes 0/18 → 3/12.
+This is not a surprise so much as an independent confirmation — WMNav's prompt makes the
+model *talk before answering* ("First, tell me what you see… Lastly, explain which action
+acheives that best"), which is precisely the CHAIN/SIDED repair §6.2 measured at 72–100%.
+Worth noting their wording lands between our THINK (33%) and our CHAIN (72%).
+
+**The goal noun is load-bearing, and it is carrying more than the scaffolding.** Swapping
+only WMNav's goal sentence for our neutral "Drive safely." — leaving the arrow
+description, the talk-then-answer structure, the `{'action': N}` format and the
+closed-doors note untouched — **halves the avoidance, 63% → 34%.** Being told to navigate
+*to open floor* makes the model look at the floor. That is a cheap, portable finding and it
+is the opposite of the usual advice that a neutral instruction is the fair one.
+
+**It is expensive, and 11% of the time it does not answer at all.** 23.4 s per decision
+against our 0.32 s, ~70×, and **8 of 72** verbatim replies were still deliberating when a
+700-token budget ran out. That is not a truncation artifact to be tuned away — it was
+already raised from 320 after 320 cut every reply off mid-sentence — it is WMNav's prompt
+being costly on a 27 B. Their published agent talks to Gemini, which has no such budget.
+Note also that **action 0 ("turn around") was never chosen, 0 times in 144 decisions.**
+
+### 9.2 The value map looks like the best thing in this survey, and the sweep says it is not
+
+WMNav's `predicting` prompt — 0–10 per direction, with an explicitly geometric criterion
+("If there is no visible way to move to other areas … assign a score of 0", where a way out
+is "a turn in the corner, an open door, a hallway") — is the only arm anywhere in this
+document that clears chance on **all four columns at once**: avoid 92%, keep 83%, open side
+92%, mirror 83%. Nothing else, ours included, has done that.
+
+That is 12 / 12 / **6** decisions. §8.2 recorded exactly this shape once already —
+`itm/clear-wall` scored 6/6 on six labelled frames and 70% over 56 — so the mirror control
+was re-run on **40 unlabelled frames** from the same intact capture block, which needs no
+hand labels and so is cheap to power properly:
+
+| WMNav `predicting`, negation under mirroring | rate |
+| --- | --- |
+| 6 labelled pairs | 5/6 = **83%** |
+| **40 unlabelled frames** | 12/40 = **30%** |
+| …of which returned a *bit-identical* answer both ways | 9/40 = 22% |
+
+**So it does not hold.** For comparison on the same control, BLIP-2's `itc/clear` negates
+**84% over 56 frames**. The 1.17 B model that §8 concluded was swerving at the wrong thing
+is four times better at *reading the image at all* than the 27 B running WMNav's value
+prompt. Read the two results together: BLIP-2 reliably sees pixels and scores the wrong
+property; WMNav's prompt asks for the right property and the 27 B mostly does not see it.
+
+The 22% identical column names the mechanism. The prompt saturates: on open scenes it
+returns 10 for every direction, which averages to "straight" no matter which way the
+picture faces. That is the same illness as the §6.2 open-set prompt that named all five
+directions at recall 100% and precision 0 — a scorer that likes everything has ranked
+nothing.
+
+**One methodological note that changed a number by 25 points.** A plain argmax over a
+saturated 0–10 score list returns the *first* maximum, which is one end of the menu, which
+is a constant positional bias — the exact artifact the mirror control exists to catch.
+Averaging the tied sectors' curvatures instead moved this arm from 67% to 92% avoid. Ties
+are not a detail when the scale has eleven values and seven sectors.
+
+### 9.3 OpenFMNav is instructed to delete the thing we are asking about
+
+OpenFMNav is two stages and both were run, in order, on the same sector crops: `discover`
+(a VLM names what is in view) then `scoring` (an LLM rates each area 0–1 for containing the
+goal, from those names alone). Its `scoring` stage never sees an image — by design, and
+that is fine. What decides the outcome is `discover`, whose **rule (1) is**:
+
+> "…you should only include objects in the house, and avoid things that are part of the
+> house, like ceiling, wall, floor, window etc"
+
+and whose rule (4) drops doors as "common everywhere". Wall, floor, door: that is the
+entire vocabulary our question is asked in. This is not a limitation the probe imposes —
+it is correct for OpenFMNav, whose question is which *room* a sofa is likely to be in.
+
+Measured over 168 discover calls, rather than argued from the prompt text:
+
+- **119 / 168 = 71%** of sectors have the model name a wall, floor, ceiling or door in its
+  own reasoning **and then explicitly exclude it** ("The floor, walls, ceiling, and door are
+  structural parts of the building, so they should be excluded");
+- of **310** surviving object mentions, **5** contain a structural noun at all and only
+  **3** name the structure itself (`door` ×2, `window`) — the other two are fixtures,
+  `door handle` and `ceiling light`;
+- **50 / 168** sectors come back with an empty list entirely.
+
+The stage is not blind to the obstacle. It sees it and is told to throw it away. Downstream
+the consequence is visible in the table: OpenFMNav swerves off 91% of blocked straights and
+**82% of open ones too** (keep straight 18%) — the always-swerves signature the OPEN frames
+exist to catch. Its 100% mirror score is 5 pairs and should not be read as more than
+"the object lists differ when the picture is flipped".
+
+### 9.4 L3MVN cannot express the question, and its own code is where that is clearest
+
+`construct_dist` (`main_llm_zeroshot.py:471`) was ported unchanged — the trailing `", and"`,
+the `-loss` mean NLL from `scoring_fxn`, the `F.softmax`, GPT2-large, and their six-entry
+`category_to_id`. Their line 754 is what a frontier's score actually is:
+
+```python
+frontier_score_list[e].append(new_dist[category_to_id.index(cname)])
+```
+
+Run that with our goal and their own code raises: `category_to_id.index('open floor')` →
+**`ValueError`**. The score is *indexed by goal category*, and ours is not a category. Run
+the distribution anyway, on the object lists OpenFMNav's stage produced:
+
+- **23 of 84** sectors never reach the LM at all — their `if len(objs_list)>0` guard sends
+  an empty frontier to a geometric fallback, not to the LLM;
+- across the 61 that do, the argmax is only ever `bed` (26), `chair` (26) or `toilet` (9);
+- the distribution is close to flat: the top probability averages **0.214** against 0.167
+  for uniform, and the whole six-way range (max − min) averages **0.101**, at most 0.163.
+  One sector whose object list literally contains `chair` still ranks `bed` above it,
+  0.205 vs 0.198.
+
+There is no bearing in that output and no image in the function that produced it. Two
+sectors containing the same objects get the same number whether one is a wall and the other
+a corridor. **That is not a defect** — it is what a co-occurrence prior is, and in L3MVN it
+is correct, because the thing that knows *where* anything is is the semantic map,
+`local_map[e][se_cn+4, fmb[0]:fmb[1], fmb[2]:fmb[3]]`, a depth projection. The LM ranks
+frontiers the map has already found. Remove the depth and the half of L3MVN that answers
+our question is the half that was removed.
+
+### 9.5 What to actually take from §8 and §9
+
+Four systems, run as far as each one ports:
+
+| | what ported | verdict here |
+| --- | --- | --- |
+| VLFM | BLIP-2 ITM value function (a model) | reads pixels (84% mirror / 56 frames), scores the wrong property |
+| WMNav | `action` and `predicting` (prompts) | `action` repairs obstacle blindness at ~70× the latency; `predicting` does not survive its own sweep |
+| OpenFMNav | `discover` + `scoring` (prompts) | stage 1 is instructed to discard walls and floors |
+| L3MVN | `construct_dist` (a function) | takes no image; goal category lookup raises on our task |
+
+**None replaces the baseline, and one thing is worth keeping.** WMNav's goal-noun finding
+is free: *naming what you are looking for in the instruction doubled obstacle avoidance*
+(34% → 63%) with the scaffolding held fixed. Our shipped prompt says "Drive safely."
+Whether "Stay on open floor" buys the same on the ladder is a one-variable experiment that
+costs one run, and it is the only follow-up in §9 worth booking.
+
+The honest negative is that the two value maps failed in the two available ways —
+BLIP-2 scores pixels reliably for the wrong property, WMNav's prompt names the right
+property and the model mostly cannot see it — and neither supplies the free-space channel
+§6.2 found missing. That channel is still missing.
+
+**Reproduce:**
+
+```
+/home/gtu-dsa/envs/qvla/bin/python nav/tools/probe_objectnav_prompts.py --port 8766 \
+    --perms 3 --value-sweep 40 --json-out /tmp/objectnav.json
+```

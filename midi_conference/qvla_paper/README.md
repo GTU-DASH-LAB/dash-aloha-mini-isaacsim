@@ -1,7 +1,7 @@
 # QVLA — MIDI 2026 paper
 
 *QVLA: Training-Free Language-Driven Robot Navigation by Choosing Among Arcs Drawn on the
-Camera Image* — F. Aladhami, S. Sarp, O. B. Kaya, A. Odabaş, H. Yıldız (Gebze Technical University).
+Camera Image* — F. Aladhami, O. B. Kaya, A. Odabaş, H. Yıldız, S. Sarp (Gebze Technical University).
 
 ## Venue rules this paper is built to
 

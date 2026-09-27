@@ -1,0 +1,379 @@
+% main.tex -- QVLA, submitted to MIDI 2026 (Springer LNNS proceedings, LNCS layout)
+% Compile: pdflatex -> bibtex -> pdflatex -> pdflatex   (Overleaf: default pdfLaTeX)
+% Page limit: 8 pages including references (MIDI 2026 call for papers).
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+\usepackage{newtxtext}
+\usepackage[varvw]{newtxmath}
+\usepackage{graphicx}
+\usepackage{color}
+\usepackage{hyperref}
+\hypersetup{hidelinks}   % no link boxes; URLs stay blue via \UrlFont (Springer eBook style)
+\renewcommand\UrlFont{\color{blue}\rmfamily}
+\urlstyle{rm}
+%
+\begin{document}
+%
+\title{QVLA: Training-Free Language-Driven Robot Navigation by Choosing Among Arcs Drawn on the Camera Image}
+\titlerunning{QVLA: Choosing Among Arcs Drawn on the Camera Image}
+%
+% Optional: ORCID iDs, e.g. \author{Fouad Aladhami\orcidID{0000-0000-0000-0000} \and ...}
+\author{Fouad Aladhami \and Salih Sarp \and Ozan Berk Kaya \and Aykut Odaba\c{s} \and
+Hafsa Y{\i}ld{\i}z}
+\authorrunning{F. Aladhami et al.}
+\institute{Department of Computer Engineering, Gebze Technical University,\\
+Kocaeli, T\"urkiye\\
+\email{f.aladhami2021@gmail.com}, \email{salih@gtu.edu.tr}, \email{o.kaya2025@gtu.edu.tr},\\
+\email{aykut.odabas@gtu.edu.tr}, \email{hafsayildiz@gtu.edu.tr}}
+%
+\maketitle
+%
+\begin{abstract}
+Navigation vision-language-action (VLA) policies map camera frames and an instruction to
+waypoints, but a recent one barely listens: swapping ``turn left'' for ``turn right'' moves
+its planned heading by 0.04--36$^\circ$, while changing the scene moves it by 53$^\circ$.
+We present QVLA, a training-free policy in which a frozen vision-language model
+(Qwen3.8-27B) never writes a coordinate. Seven arcs of known curvature are drawn on the camera
+image under shuffled labels; the model first describes the scene (what blocks the way, which
+side is open, how far the goal is), then answers with one label, which a plan builder, a
+pure-pursuit controller and a collision guard turn into motion. On the DynaNav benchmark in
+Isaac Sim, on a mobile manipulator that neither method was designed for, QVLA reaches 9 of 13
+indoor goals against 6 of 13 for TIC-VLA on the same stack, halves the mean closest approach
+(1.86 vs.\ 3.56\,m) and triggers the collision guard 61\% less often, while its instruction
+moves the plan by 102$^\circ$. Open-loop probes explain the two-call design: asked for a bare
+label, the model avoids a wall ahead on 22\% of blocked frames; asked first to name the open
+side, on 100\%. We also report variance, negative ablations and failure modes.
+
+\keywords{Vision-language models \and Robot navigation \and Zero-shot learning \and
+Visual prompting \and Vision-language-action models.}
+\end{abstract}
+%
+%
+\section{Introduction}
+\label{sec:intro}
+
+Language-driven navigation asks a robot to carry out a sentence such as ``go straight ahead
+and stop at the nearest elevator'' from its own camera. The current trend is to fine-tune a
+vision-language model (VLM) on instruction-paired trajectories so that it emits waypoints or
+actions~\cite{brohan2023rt2,kim2024openvla,zhang2024navid}. TIC-VLA~\cite{huang2026ticvla}
+does so for dynamic scenes: a slow VLM reasons in text and fills a key-value cache that a fast
+action expert reads to produce waypoints; its DynaNav benchmark runs in Isaac Sim~\cite{isaacsim}.
+Porting TIC-VLA to another robot, we found its plans governed by the scene rather than the
+sentence (Sect.~\ref{sec:authority}). A frozen general-purpose VLM has the opposite profile:
+it follows words but emits poor coordinates. Asked for ten waypoints, Qwen3.8-27B~\cite{qwen38} wrote the same straight
+line, lateral offset exactly 0.00, for five unrelated scenes, even after its own reasoning had
+concluded that it should move ``forward and left''.
+
+QVLA keeps the VLM for what it does well---reading an image and a sentence---and takes the
+geometry out of its answer: candidate paths are drawn on the image and the model names one.
+We contribute (i)~a training-free policy around a frozen 27B VLM: an arc menu with shuffled
+labels, a describe-then-select chain, a speed channel and recovery, executed asynchronously
+by a conventional controller; (ii)~a closed-loop DynaNav evaluation on a mobile manipulator
+against TIC-VLA on identical infrastructure, with its biases stated; and (iii)~probes that
+separate instruction following from free-space perception with label-free mirror controls.
+
+\section{Related Work}
+\label{sec:related}
+
+Zero-shot object navigation systems such as CoWs~\cite{gadre2023cows},
+VLFM~\cite{yokoyama2024vlfm} and WMNav~\cite{nie2025wmnav} score frontiers or objects on a map
+with a foundation model and reach them with a classical planner, relying on depth and mapping;
+QVLA uses one RGB camera and no map, and the model's choice is itself the local plan.
+Vision-and-language navigation~\cite{anderson2018vision} has been approached by composing
+pretrained models, as in LM-Nav~\cite{shah2022lm}, and by fine-tuning VLMs to emit motions or
+action tokens~\cite{brohan2023rt2,huang2026ticvla,kim2024openvla,zhang2024navid}. Closest to QVLA is
+visual prompting: Set-of-Mark~\cite{yang2023som} labels image regions for a VLM to refer to,
+PIVOT~\cite{nasiriany2024pivot} iteratively samples arrows drawn on the image, and
+VLMnav~\cite{goetting2024vlmnav} draws discrete navigation actions using depth. In QVLA the
+drawn arcs are exactly the controller's plans, labels are reshuffled at every decision, and
+perception and choice are split into two calls.
+
+\section{Method}
+\label{sec:method}
+
+\begin{figure}[t]
+\includegraphics{figures/fig1_overview.pdf}
+\Description{Block diagram of QVLA. Top row: Isaac Sim sends a 448 by 448 RGB frame to the arc
+menu, which draws seven arcs with shuffled labels; a frozen Qwen3.8-27B model first describes
+the raw frame and then selects a label from the menu image. Bottom row, right to left: the
+label and a distance estimate go to a plan builder, an asynchronous predict endpoint, a braking
+pure-pursuit controller and a collision guard, which sends linear and angular velocity back to
+the simulator. A dashed recovery box connects the guard back to the model.}
+\caption{QVLA. Top: perception and decision, about one decision per 2.1\,s. Bottom:
+execution, replanned every 0.5\,s and tracked at 60\,Hz. Only the dashed recovery path
+reverses the robot.}
+\label{fig:overview}
+\end{figure}
+
+Fig.~\ref{fig:overview} shows the two loops. A decision loop runs the VLM on the newest frame
+whenever it is free. A control loop posts the frame and robot state to an asynchronous
+\texttt{/predict} endpoint every 0.5\,s of simulated time and receives the newest plan minus
+its first $\lceil\tau/\Delta t\rceil$ waypoints, $\tau$ being the plan's age.
+
+\subsection{Arc Menu}
+\label{sec:menu}
+
+The menu has seven arcs with curvatures $\kappa\in\{0,\pm0.15,\pm0.35,\pm0.60\}\,\mathrm{m^{-1}}$
+and length $L=3$\,m. In the robot frame ($x$ forward, $y$ left) the point at arc length $s$ is
+\begin{equation}
+x(s)=\frac{\sin(\kappa s)}{\kappa},\qquad y(s)=\frac{1-\cos(\kappa s)}{\kappa},
+\label{eq:arc}
+\end{equation}
+with the straight line as the limit $\kappa\to0$. Each point is projected with the pinhole
+model of a level camera mounted $h$ above the floor,
+\begin{equation}
+u=\frac{W}{2}-f\,\frac{y}{x},\qquad v=\frac{H}{2}+f\,\frac{h}{x},\qquad
+f=\frac{W/2}{\tan(\phi/2)},
+\label{eq:proj}
+\end{equation}
+where $\phi$ is the horizontal field of view. The camera copies the one DynaNav's robot is
+trained with ($\phi=90.1^\circ$, $h=0.346$\,m, $1920\times1080$), since a VLA's camera is part
+of its input distribution; frames are downscaled to $448\times448$. Each arc ends in a
+numbered circle; labels 1--7 are a fresh random permutation at every decision, so any
+positional habit scores at chance. Label 8 (STOP) is not drawn
+(Figs.~\ref{fig:menu}a and~\ref{fig:qual}).
+
+\begin{figure}[t]
+\includegraphics{figures/fig2_menu.pdf}
+\Description{Two panels. Left: top-down view of the seven arcs fanning out from the robot
+with curvature labels from minus 0.60 to plus 0.60, the dotted edges of the 90 degree camera
+field of view, and a grey 10 second plan for curvature plus 0.35 that follows the arc for
+3 metres and then continues straight, with a dot every second. Right: plan speed against the
+TARGET distance estimate, a ramp from 0.20 metres per second below 1.8 metres to 0.45 above
+4 metres; a hatched region below 3 metres where the model also names a speed level, shown as
+squares between 0.20 and 0.45.}
+\caption{(a)~The seven arcs in the robot frame, and the 10\,s plan that label
+$\kappa=+0.35$ becomes at 0.45\,m/s (one dot per second). (b)~Plan speed against the model's
+TARGET estimate $d$; inside 3\,m the model also names a speed level $\ell$.}
+\label{fig:menu}
+\end{figure}
+
+\subsection{Describe, Then Select}
+\label{sec:chain}
+
+Each decision makes two calls to the same frozen model. \emph{Describe} sees the raw frame
+and answers in at most 110 tokens: whether a wall, door or large object is straight ahead
+within about 3\,m; which direction has the most open floor (\emph{far left, left, straight
+ahead, right, far right}); and a final line \texttt{TARGET:~<n>~m} or
+\texttt{TARGET:~not~visible} for the place the instruction names. \emph{Select} sees the menu image, the instruction, the description and a one-line history of
+recent choices, with one rule: \emph{``The instruction may list several moves in order; do
+only the earliest one not yet done. Where it names a direction the description does not call
+open, follow the description.''} STOP is allowed only on arrival or when every path is
+blocked. The reply is prefilled with ``The number is'' and decoded greedily for at most 8
+tokens; nothing is trained.
+
+\subsection{From a Label to Motion}
+\label{sec:plan}
+
+The plan follows the chosen arc for 3\,m and then its final heading, sampled at
+$\Delta t=0.1$\,s over 10\,s (Fig.~\ref{fig:menu}a); longer turns come from choosing a curved
+arc again. The horizon must outlast a generation: with TIC-VLA's 3\,s horizon, slicing a plan by
+its own age left at most one waypoint, and an early version stood still on 129 of 141 calls. Speed follows the TARGET line (Fig.~\ref{fig:menu}b):
+$v=\min(0.45,\max(0.20,\,0.45\,d/4))$\,m/s, or 0.45\,m/s if the target is not visible; within
+3\,m the select call also names a level $\ell\in\{0,\dots,10\}$ and
+$v=\min(0.45,\max(0.20,\,0.045\,\ell))$.
+
+A braking pure-pursuit controller~\cite{coulter1992pure} never exceeds the plan's speed. The
+simulated wheels lack traction, so the base is driven kinematically with no contact response;
+a guard casts 7 rays over $\pm35^\circ$ around the direction of travel and removes the
+velocity component pointing into any obstacle within 0.6\,m, so the robot slides along walls
+rather than freezing. A \emph{wedge} (under 0.1\,m of progress in 3\,s, obstacle ahead)
+reverses up to 0.8\,m; a \emph{balk} (stationary for 5\,s, front clear) reverses 0.5\,m.
+Recovery also discards the cached plan, removes STOP from the next decision and tells both
+prompts that the robot has just reversed.
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+Isaac Sim 6.0.1~\cite{isaacsim} runs physics at 60\,Hz on one 32\,GB GPU and the FP8 VLM
+(28.75\,GiB) on a second. The robot is AlohaMini~\cite{alohamini}, a three-wheel
+omnidirectional base with a lift and two arms (held still).
+DynaNav~\cite{huang2026ticvla} defines 85 episodes in hospital, office, warehouse and outdoor
+scenes; its published reference run of TIC-VLA on its own robot covers 49 and completes 29.
+Our indoor set takes the 11 of those 29 easiest for our robot by turn size, detour and length,
+so the reference run succeeds on all 11 (mean SPL 0.98) and the selection favours the
+baseline. We add two unscored warehouse episodes (13 indoor) and 6 outdoor episodes with
+their own success radii (1.0--4.0\,m); every start heading is within about 30$^\circ$ of the
+goal bearing.
+
+TIC-VLA (InternVL3-1B plus action expert, official checkpoint) runs on the same robot,
+camera, controller and guard, with DynaNav's four-frame history and waypoint-history text. Its
+ladder predates two later changes to the shared stack (asynchronous inference, a controller
+fix) and recovery; the simulator paused during its inference, so its plans were never stale.
+We also run QVLA with a simulated 2D lidar (500 points/rev) that densifies the guard and
+filters arcs by clearance, and with Qwen3-VL-4B. Success means coming within the success
+radius (1.5\,m indoors), which latches. We report success rate (SR),
+SPL~\cite{anderson2018evaluation}, mean closest approach, and guard interventions (control
+steps in which the guard altered the command).
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Authority of the Instruction}
+\label{sec:authority}
+
+\begin{figure}[t]
+\includegraphics{figures/fig3_results.pdf}
+\Description{Two panels. Left: horizontal bars of the heading difference between turn left and
+turn right instructions: TIC-VLA corridor 0.04 degrees, TIC-VLA with its reasoning text
+overwritten 17 degrees, TIC-VLA warehouse 23 degrees, TIC-VLA vending 36 degrees, and QVLA
+102 degrees, beyond a dashed line at a 90 degree turn. Right: closest approach per indoor
+episode on a logarithmic axis, triangles for TIC-VLA and circles for QVLA, with a dashed line
+at the 1.5 metre success radius; QVLA sits on the line for nine episodes and TIC-VLA for six.}
+\caption{(a)~Heading difference between ``turn left'' and ``turn right'' on otherwise
+identical inputs. TIC-VLA: planned heading in three scenes; $\dagger$~reasoning text
+overwritten with explicit left/right text and offsets. QVLA: end-point bearing of the chosen
+3\,m arcs, 144 trials. (b)~Closest approach per indoor episode (log scale); points on the
+dashed line are successes.}
+\label{fig:results}
+\end{figure}
+
+Over 144 rendered decisions with ``turn left'', ``turn right'' and ``go straight'', QVLA chose
+an arc on the correct side in 100\% of trials for each instruction (random: 43\%); its mean
+left and right curvatures differ by 1.19\,m$^{-1}$, 99\% of the menu's span or 102$^\circ$ of
+end-point bearing (Fig.~\ref{fig:results}a). With frame, history and state fixed, the same
+swap moved TIC-VLA by 0.04$^\circ$ in a corridor, 23.4$^\circ$ at a warehouse start and
+35.6$^\circ$ near a vending machine, whereas changing the scene under a fixed instruction
+moved it by 52.95$^\circ$ (s.d., eight scenes). Overwriting its reasoning text with explicit
+left/right statements and offsets separated the plans by 17.2$^\circ$, of which the words give
+about 2$^\circ$ (a cooking recipe containing a large offset gave 15.0$^\circ$), consistent
+with training instructions written after the fact from the trajectory.
+
+\subsection{Seeing Free Space}
+\label{sec:freespace}
+
+Told only ``Drive safely'', a selector asked for a bare label drove the straight arc into the
+wall on 89\% of blocked frames, and never flipped its choice when the frame was mirrored
+(0/18). Yet asked which of a blocked and an open frame was open, the model was right 70 of 70
+times, and it named the obstacle on 6 of 6 blocked frames: the failure was in the question.
+Table~\ref{tab:probe} compares four ways of asking on identical frames and labels.
+\emph{Avoid}: blocked frames on which a curved arc was chosen; \emph{keep}: open corridors on
+which the straight arc was kept, which catches a policy that merely swerves; \emph{side}: turns
+towards the hand-labelled open side (chance 43\%); \emph{mirror}: pairs whose curvature flips
+sign under mirroring, which needs no labels. Reasoning in the same call (THINK) helps
+little; CHAIN's description says the way is blocked but not which way is open, so the second
+call guesses. Asking the first call to \emph{name} the open side (SIDED) is the only variant
+above chance on all four columns, at 2.1\,s per decision instead of 0.31\,s. Smaller models
+lose most of the side and mirror signal.
+
+\begin{table}[t]
+\caption{Open-loop obstacle probe (\%). Set A: 12 frames (6 blocked, 6 open), each also
+mirrored, 3 label shuffles. Set B: a harder, later set, not comparable with A. Latency:
+median per decision.}
+\label{tab:probe}
+\centering
+\begin{tabular}{llccccc}
+\hline
+Set & Variant (model) & Avoid & Keep & Side & Mirror & Latency \\
+\hline
+A & DIGIT: bare label, one call (27B)             & 22  & 100 & 20 & 0  & 0.31\,s \\
+A & THINK: reason, then label, one call (27B)     & 33  & 86  & 37 & 17 & 2.42\,s \\
+A & CHAIN: describe, then select (27B)            & 72  & 100 & 60 & 28 & 2.10\,s \\
+A & SIDED: CHAIN + \emph{name open side} (27B)    & \textbf{100} & 92 & \textbf{90} & \textbf{83} & 2.10\,s \\
+\hline
+B & DIGIT (27B)                                   & 8   & 100 & 25 & 0  & 0.32\,s \\
+B & SIDED (27B)                                   & \textbf{67} & \textbf{100} & \textbf{69} & \textbf{50} & 2.30\,s \\
+B & SIDED (Qwen3-VL-4B)                           & 22  & 94  & 36 & 22 & 0.41\,s \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Closed-Loop Navigation}
+\label{sec:closed}
+
+\begin{table}[t]
+\caption{Closed loop on DynaNav. Indoor: 13 episodes; DN-11: the 11 of them that DynaNav
+scores. Closest: mean closest approach. Guard: interventions over the 13 indoor episodes.
+First row: TIC-VLA on its own robot as published by DynaNav.}
+\label{tab:closed}
+\centering
+\begin{tabular}{lcccccc}
+\hline
+Policy & SR indoor & SPL & Closest & Guard & DN-11 SR (SPL) & SR outdoor \\
+\hline
+\emph{TIC-VLA, reference run} & -- & -- & -- & -- & \emph{11/11 (0.98)} & -- \\
+TIC-VLA (fine-tuned 1B)     & 6/13 & 0.44 & 3.56\,m & 3529 & 6/11 (0.52) & -- \\
+\textbf{QVLA} (frozen 27B)  & \textbf{9/13} & \textbf{0.63} & \textbf{1.86\,m} & \textbf{1369} & \textbf{8/11} (0.66) & 1/6 \\
+QVLA + 2D lidar             & 8/13 & 0.57 & 2.67\,m & 4567 & 8/11 (0.68) & 2/6 \\
+QVLA, Qwen3-VL-4B           & 3/13 & 0.23 & 10.92\,m & 14472 & 3/11 (0.27) & 1/6 \\
+\hline
+\end{tabular}
+\end{table}
+
+On identical infrastructure QVLA succeeds on 9 of 13 indoor episodes against 6 for TIC-VLA,
+with higher SPL, half the mean closest approach and 61\% fewer guard interventions
+(Table~\ref{tab:closed}, Fig.~\ref{fig:results}b), although TIC-VLA was fine-tuned on DynaNav
+and the episodes were chosen from those it completes. Seven repeats of the QVLA ladder scored
+6 to 9 of 13 (mean 7.7) and TIC-VLA was run once, so the success gap alone is within noise;
+the distance and guard columns aggregate thousands of control steps and point the same way.
+With the lidar, all 19 episodes are a dead heat (10/19 each) while the guard, now seeing 500
+rays per revolution instead of 7, fires 3.3$\times$ as often. Qwen3-VL-4B cost six indoor successes and multiplied guard
+interventions by 10.6, as its open-loop drop in wall avoidance (67\% to 22\%,
+Table~\ref{tab:probe}) had predicted.
+
+\paragraph{Negative ablations and variance.} Against same-study references, thinking budgets
+of 180--420 tokens in the select call scored 2/13 and 2/13 against 7/13, eleven finer arcs
+with in-place turns 2/18 against 9/18, and the previous menu frame as memory 3/19 against
+10/19: the simplest menu was the best we found. Despite greedy decoding, a repeated seed
+reproduced the outcome on only 4 of 6 hard episodes, because which plan is ready at which
+control step depends on wall-clock timing.
+
+\subsection{Qualitative Behaviour and Failure Analysis}
+\label{sec:qual}
+
+\begin{figure}[t]
+\centering
+\includegraphics{figures/fig4_qualitative.pdf}
+\Description{Four camera frames with seven coloured arcs and shuffled number labels drawn on the
+floor. (a) An open hallway with a door far ahead. (b) A wall and a metal pole close ahead, with
+open floor to the far left. (c) A red emergency exit door straight ahead. (d) An elevator lobby
+with a wall and dark doorframe ahead and carpet in the foreground.}
+\caption{Two successful runs, text quoted from the logs. (a--c)~``Go straight ahead through
+the hallway, then turn left at the end to approach the red emergency exit door.'' (a)~``The
+way ahead is open\ldots TARGET: not visible'' $\rightarrow$ straight at 0.45\,m/s. (b)~``A
+wall straight ahead\ldots most open floor is to the far left'' $\rightarrow$ $\kappa=+0.60$.
+(c)~``A red double door\ldots TARGET: 3\,m'' $\rightarrow$ straight at a model-chosen
+0.20\,m/s. (d)~``\ldots stop at the nearest elevator.'' ``A wall and a dark doorframe
+ahead\ldots TARGET: not visible'' $\rightarrow$ STOP, meaning \emph{blocked}; a balk
+recovery forced a new decision.}
+\label{fig:qual}
+\end{figure}
+
+In Fig.~\ref{fig:qual}a--c the select call follows the description's direction word and the
+TARGET line sets the speed. Panel (d) is the most frequent failure,
+\emph{STOP-means-blocked}: in one elevator run the model answered STOP on 42 of 65 decisions
+from 5.5\,m out while its description named an open side; STOP should be gated on a
+visible, near target. Runs also
+\emph{arrive and leave}, passing within 2.2\,m of the goal and driving on, and in the 34\,m
+open warehouse, straight on 210 of 222 non-STOP decisions with a small right bias integrated
+into an orbit of $-506^\circ$ cumulative yaw. Underneath, the select call is close to a lookup
+on the description's direction word: over 840 decisions ``straight'' led to the straight arc
+94\% of the time, and with the word fixed the correlation between goal bearing and chosen
+curvature was only 0.04--0.11. The target was ``not visible'' on 65\% of decisions, rising
+from 42\% to 92\% with the turn an episode requires. QVLA obeys explicit directions and avoids
+obstacles but does not search for a goal it cannot see, hence 1 of 6 outdoor successes.
+
+\section{Limitations and Conclusion}
+\label{sec:conclusion}
+
+All results are simulated, on one robot with a kinematic base, over 19 episodes; TIC-VLA was
+run once, before the final stack, on a selection that favours it. A 27B model needs a
+dedicated 32\,GB GPU and about 2.1\,s per decision, which the asynchronous plan hides only
+while the scene changes slowly. Within these limits, a frozen VLM that may only choose among
+paths drawn in its own image obeys instructions far more than a navigation VLA fine-tuned for
+the task and navigates at least as well, mostly owing to two cheap choices: shuffled labels on
+arcs that are the controller's plans, and a first call that names the open side. Next are a
+goal-directed choice and a physical robot.
+
+\begin{credits}
+\subsubsection{\ackname}
+% TODO(authors): fill in the project number.
+This work has been supported by the Research Fund of Gebze Technical University. Project
+Number: ---.
+\end{credits}
+%
+\bibliographystyle{splncs04}
+\bibliography{references}
+%
+\end{document}

@@ -11,17 +11,16 @@ Camera Image* — F. Aladhami, O. B. Kaya, A. Odabaş, H. Yıldız, S. Sarp (Geb
 | Proceedings | Springer LNNS, LNCS layout (`llncs.cls` v2.25 + `splncs04.bst`, from the template ZIP) |
 | Length | full paper **6–8 pages including references**; this build is **8** |
 | Submission | EasyChair (`conf=midi2026`), PDF, **deadline 8 Oct 2026**; decision 20 Oct; camera-ready 10 Nov |
-| Required | abstract 150–250 words (this: 212); keywords; *Disclosure of Interests* (LNCS: mandatory); LLM use disclosed in the acknowledgments (Springer AI policy); no AI-generated figures. **The Disclosure of Interests and the LLM statement were removed at the authors' request; see item 2 below.** |
+| Required | abstract 150–250 words (this: 212); keywords; *Disclosure of Interests* (LNCS: mandatory); LLM use disclosed in the acknowledgments (Springer AI policy); no AI-generated figures. The Disclosure of Interests is included. **The LLM statement was removed at the authors' request; see item 2 below.** |
 | LNCS details followed | table captions above, figure captions below; figure text ≥ 6 pt; two numbered heading levels; no `\vspace`/`subfigure`/`wrapfigure`; DOIs in references; `\Description{}` alt text on every figure |
 
 ## Before you submit
 
 1. `main.tex`, acknowledgments: replace `Project Number: ---` with the real project number (there is a `TODO(authors)` comment).
-2. Decide on the two statements removed from the end of the paper. The LNCS template calls
-   *Disclosure of Interests* mandatory (`\subsubsection{\discintname}` inside `credits`, e.g.
-   "The authors have no competing interests to declare that are relevant to the content of
-   this article."). Springer's manuscript guidelines ask for LLM use to be documented in the
-   acknowledgments of each chapter. EasyChair has no separate field for either.
+2. Decide on the LLM statement, which was removed from the acknowledgments. Springer's
+   manuscript guidelines ask for LLM use to be documented in the acknowledgments of each
+   chapter, and EasyChair has no separate field for it. (The mandatory *Disclosure of
+   Interests* is in place.)
 3. Optional: ORCID iDs. The syntax is in the comment above `\author`.
 4. After any edit, recompile and check that the page count is still **≤ 8**. Page 8 has roughly ten lines of slack.
 5. Upload `main.pdf` to EasyChair. The sources (this directory, or the Overleaf zip) are for camera-ready.

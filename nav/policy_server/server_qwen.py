@@ -1207,6 +1207,20 @@ MENU_MIN_CLEAR_M = float(os.environ.get("QVLA_MENU_MIN_CLEAR", "1.0"))
 # where a 90 degree wedge could hold roughly one return per arc.
 MENU_MIN_SCAN_POINTS = int(os.environ.get("QVLA_MENU_MIN_POINTS", "50"))
 
+# WHO CHOOSES THE ARC. `vlm` is QVLA. `straight` is the no-model baseline asked for in the
+# MIDI 2026 reviews ("separate the contribution of the VLM"). It loads no weights and
+# answers every decision with the straightest drawn arc at cruise speed. Everything else is
+# unchanged: the menu is still drawn and recorded, and the plan builder, controller, guard,
+# contact layer and recovery reverse are all the same. What it measures is how much of the
+# ladder needs no decision at all. It never answers STOP; like every policy here, it ends
+# on the runner's arrival latch or the timeout. `/health` reports it in `selector`, and
+# `model` names it, so a result file can never be read as a QVLA run.
+SELECTOR = os.environ.get("QVLA_SELECTOR", "vlm").strip().lower()
+if SELECTOR not in ("vlm", "straight"):
+    raise SystemExit(f"QVLA_SELECTOR must be 'vlm' or 'straight', got {SELECTOR!r}")
+if SELECTOR != "vlm" and _ARC_FORMAT != "menu":
+    raise SystemExit(f"QVLA_SELECTOR={SELECTOR} needs QVLA_FORMAT=menu")
+
 _STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
 
 
@@ -1347,6 +1361,23 @@ def menu_plan(image_paths: list[str], instruction: str,
     # curvatures, so the runner can hand it straight to the base as a yaw rate.
     by_pivot = ({int(pivot_labels[0]): PIVOT_RAD, int(pivot_labels[1]): -PIVOT_RAD}
                 if pivot_labels else {})
+
+    if SELECTOR == "straight":
+        # The no-model baseline. It uses the same menu, so it also takes the straightest arc
+        # the lidar filter or a request camera left drawn, and no other arc. Cruise speed,
+        # because the speed ramp needs the TARGET line, which only the describe call writes.
+        choice = min(by_label, key=lambda lab: abs(by_label[lab]))
+        kappa, speed = by_label[choice], MENU_SPEED_MPS
+        with _lock:
+            _state["recent"].append(direction_word(kappa))
+        _record(step, menu, instruction, labels, choice, kappa, "", "[straight selector]",
+                None, speed, recovered, kind=kind, speed_source="fixed",
+                stalled_s=stalled_s, pivot_labels=pivot_labels,
+                drawn=drawn if (clearance or camera is not None) else None,
+                clearance=clearance, camera=cam_rec, visible=visible)
+        return (plan_from_kappa(kappa, speed, N_WAYPOINTS, DT),
+                f"[straight baseline, no model] [menu] {drawn} -> {choice} "
+                f"-> kappa {kappa:+.2f} @{speed:.2f}m/s", 0.0)
 
     # Call 1 is the whole reason this variant works. Asked to choose in one call, the model
     # drove into the wall 78% of the time; asked to describe first, 28%; asked to describe
@@ -1740,7 +1771,8 @@ def health() -> dict:
     with _lock:
         return {
             "ok": _state["model"] is not None,
-            "model": MODEL_PATH,
+            "model": MODEL_PATH if SELECTOR == "vlm" else f"{SELECTOR}-baseline (no model)",
+            "selector": SELECTOR,
             "mode": ("qvla-arc-menu (selects a drawn path)" if _ARC_FORMAT == "menu"
                      else "qvla-direct (no action expert)"),
             # Reported so a probe can never misattribute a result to the wrong format.
@@ -2197,6 +2229,12 @@ def predict(req: PredictRequest) -> PredictResponse:
 
 @app.on_event("startup")
 def _startup() -> None:
+    if SELECTOR != "vlm":
+        # Nothing to load. The sentinel only satisfies the "model loaded" checks in
+        # /health and /predict; the baseline branch of menu_plan never reaches the model.
+        _state["model"] = f"{SELECTOR}-baseline"
+        print(f"[qvla-server] QVLA_SELECTOR={SELECTOR}: no model loaded", flush=True)
+        return
     _load_model()
 
 

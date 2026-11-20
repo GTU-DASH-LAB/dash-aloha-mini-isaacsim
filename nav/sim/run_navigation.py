@@ -283,6 +283,49 @@ GUIDANCE_HORIZON_S = 6.0
 # can change, not a constant they have to trust.
 CHASE_EVERY = max(1, int(os.environ.get("NAV_CHASE_EVERY", "2")))
 
+# NAV_CHASE=0 never creates the chase camera, even on a recorded run. A recording server
+# (server_qwen.py) turns it on above, and TIC-VLA's server.py records nothing. So by
+# default the two policies run on simulators of different speed: the chase camera's render
+# product is rendered on every update once it exists. That matters for an asynchronous
+# policy, whose plan age is measured in SIM time. A comparison between policies must set
+# this to 0 for every arm (nav/tools/run_camera_ready.sh does).
+NAV_CHASE = os.environ.get("NAV_CHASE", "1").lower() not in ("0", "false", "no")
+
+# TEST MODE (NAV_RENDER_ON_DEMAND=1, default off): render only the frames something reads.
+# For development and smoke runs. Never use it for a number that is compared with runs
+# made without it. Kit by default renders, on every 60 Hz update, the headless viewport
+# (1280x720, read by nothing in a headless run), camera_nav (1920x1080, read twice a
+# second) and the chase camera when it exists. This mode never creates the chase camera
+# and switches camera_nav's render product on only RENDER_LEAD_STEPS updates before each
+# decision and off again once the frame is grabbed. The lead covers the renderer's
+# pipeline latency: a grab right after switching on would return the frame left over from
+# the last decision. Physics, the guard, the contact layer and the lidar are scene queries
+# or physics callbacks and are untouched; only pixels nobody looks at are skipped.
+#
+# Why test-only: the policies are asynchronous and their plan age is measured in sim
+# time. A faster simulator makes the same wall-clock decision older on arrival, so the
+# results change, not just the speed.
+#
+# Measured 2026-11-20 on office_nearest_elevator with the straight selector, 1874 steps,
+# same path (13.72 m) in every variant:
+#     chase on (what a recording server used to get)   42.7 ms/step
+#     NAV_CHASE=0                                      36.6
+#     NAV_RENDER_ON_DEMAND=1                           30.5   (1.4x)
+#       + NAV_VIEWPORT_OFF=1                           24.7   (1.7x)
+# The rest of a step is physics, the contact sweep and Kit's own update. The frames are
+# checked, not assumed: test-mode decision frames differ from a normal run's at the same
+# step by 4.1 grey levels, while two normal runs differ by 4.6 and a frame from the
+# previous decision by 11-12. With the viewport also off they differ by 7.0, visibly
+# darker (auto-exposure sees fewer frames). SimulationApp's launch-time
+# `disable_viewport_updates` is NOT usable: it froze camera_nav on one unrelated image
+# from step 0. The straight selector does not look at the image, so it still reached the
+# goal and nothing but this check would have shown the fault.
+RENDER_ON_DEMAND = os.environ.get("NAV_RENDER_ON_DEMAND", "0").lower() in ("1", "true", "yes")
+RENDER_LEAD_STEPS = max(1, int(os.environ.get("NAV_RENDER_LEAD", "3")))
+# Separately switchable, and off by default even in test mode, until it is shown not to
+# freeze camera_nav (see the warm-up in setup()).
+VIEWPORT_OFF = os.environ.get("NAV_VIEWPORT_OFF", "0").lower() in ("1", "true", "yes")
+
 # A PHYSICS FAULT ends the episode, as a failure, the moment it is seen. Before 2026-10 the
 # kinematic base could be thrown by the contact solver and the run carried on recording
 # the flight as a drive: 19 runs on disk record 0.5-194 km of "path", every distance on
@@ -763,6 +806,10 @@ class NavigationRunner:
             "physics_gpu": self.sim_gpu,
             "multi_gpu": False,
         })
+        if RENDER_ON_DEMAND:
+            print("[nav] TEST MODE (NAV_RENDER_ON_DEMAND=1): no chase camera, "
+                  f"camera_nav rendered only {RENDER_LEAD_STEPS} updates before each decision. "
+                  "Not comparable with runs made without it.", flush=True)
 
         import omni.timeline
         import omni.usd
@@ -853,6 +900,16 @@ class NavigationRunner:
 
         self.camera = NavCameraSource(scratch_dir=self.scratch_dir)
         self.camera.warmup(self.kit)
+        if VIEWPORT_OFF:
+            # After the camera's warm-up, never at launch: SimulationApp's own
+            # `disable_viewport_updates` froze camera_nav as well (every frame of a test run
+            # was the same unrelated image, from step 0 on).
+            from omni.kit.viewport.utility import get_active_viewport
+
+            vp = get_active_viewport()
+            if vp is not None:
+                vp.updates_enabled = False
+                print("[nav] TEST MODE: headless viewport updates off", flush=True)
         # The sensor serves BOTH loops, which is the whole reason it is one object rather
         # than two ray fans: the guard reads its forward wedge every physics step, the
         # policy reads a whole revolution every decision, and they are looking at the same
@@ -1050,7 +1107,7 @@ class NavigationRunner:
         # no video to build -- so no separate switch for this.
         rec_dir = reset_info.get("run_dir") if isinstance(reset_info, dict) else None
         self.record_dir = Path(rec_dir) if rec_dir else None
-        if self.record_dir is not None:
+        if self.record_dir is not None and NAV_CHASE and not RENDER_ON_DEMAND:
             # Turning this on creates the camera, and once an Isaac Sim `Camera` exists
             # Kit renders its render product every frame whether or not anything reads
             # it -- so a run that is not being recorded must not pay for it.
@@ -1267,6 +1324,9 @@ class NavigationRunner:
                     command = Command(0.0, 0.0, 0.0)
                     next_decision_step = step + CAMERA_RETRY_STEPS
             if frame_path is not None:
+                if RENDER_ON_DEMAND:
+                    # Test mode: nothing reads camera_nav again until the next decision.
+                    self.camera.set_rendering(False)
                 frames.add(sim_time, frame_path)
                 self.latest_jpeg = frame_path.read_bytes()
 
@@ -1566,6 +1626,9 @@ class NavigationRunner:
                 drive.omega,
                 PHYSICS_DT,
             )
+            if RENDER_ON_DEMAND and 0 < next_decision_step - step <= RENDER_LEAD_STEPS:
+                # Test mode: back on in time for the renderer's latency, see RENDER_LEAD_STEPS.
+                self.camera.set_rendering(True)
             self.kit.update()
 
             # Checked BEFORE the step is accounted for, so a throw never enters the path,
@@ -1667,6 +1730,10 @@ class NavigationRunner:
                     ),
                 )
 
+        if RENDER_ON_DEMAND:
+            # Test mode: leave the camera live for the idle UI and the next episode's first
+            # decision, which is taken at step 0 with no lead.
+            self.camera.set_rendering(True)
         self.base.stop()
         # After a fault the sim's pose is wherever the solver threw the robot; the last
         # healthy one is the honest end of the run.

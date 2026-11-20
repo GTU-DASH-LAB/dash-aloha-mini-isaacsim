@@ -2120,6 +2120,25 @@ yaml (scratch `fix3/feas_episodes.yaml`).
 - A start snapped 1–2 m to a point already ON the kerb proves nothing. Check `start_nav`'s
   z against the street before reading OK.
 
+### Simulator speed is part of the experiment (2026-11-20)
+
+- **A recording server used to slow the simulator for its own arm only.**
+  `server_qwen.py` returns a `run_dir`, which makes the runner create the chase camera,
+  and Kit renders that camera's render product every update. `server.py` (TIC-VLA)
+  records nothing. Straight selector, same episode: 42.7 ms/step with the chase camera,
+  36.6 ms/step without. The policies are asynchronous and plan age is counted in sim
+  time, so a slower simulator makes the same wall-clock decision younger. Every
+  cross-policy comparison must run with `NAV_CHASE=0` (run_camera_ready.sh exports it).
+  Ladders recorded before this date carry the chase camera on their qwen arms.
+- **Test mode, `NAV_RENDER_ON_DEMAND=1`: 1.4x faster** (30.5 ms/step), never for
+  reported numbers. It renders camera_nav only 3 updates before each decision and
+  creates no chase camera. Its frames match a normal run's as closely as two normal runs
+  match each other (4.1 against 4.6 grey levels).
+  - `NAV_VIEWPORT_OFF=1` reaches 1.7x but gives visibly darker frames (7.0).
+  - SimulationApp's launch-time `disable_viewport_updates` froze camera_nav on one
+    unrelated image from step 0. The straight selector reached the goal anyway, so only a
+    frame check catches a broken camera. Check frames whenever rendering is touched.
+
 ## Next step
 
 Nothing blocking. Optional future work: root-cause the wheel traction issue properly

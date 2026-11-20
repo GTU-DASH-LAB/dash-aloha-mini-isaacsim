@@ -48,6 +48,14 @@ say() { echo "$(date -Iseconds) $*" | tee -a "$PROGRESS"; }
 # The baseline profile, simulator side included (NAV_LIDAR=0 and friends), so all three
 # arms drive under identical sim settings. Not hand-typed; see profile.py for why.
 eval "$(python3 nav/tools/profile.py env --sim)" || { echo "profile env failed" >&2; exit 1; }
+# No chase camera in ANY arm. A recording server (qvla, straight) would otherwise turn it on
+# and TIC-VLA's would not, and the extra render product slows the simulator by ~11% (smoke
+# test: 1.27 s against 1.14 s of wall time per decision). The policies are asynchronous, so
+# a slower simulator makes the same wall-clock decision younger in sim time. The arms would
+# no longer be compared on equal terms.
+export NAV_CHASE=0
+# And never the render-on-demand test mode, for the same reason.
+export NAV_RENDER_ON_DEMAND=0
 
 # Matched on interpreter AND script via awk, never `pgrep -f`, which matches its own shell.
 qwen_pids() { ps -eo pid,args | awk '$2 ~ /qvla\/bin\/python$/ && $3 == "server_qwen.py" {print $1}'; }

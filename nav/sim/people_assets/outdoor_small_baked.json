@@ -1,0 +1,2005 @@
+{
+"source": "DynaNav assets/outdoor_small.usd /World/Characters/* (200 baked characters, 4.5 CDN asset paths, omni.anim.people behaviour script attached); extracted with pxr by the people research agent (scratchpad/people/outdoor_baked_people.json, 2026-10-05). DynaNav's IRA 0.7.19 skips spawning a character whose /World/Characters/<name> prim already exists, so its outdoor episodes ran THESE positions and assets.",
+"characters": [
+{
+"name": "Character",
+"xyz": [
+-62.518,
+269.28,
+6.286
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_01",
+"xyz": [
+-36.776,
+127.044,
+6.156
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_02",
+"xyz": [
+38.398,
+104.052,
+6.011
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_03",
+"xyz": [
+108.982,
+36.206,
+6.283
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_04",
+"xyz": [
+87.329,
+10.325,
+6.536
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_05",
+"xyz": [
+245.669,
+173.238,
+5.455
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_06",
+"xyz": [
+-0.469,
+172.882,
+5.963
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_07",
+"xyz": [
+113.845,
+197.882,
+5.556
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_08",
+"xyz": [
+-91.656,
+156.262,
+5.461
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_09",
+"xyz": [
+181.767,
+183.268,
+5.765
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_10",
+"xyz": [
+171.633,
+24.644,
+6.32
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_11",
+"xyz": [
+142.581,
+290.162,
+5.32
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_12",
+"xyz": [
+5.577,
+216.978,
+6.568
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_13",
+"xyz": [
+111.4,
+267.101,
+5.668
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_14",
+"xyz": [
+115.324,
+288.419,
+5.431
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_15",
+"xyz": [
+216.73,
+189.769,
+5.534
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_16",
+"xyz": [
+-75.199,
+138.37,
+5.677
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_17",
+"xyz": [
+-26.554,
+226.266,
+6.494
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_18",
+"xyz": [
+37.102,
+99.014,
+5.997
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_19",
+"xyz": [
+88.424,
+206.055,
+5.714
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_20",
+"xyz": [
+203.839,
+215.676,
+5.504
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_21",
+"xyz": [
+157.077,
+238.463,
+5.566
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_22",
+"xyz": [
+136.831,
+122.576,
+6.243
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_23",
+"xyz": [
+69.029,
+298.824,
+6.246
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_24",
+"xyz": [
+30.866,
+185.206,
+6.021
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_25",
+"xyz": [
+112.368,
+56.693,
+5.827
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_26",
+"xyz": [
+178.932,
+70.63,
+6.245
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_27",
+"xyz": [
+154.634,
+205.147,
+5.839
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_28",
+"xyz": [
+129.364,
+275.971,
+5.333
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_29",
+"xyz": [
+78.965,
+235.422,
+6.048
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_30",
+"xyz": [
+184.767,
+279.165,
+5.299
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_31",
+"xyz": [
+156.44,
+241.88,
+5.549
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_32",
+"xyz": [
+111.715,
+34.96,
+6.331
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_33",
+"xyz": [
+167.248,
+226.006,
+5.561
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_34",
+"xyz": [
+112.171,
+40.12,
+6.242
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_35",
+"xyz": [
+18.18,
+29.82,
+5.634
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_36",
+"xyz": [
+-32.762,
+76.096,
+5.65
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_37",
+"xyz": [
+13.079,
+153.784,
+6.044
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_38",
+"xyz": [
+109.179,
+148.077,
+6.062
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_39",
+"xyz": [
+36.522,
+165.284,
+6.167
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_40",
+"xyz": [
+160.649,
+156.713,
+5.982
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_41",
+"xyz": [
+79.796,
+151.71,
+5.715
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_42",
+"xyz": [
+169.907,
+39.11,
+6.298
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_43",
+"xyz": [
+141.778,
+155.242,
+6.012
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_44",
+"xyz": [
+135.28,
+201.529,
+5.843
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_45",
+"xyz": [
+-80.642,
+172.546,
+5.422
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_46",
+"xyz": [
+-21.789,
+22.651,
+5.695
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_47",
+"xyz": [
+181.553,
+114.979,
+6.147
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_48",
+"xyz": [
+-62.176,
+87.807,
+6.086
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_49",
+"xyz": [
+-33.999,
+264.178,
+6.588
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_50",
+"xyz": [
+-84.227,
+43.362,
+6.151
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_51",
+"xyz": [
+214.238,
+127.123,
+5.964
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_52",
+"xyz": [
+168.543,
+77.928,
+6.123
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_53",
+"xyz": [
+-39.334,
+156.424,
+5.936
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_54",
+"xyz": [
+173.889,
+182.785,
+5.815
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_55",
+"xyz": [
+-38.156,
+221.615,
+6.414
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_56",
+"xyz": [
+107.737,
+121.674,
+5.88
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_57",
+"xyz": [
+-15.891,
+278.52,
+6.702
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_58",
+"xyz": [
+64.389,
+188.06,
+5.558
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_59",
+"xyz": [
+113.497,
+187.164,
+5.692
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_60",
+"xyz": [
+79.544,
+55.404,
+6.063
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_61",
+"xyz": [
+85.256,
+94.724,
+6.054
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_62",
+"xyz": [
+-38.758,
+246.353,
+6.622
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_63",
+"xyz": [
+179.208,
+277.469,
+5.373
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_64",
+"xyz": [
+114.383,
+259.739,
+5.735
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_65",
+"xyz": [
+67.448,
+239.113,
+6.145
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_66",
+"xyz": [
+27.702,
+147.125,
+5.856
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_67",
+"xyz": [
+149.739,
+78.818,
+6.102
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_68",
+"xyz": [
+122.811,
+143.827,
+6.076
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_69",
+"xyz": [
+121.507,
+27.571,
+6.448
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_70",
+"xyz": [
+82.741,
+193.877,
+5.547
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_71",
+"xyz": [
+116.087,
+52.215,
+6.056
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_72",
+"xyz": [
+-37.544,
+272.504,
+6.516
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_73",
+"xyz": [
+-37.719,
+116.678,
+5.944
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_74",
+"xyz": [
+191.463,
+238.486,
+5.302
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_75",
+"xyz": [
+62.623,
+125.49,
+6.072
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_76",
+"xyz": [
+208.649,
+203.602,
+5.541
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_77",
+"xyz": [
+146.984,
+264.67,
+5.624
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_78",
+"xyz": [
+70.304,
+180.234,
+5.451
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_79",
+"xyz": [
+-51.761,
+178.66,
+5.68
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_80",
+"xyz": [
+-37.608,
+114.115,
+5.885
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_81",
+"xyz": [
+87.586,
+66.406,
+6.0
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_82",
+"xyz": [
+-8.71,
+175.234,
+6.199
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_83",
+"xyz": [
+111.473,
+126.447,
+5.926
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_84",
+"xyz": [
+58.885,
+292.223,
+6.44
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_85",
+"xyz": [
+149.508,
+241.823,
+5.724
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_86",
+"xyz": [
+180.502,
+50.196,
+6.388
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_87",
+"xyz": [
+44.377,
+121.1,
+5.953
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_88",
+"xyz": [
+63.442,
+69.211,
+6.018
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_89",
+"xyz": [
+68.127,
+177.862,
+5.69
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_90",
+"xyz": [
+17.922,
+201.874,
+6.171
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_91",
+"xyz": [
+68.345,
+46.431,
+5.873
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_92",
+"xyz": [
+203.562,
+146.231,
+5.863
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_93",
+"xyz": [
+225.744,
+148.52,
+5.744
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_94",
+"xyz": [
+144.122,
+102.019,
+6.215
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_95",
+"xyz": [
+-27.33,
+143.647,
+6.092
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_96",
+"xyz": [
+-62.616,
+132.557,
+5.847
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_97",
+"xyz": [
+175.233,
+304.778,
+5.155
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_98",
+"xyz": [
+66.529,
+173.964,
+5.551
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_99",
+"xyz": [
+26.076,
+225.017,
+6.291
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_100",
+"xyz": [
+144.181,
+260.576,
+5.69
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_101",
+"xyz": [
+100.334,
+119.396,
+5.928
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_102",
+"xyz": [
+127.297,
+264.111,
+5.559
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_103",
+"xyz": [
+-8.256,
+110.607,
+6.059
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_104",
+"xyz": [
+-19.803,
+65.69,
+6.495
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_105",
+"xyz": [
+160.84,
+53.308,
+6.296
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_106",
+"xyz": [
+-12.659,
+214.197,
+6.527
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_107",
+"xyz": [
+-32.215,
+50.509,
+5.629
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_108",
+"xyz": [
+31.739,
+185.179,
+6.027
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_109",
+"xyz": [
+-61.881,
+68.571,
+6.003
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_110",
+"xyz": [
+106.252,
+123.884,
+5.883
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_111",
+"xyz": [
+134.731,
+268.303,
+5.572
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_112",
+"xyz": [
+157.031,
+209.076,
+5.827
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_113",
+"xyz": [
+152.121,
+80.117,
+6.112
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_114",
+"xyz": [
+52.743,
+179.241,
+5.711
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_115",
+"xyz": [
+119.454,
+230.301,
+5.708
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_116",
+"xyz": [
+153.712,
+157.686,
+6.011
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_117",
+"xyz": [
+199.718,
+140.584,
+5.926
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_118",
+"xyz": [
+22.743,
+36.995,
+5.629
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_119",
+"xyz": [
+41.227,
+93.226,
+6.062
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_120",
+"xyz": [
+69.886,
+159.22,
+5.777
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_121",
+"xyz": [
+13.666,
+185.42,
+5.902
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_122",
+"xyz": [
+-37.118,
+87.36,
+5.701
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_123",
+"xyz": [
+34.683,
+231.368,
+6.269
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_124",
+"xyz": [
+150.916,
+118.177,
+6.087
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_125",
+"xyz": [
+184.728,
+304.413,
+5.139
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_126",
+"xyz": [
+46.439,
+186.5,
+6.231
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_127",
+"xyz": [
+83.573,
+99.353,
+6.053
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_128",
+"xyz": [
+175.351,
+296.581,
+5.202
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_129",
+"xyz": [
+-57.522,
+21.533,
+5.523
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_130",
+"xyz": [
+124.244,
+129.462,
+6.162
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_131",
+"xyz": [
+62.248,
+32.793,
+5.778
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_132",
+"xyz": [
+49.74,
+35.425,
+5.893
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_133",
+"xyz": [
+139.487,
+175.266,
+6.039
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_134",
+"xyz": [
+191.827,
+122.198,
+6.071
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_135",
+"xyz": [
+81.986,
+6.007,
+6.563
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_136",
+"xyz": [
+-61.15,
+200.695,
+6.039
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_137",
+"xyz": [
+37.933,
+245.868,
+6.298
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_138",
+"xyz": [
+148.404,
+284.359,
+5.354
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_139",
+"xyz": [
+-16.792,
+115.211,
+5.846
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_140",
+"xyz": [
+215.625,
+154.518,
+5.741
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_141",
+"xyz": [
+95.654,
+27.587,
+6.158
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_142",
+"xyz": [
+187.598,
+232.628,
+5.512
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_143",
+"xyz": [
+-24.982,
+122.374,
+5.797
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_144",
+"xyz": [
+-20.021,
+157.755,
+5.99
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_145",
+"xyz": [
+-67.578,
+58.878,
+6.193
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_146",
+"xyz": [
+-63.857,
+56.219,
+5.993
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_147",
+"xyz": [
+139.183,
+160.723,
+6.002
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_148",
+"xyz": [
+-88.749,
+293.681,
+5.91
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_149",
+"xyz": [
+142.799,
+262.964,
+5.646
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_150",
+"xyz": [
+-15.421,
+171.057,
+6.173
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_151",
+"xyz": [
+85.919,
+118.847,
+6.053
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_152",
+"xyz": [
+153.77,
+301.051,
+5.228
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_153",
+"xyz": [
+187.234,
+274.358,
+5.148
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_154",
+"xyz": [
+197.059,
+113.689,
+6.1
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_155",
+"xyz": [
+37.172,
+296.181,
+6.848
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_156",
+"xyz": [
+74.381,
+117.989,
+6.043
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_157",
+"xyz": [
+104.844,
+149.059,
+6.069
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_158",
+"xyz": [
+-8.174,
+49.797,
+5.713
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_159",
+"xyz": [
+8.692,
+157.002,
+6.137
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_160",
+"xyz": [
+192.194,
+242.557,
+5.276
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_161",
+"xyz": [
+96.921,
+179.931,
+5.617
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_162",
+"xyz": [
+5.746,
+260.584,
+6.835
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_163",
+"xyz": [
+38.77,
+29.799,
+5.867
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_164",
+"xyz": [
+-55.463,
+236.058,
+6.527
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_165",
+"xyz": [
+187.329,
+230.608,
+5.529
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_166",
+"xyz": [
+106.324,
+128.411,
+5.887
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_167",
+"xyz": [
+68.362,
+143.48,
+5.646
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_168",
+"xyz": [
+-11.57,
+185.593,
+6.527
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_169",
+"xyz": [
+-19.434,
+149.764,
+5.983
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_170",
+"xyz": [
+219.69,
+163.809,
+5.648
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_171",
+"xyz": [
+-70.467,
+233.117,
+6.297
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_172",
+"xyz": [
+14.926,
+120.585,
+6.059
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_173",
+"xyz": [
+44.422,
+259.762,
+6.458
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_174",
+"xyz": [
+136.529,
+250.691,
+5.554
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_175",
+"xyz": [
+-16.116,
+118.834,
+5.816
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_176",
+"xyz": [
+-35.549,
+284.657,
+6.482
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_177",
+"xyz": [
+122.023,
+163.832,
+6.002
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_178",
+"xyz": [
+145.115,
+28.551,
+6.512
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_179",
+"xyz": [
+90.081,
+27.341,
+6.277
+],
+"asset": "original_female_adult_medical_01/female_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_180",
+"xyz": [
+-103.736,
+98.664,
+5.27
+],
+"asset": "male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_181",
+"xyz": [
+229.89,
+195.465,
+5.437
+],
+"asset": "female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_182",
+"xyz": [
+180.858,
+107.592,
+6.167
+],
+"asset": "male_adult_construction_05_new/male_adult_construction_05_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_183",
+"xyz": [
+-18.88,
+242.065,
+6.744
+],
+"asset": "male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_184",
+"xyz": [
+37.673,
+36.195,
+5.679
+],
+"asset": "original_male_adult_construction_02/male_adult_construction_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_185",
+"xyz": [
+189.572,
+115.977,
+6.113
+],
+"asset": "male_adult_construction_01_new/male_adult_construction_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_186",
+"xyz": [
+-26.686,
+40.532,
+5.601
+],
+"asset": "original_male_adult_construction_01/male_adult_construction_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_187",
+"xyz": [
+130.868,
+167.731,
+6.002
+],
+"asset": "original_female_adult_police_03/female_adult_police_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_188",
+"xyz": [
+-19.553,
+258.072,
+6.739
+],
+"asset": "female_adult_police_01_new/female_adult_police_01_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_189",
+"xyz": [
+46.645,
+157.454,
+6.167
+],
+"asset": "M_Medical_01/M_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_190",
+"xyz": [
+138.926,
+270.398,
+5.528
+],
+"asset": "original_male_adult_construction_03/male_adult_construction_03.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_191",
+"xyz": [
+15.194,
+260.958,
+6.869
+],
+"asset": "original_male_adult_medical_01/male_adult_medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_192",
+"xyz": [
+-36.041,
+275.473,
+6.518
+],
+"asset": "original_male_adult_police_04/male_adult_police_04.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_193",
+"xyz": [
+-28.206,
+169.71,
+6.119
+],
+"asset": "original_male_adult_construction_05/male_adult_construction_05.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_194",
+"xyz": [
+-45.798,
+200.267,
+6.225
+],
+"asset": "female_adult_police_03_new/female_adult_police_03_new.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_195",
+"xyz": [
+145.616,
+127.725,
+6.07
+],
+"asset": "F_Medical_01/F_Medical_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_196",
+"xyz": [
+108.239,
+240.375,
+5.758
+],
+"asset": "original_female_adult_police_02/female_adult_police_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_197",
+"xyz": [
+-49.848,
+183.935,
+5.737
+],
+"asset": "original_female_adult_police_01/female_adult_police_01.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_198",
+"xyz": [
+99.095,
+288.019,
+5.713
+],
+"asset": "original_female_adult_business_02/female_adult_business_02.usd",
+"orient": "(1, 0, 0, 0)"
+},
+{
+"name": "Character_199",
+"xyz": [
+50.44,
+149.498,
+6.167
+],
+"asset": "F_Business_02/F_Business_02.usd",
+"orient": "(1, 0, 0, 0)"
+}
+]
+}

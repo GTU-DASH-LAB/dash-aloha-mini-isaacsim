@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
-from alohamini1_specs import CAMERA_PRIM_PATHS  # noqa: E402
+from alohamini1_specs import CAMERA_PRIM_PATHS, KIT_GPU0  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/scene.usda")
@@ -35,7 +35,10 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": args.screenshot_test})
+# GPU0 only, multi-GPU off: Kit's default multi_gpu runs a CUDA P2P test across both cards
+# at startup, and with the policy server filling GPU1 it fails and BLOCKS on a zenity
+# dialog (alohamini1_specs.KIT_GPU0).
+kit = SimulationApp({"headless": args.screenshot_test, **KIT_GPU0})
 
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
@@ -69,6 +72,14 @@ for i, (name, cam_path) in enumerate(CAMERA_PRIM_PATHS.items()):
     print(f"Opened viewport '{name}' -> {cam_path}")
 for _ in range(15):
     kit.update()
+
+# Before play: the PhysX GPU capacities every entry point that drives AlohaMini raises
+# (nav/sim/physics_setup.py), in the session layer so the stage file is never touched.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "nav" / "sim"))
+from physics_setup import raise_gpu_capacities  # noqa: E402
+
+for _line in raise_gpu_capacities(stage):
+    print(f"[physics] {_line}")
 
 # STEP 3: start physics so the views are live (arms settle to rest pose, and any
 # commands from another process/GUI sliders show up immediately).

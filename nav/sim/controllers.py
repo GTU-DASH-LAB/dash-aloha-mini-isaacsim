@@ -150,6 +150,42 @@ def plan_speed(waypoints: np.ndarray) -> float:
     return float(np.sum(np.hypot(inc[:, 0], inc[:, 1])) / (len(waypoints) * PLAN_DT))
 
 
+# Below this much total path a plan does not move the robot: it is a STOP. The menu's
+# STOP is every waypoint at the origin, and once the server reframes it for the distance
+# driven since it was generated, every waypoint sits at the SAME point behind the robot.
+# `dist >= _EPS` then holds, so without this check the controllers steered at that point:
+# a target directly behind is a heading error of +-pi, which is what dragged the filter
+# below across the wrap. 2 cm is far under the slowest real plan (0.05 m/s creep over a
+# 10 s horizon is 0.5 m) and far above float noise on a reframed zero.
+STATIONARY_PATH_M = 0.02
+
+
+def is_stationary(waypoints: np.ndarray) -> bool:
+    """True when the plan, however far from the robot it sits, asks for no motion."""
+    if len(waypoints) < 2:
+        return True
+    inc = np.diff(waypoints, axis=0)
+    return float(np.sum(np.hypot(inc[:, 0], inc[:, 1]))) < STATIONARY_PATH_M
+
+
+def filter_angle(prev: float | None, new: float, alpha: float) -> float:
+    """Low-pass an angle along the short way round, and keep the STATE in (-pi, pi].
+
+    Wrapping only the increment is not enough. A heading error near +-pi steps the
+    filtered value across the wrap (pi - 0.1 plus a small positive step is > pi), and
+    once a target behind the robot has pulled it there it settles at the equivalent of
+    the new error plus 2*pi, which is the same direction but a different number. The
+    controllers multiply this number by a gain, so k * 2*pi saturates omega for the
+    rest of the episode while the robot is told "straight ahead". That was the spin
+    seen on warehouse_aisle6 (both lidar arms) and hospital_vending_machine (fan).
+    """
+    if prev is None:
+        return math.atan2(math.sin(new), math.cos(new))
+    step = math.atan2(math.sin(new - prev), math.cos(new - prev))
+    out = prev + alpha * step
+    return math.atan2(math.sin(out), math.cos(out))
+
+
 @dataclass
 class Command:
     """Body-frame velocity command. vy is always 0 for differential drive."""
@@ -218,7 +254,9 @@ class PursuitController:
         # `guidance` is accepted and ignored. This is the DynaNav parity baseline and
         # DynaNav does not read the text head, so using it here would quietly stop
         # this controller being the thing it exists to be.
-        if len(waypoints) < 2:
+        if is_stationary(waypoints):
+            # A STOP, wherever it sits. Leave the filter alone: steering at a stopped
+            # plan's point is what corrupted it. See `STATIONARY_PATH_M`.
             return Command(0.0, 0.0, 0.0)
 
         x_l, y_l, dist = _lookahead_point(waypoints, self.lookahead_m)
@@ -232,12 +270,7 @@ class PursuitController:
 
         # Low-pass the heading error. Without this the command chatters, because each
         # replan produces a fresh plan whose first points differ slightly.
-        if self._yaw_err_filt is None:
-            self._yaw_err_filt = yaw_err
-        wrapped = math.atan2(
-            math.sin(yaw_err - self._yaw_err_filt), math.cos(yaw_err - self._yaw_err_filt)
-        )
-        self._yaw_err_filt += self.alpha_filter * wrapped
+        self._yaw_err_filt = filter_angle(self._yaw_err_filt, yaw_err, self.alpha_filter)
 
         kappa = 2.0 * y_l / (dist * dist)  # pure-pursuit curvature
         v_kappa = self.w_max / (abs(kappa) + _EPS)  # slow down for sharp turns
@@ -311,7 +344,7 @@ class HolonomicController:
         self._heading_filt = None
 
     def __call__(self, waypoints: np.ndarray, guidance: np.ndarray | None = None) -> Command:
-        if len(waypoints) < 2:
+        if is_stationary(waypoints):
             return Command(0.0, 0.0, 0.0)
 
         x_l, y_l, dist = _lookahead_point(waypoints, self.lookahead_m)
@@ -319,12 +352,7 @@ class HolonomicController:
             return Command(0.0, 0.0, 0.0)
 
         heading = math.atan2(y_l, x_l)
-        if self._heading_filt is None:
-            self._heading_filt = heading
-        wrapped = math.atan2(
-            math.sin(heading - self._heading_filt), math.cos(heading - self._heading_filt)
-        )
-        self._heading_filt += self.alpha_filter * wrapped
+        self._heading_filt = filter_angle(self._heading_filt, heading, self.alpha_filter)
 
         # Drive straight at the lookahead point. Unit direction * full speed.
         vx = self.v_max * (x_l / dist)
@@ -414,7 +442,12 @@ class GuidedPursuitController(PursuitController):
             self.last_used_guidance = False
             return super().__call__(waypoints)
 
-        if len(waypoints) < 2:
+        # A stop did not USE the guidance, so the flag must say so. Before the
+        # stationary early return existed this branch was rare enough not to matter;
+        # every reframed STOP plan now lands here, and a stale True would count those
+        # as guided steps.
+        self.last_used_guidance = False
+        if is_stationary(waypoints):
             return Command(0.0, 0.0, 0.0)
         x_l, y_l, dist = _lookahead_point(waypoints, self.lookahead_m)
         if dist < _EPS:
@@ -425,12 +458,7 @@ class GuidedPursuitController(PursuitController):
 
         self.last_used_guidance = True
 
-        if self._yaw_err_filt is None:
-            self._yaw_err_filt = heading
-        wrapped = math.atan2(
-            math.sin(heading - self._yaw_err_filt), math.cos(heading - self._yaw_err_filt)
-        )
-        self._yaw_err_filt += self.alpha_filter * wrapped
+        self._yaw_err_filt = filter_angle(self._yaw_err_filt, heading, self.alpha_filter)
 
         kappa = 2.0 * y_l / (dist * dist)  # near-field curvature, action head
         v_kappa = self.w_max / (abs(kappa) + _EPS)

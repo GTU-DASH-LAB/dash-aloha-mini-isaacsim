@@ -34,13 +34,14 @@ slideshow of 3000 frames would produce an hour of it.
 Usage:
     python3 nav/tools/make_run_video.py --latest
     python3 nav/tools/make_run_video.py --all --out-dir nav/results/videos
-    python3 nav/tools/make_run_video.py /tmp/qvla-menus/20260831-1443_warehouse
+    python3 nav/tools/make_run_video.py nav/results/menus/20260831-1443_warehouse
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -48,7 +49,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from arc_menu import _PALETTE, badge_xy, make_arcs, project  # noqa: E402
+from arc_menu import _GEOMS, _PALETTE, MenuCamera, badge_xy, make_arcs, project  # noqa: E402
 
 W, H = 1280, 720          # the menu, downscaled from 1920x1080
 CAPTION_H = 300           # room for three wrapped lines plus a header
@@ -93,9 +94,25 @@ def decision_panel(rec: dict, menu_path: Path, arcs, index: int, total: int):
         # project() works in the ORIGINAL 1920x1080 the geometry was computed for; the
         # menu was drawn there too, so scaling the pixels afterwards keeps the redrawn
         # curve exactly on top of the one already in the image.
-        px = [(u * W / 1920.0, v * H / 1080.0)
-              for u, v in (p for p in (project(x, y) for x, y in arcs[i].points)
-                           if p is not None)]
+        # The geometry the SERVER drew this menu with, not this process's default: a
+        # `mounted` menu redrawn with `legacy` puts the highlight 0.3 m down the floor
+        # from the arc it is highlighting. Records before the field existed are legacy.
+        cam = rec.get("camera") or {}
+        if cam.get("source") == "request":
+            # Drawn with the REQUEST's camera (a G1 head cam: pitched, rolled, 69 deg), in
+            # the pixels of the frame it was drawn on; the server recorded both.
+            dw, dh = cam.get("drawn_wh") or (1920, 1080)
+            proj = MenuCamera.from_record(cam).projector(int(dw), int(dh))
+            px = [(u * W / float(dw), v * H / float(dh))
+                  for u, v in (p for p in (proj(float(x), float(y))
+                                           for x, y in arcs[i].points)
+                               if p is not None)]
+        else:
+            cam_h, cam_x = _GEOMS[rec.get("menu_geom", "legacy")]
+            px = [(u * W / 1920.0, v * H / 1080.0)
+                  for u, v in (p for p in (project(x, y, cam_h=cam_h, cam_x=cam_x)
+                                           for x, y in arcs[i].points)
+                               if p is not None)]
         if len(px) >= 2:
             colour_i = _PALETTE[i % len(_PALETTE)]
             d.line(px, fill=(255, 255, 255), width=18, joint="curve")
@@ -426,7 +443,8 @@ def build(run_dir: Path, out_dir: Path, hold: float, keep_frames: bool,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dirs", nargs="*", type=Path)
-    ap.add_argument("--menu-root", type=Path, default=Path("/tmp/qvla-menus"))
+    ap.add_argument("--menu-root", type=Path, default=Path(os.environ.get(
+        "QVLA_MENU_DIR", Path(__file__).resolve().parents[2] / "nav/results/menus")))
     ap.add_argument("--latest", action="store_true", help="the most recent run only")
     ap.add_argument("--all", action="store_true", help="every recorded run")
     ap.add_argument("--out-dir", type=Path, default=Path("nav/results/videos"))

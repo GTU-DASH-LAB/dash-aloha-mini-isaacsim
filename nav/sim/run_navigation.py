@@ -115,11 +115,38 @@ PHYSICS_DT = 1.0 / 60.0
 #   * the arc menu drops paths the robot cannot drive, so the model chooses among
 #     options that are all executable rather than being asked not to pick the bad ones.
 #
-# The height is not a preference. `check_lidar_2d.py` sweeps 0.20-1.50 m against this
-# robot's own colliders and finds a 0% blind sector everywhere except 0.80 m, which loses
-# a 39.6 degree arc to the arm bases; 0.30 is the lowest clear mount and needs no mast.
+# WHERE IT IS MOUNTED. 0.30 m up, 0.20 m forward of the rotation centre. The height is the
+# lowest that clears the arm and lift colliders. The forward offset is not optional: the
+# lift column fills the centre at every height from 0.12 to 1.084 m, and until 2026-10 the
+# sensor sat at (0, 0) -- inside it -- and saw 360 deg only because the column has no
+# collider (see `lidar_2d.COLUMN_Z_M`). At +0.20 the column, now modelled, takes a 38 deg
+# arc dead astern (10.6% of beams); +0.25 would take 30 deg but puts the unit under the
+# camera. Runs before the change are labelled `c1@0.30`, after it `c1@0.30+0.20`.
 NAV_LIDAR = os.environ.get("NAV_LIDAR", "0").lower() in ("1", "true", "yes")
 NAV_LIDAR_HEIGHT_M = float(os.environ.get("NAV_LIDAR_HEIGHT", "0.30"))
+NAV_LIDAR_FORWARD_M = float(os.environ.get("NAV_LIDAR_FORWARD", "0.20"))
+
+# Which returns may SLOW the robot (collision_guard.CollisionGuard): `radial` (default, every
+# result before 2026-10-12) or `corridor`, which ignores returns outside the strip the robot
+# sweeps -- a wall running alongside it -- and ramps on forward distance. The stop branch is
+# the same in both. NAV_GUARD_CORRIDOR_M is the strip's half-width (robot 0.31 + 9 cm).
+NAV_GUARD_SLOW = os.environ.get("NAV_GUARD_SLOW", "radial").strip().lower() or "radial"
+NAV_GUARD_CORRIDOR_M = float(os.environ.get("NAV_GUARD_CORRIDOR_M", "0.40"))
+
+# THE CONTACT LAYER, ON by default (kinematic_contact.py, attached to the base in setup()).
+# The base is teleported every step, so without it nothing pushes back: arms through a
+# staircase's underside, the lift carriage into a chair, tyres through kerbs, at up to
+# 19 m/s. NAV_CONTACT=0 is the bare base, kept for A/B runs and for reproducing a result
+# recorded before 2026-10-06; every result says which (`EpisodeResult.contact` is None on a
+# bare-base run, and config["fault_rules"]["contact"] records it).
+NAV_CONTACT = os.environ.get("NAV_CONTACT", "1").lower() not in ("0", "false", "no")
+# SESSION-LAYER COLLIDERS for environment geometry that has none (scene_colliders.py),
+# authored in setup() before play. ON by default: an obstacle with no collider is invisible
+# to the contact layer, the guard, the lidar and the menu filter all at once -- outdoor_small
+# had colliders on almost nothing but the floor. NAV_SCENE_COLLIDERS=0 reproduces the stage
+# exactly as authored.
+NAV_SCENE_COLLIDERS = os.environ.get("NAV_SCENE_COLLIDERS", "1").lower() not in (
+    "0", "false", "no")
 
 # Fixed planning period in SIMULATED seconds, or 0.0 for the paper's asynchronous mode.
 #
@@ -256,6 +283,96 @@ GUIDANCE_HORIZON_S = 6.0
 # can change, not a constant they have to trust.
 CHASE_EVERY = max(1, int(os.environ.get("NAV_CHASE_EVERY", "2")))
 
+# A PHYSICS FAULT ends the episode, as a failure, the moment it is seen. Before 2026-10 the
+# kinematic base could be thrown by the contact solver and the run carried on recording
+# the flight as a drive: 19 runs on disk record 0.5-194 km of "path", every distance on
+# those rows is void, and a 20th (20260905-013046_outdoor_upsway, z span 414 m) even
+# passed the summary's speed-bound test. Ending the run at the first sign keeps the trace
+# to the part that was navigation. Independent signs, any one is enough:
+#
+#   * the base's own step test, on every PHYSICS step (KinematicBase._on_post_step), read
+#     right after the update (check_step): the sim moved the robot > 0.25 m sideways
+#     ("jump") or > 0.15 m vertically ("z_jump") on a step we drove. Judged BEFORE the
+#     loop reads the pose, so a throw never reaches the success check, the path, the
+#     trace or the final position;
+#   * |root linear velocity| over fault_speed_mps(cap) on `fault_speed_steps` consecutive
+#     steps (1 with the contact layer, 3 on the bare base -- below): the contact solver is
+#     pushing the base. A healthy step reads at most hypot(cap, 2 + g*dt) -- the planar
+#     command plus the clamped vz. What a contact adds on top, measured on every per-step
+#     replay through the BARE base (scratch physfix/faults/spike_rules.py: 53 outdoor,
+#     8 hospital, 3 office runs).
+#     Longest run of consecutive steps over 3.03 m/s:
+#       island-kerb push-through   12.00 m/s x1, 11.19 m/s x2   absorbed, robot drove on
+#       office barrier             4.54-4.77 m/s, at most x2    the run SUCCEEDED (111222)
+#       chair climb                10.98 m/s, at most x2        robot inside a chair back
+#       stair soffit (arms)        14.87 m/s, x4                driving UNDER the stairs
+#       reception desk             9.01 m/s, x5                 driving into the desk
+#       kerb wedge, traffic island 3.10 m/s, x3                 the upsway_far fault
+#       old base, the pump         >3 m/s on 153 / 738 / 1098 in a row
+#     Those spikes are the BARE base's (NAV_CONTACT=0): with no contact response the body
+#     is driven into geometry and the solver throws it out again. There the rule is 3
+#     (FAULT_SPEED_STEPS): every isolated depenetration kick in the data clears it (2 at
+#     most), the long wedges (stairs, desk, the kerb wedge) trip it -- one step of margin,
+#     and the honest one (the triage briefly made this 30, which fires on nothing). It cannot
+#     see a body pushed in and thrown out at <= 2 steps a time: on the integrated harness
+#     (scratch physfix/integrate, 2026-10-06) the bare base faulted on 1 of 8 hazard
+#     replays (staircase) and drove 68-681 steps >= 2 mm deep into the other 7 (chair,
+#     wheelchair, office barrier, aisle6 props, three kerb windows) with no fault.
+#     With the contact layer on -- the default -- every one of those cases is stopped
+#     before it is entered: over the calibration replays (kinematic_contact.CALIBRATION;
+#     staircase, chair, desk, office barrier, warehouse sign, three kerb windows, 12 normal
+#     runs, the synthetic steps/ramps/walls/slabs/doors) the fastest step read is 2.63 m/s,
+#     which is hypot(1.5, 2 + g*dt) exactly -- a clamped fall off a ramp's end, the drive's
+#     own ceiling -- and 0 steps exceed 3.03. Re-measured on the integrated code (runner
+#     setup(), runner.contact, this rule judging every step; 81 contact-ON runs on all four
+#     stages, scratch physfix/integrate): the same 2.63 m/s maximum, 0 steps over 3.03, 0
+#     faults, blocked runs of up to 2202 steps included. So with contact a SINGLE step over the fault
+#     speed is a fault (FAULT_SPEED_STEPS_CONTACT = 1): it means the solver pushed the
+#     body, which is the thing contact exists to prevent. A step the contact layer clipped
+#     is not a fault of any kind: the base judges each physics step against the velocity
+#     it WROTE, which is the clipped one;
+#   * vz below the drive's own clamp (KinematicBase.VZ_MIN_MPS) on FAULT_FALL_STEPS
+#     consecutive steps: the robot is falling, not driving. A clamped fall reads
+#     -2 - g*dt every step; reaching the clamp takes 0.2 s / 0.2 m, so 60 steps more is
+#     a drop of > 2.2 m -- the steepest real descent under any trace is 1.26 m, spread
+#     over a ramp (outdoor_library). Before this a robot with no floor under it fell for
+#     the whole episode and was scored as an ordinary timeout (fake Kit: 43 m in 20 s);
+#   * roll or pitch > 30 deg. The drive pins the orientation level every step, so a
+#     healthy step shows one step of tilt (hospital: within 0.2 deg); terrain under the
+#     outdoor episodes is p95 <= 6.8 deg. The blown run landed at pitch 59.6 / roll 42.
+#     No persistence, because contacts do not reach it: over 458k per-step replay steps
+#     through the fixed base (the same 65 runs as above, kerbs, chair, stairs and desk
+#     included) the largest single-step tilt is 18.1 deg, and nothing exceeds 20.
+#
+# And before any of them, a start with no floor under it is not run at all (run_episode).
+FAULT_SPEED_MARGIN_MPS = 0.4
+FAULT_SPEED_STEPS = 3
+FAULT_SPEED_STEPS_CONTACT = 1
+FAULT_FALL_STEPS = 60
+FAULT_TILT_DEG = 30.0
+# How many steps to hold a decision back when the camera returns an empty frame.
+CAMERA_RETRY_STEPS = 10
+# The CAP on physics steps the robot is held at its start before an episode: settle()
+# stops as soon as it is at rest (base_drive.SETTLE_*), which on every start measured so far
+# is ~20 steps. It used to be a fixed 30 free steps, which left outdoor_pillars rolled 14 deg.
+# 2 s is ~6x what a 3 mm clearance drop takes; a start that is still moving then is recorded
+# as not settled rather than waited on forever.
+SETTLE_STEPS = 120
+
+
+def fault_speed_mps(cap_mps: float) -> float:
+    """The speed a healthy step cannot read, for an episode capped at `cap_mps`.
+
+    Derived rather than a constant, because a constant was a second copy of the 1.5 m/s
+    cap: hypot(cap, |vz clamp| + g*dt) is the most the drive itself can produce, and
+    FAULT_SPEED_MARGIN_MPS sits above it. 3.03 m/s at the 1.5 cap -- the old 3.0, now with
+    the reason attached.
+    """
+    from base_drive import KinematicBase
+
+    return math.hypot(cap_mps, -KinematicBase.VZ_MIN_MPS + 9.81 * PHYSICS_DT) \
+        + FAULT_SPEED_MARGIN_MPS
+
 
 def ready_message(info: dict) -> str:
     """Describe whichever policy server answered, without assuming which one it is.
@@ -361,6 +478,19 @@ class NavigationRunner:
         self.guard = None
         self.recovery = None
         self.base = None
+        # The contact layer on the base (kinematic_contact.KinematicContact), None for the
+        # bare base -- NAV_CONTACT=0, or a caller (an offline harness) that builds the base
+        # itself. And what setup() authored for collider-less scenery (scene_colliders).
+        self.contact = None
+        # DynaNav's pedestrians for this episode (people_hooks.py): None unless NAV_PEOPLE=1.
+        self.people = None
+        self.scene_colliders: dict | None = None
+        # Consecutive steps over the episode's fault speed, and falling; zeroed per episode
+        # in run_episode(). How many of the first make a fault depends on whether contact is
+        # modelled (see FAULT_SPEED_STEPS_CONTACT).
+        self._overspeed_steps = 0
+        self._fall_steps = 0
+        self._fault_speed_mps = fault_speed_mps(1.5)
         self._abort = threading.Event()
         self._reset = threading.Event()
         # Set from the UI thread, applied by perform_reset() on the main thread.
@@ -397,6 +527,66 @@ class NavigationRunner:
         model = str(info.get("model", "?")).rsplit("/", 1)[-1]
         fmt = info.get("format")
         return f"{model}{f' [{fmt}]' if fmt else ''} @{self.policy.base.rsplit(':', 1)[-1]}"
+
+    def run_config(self) -> dict:
+        """Everything that changes what this run's number means, written into the run.
+
+        Two 19-episode ladders on disk once scored 10/19 and 3/19 under identical
+        `policy`, `controller` and `lidar` labels, because the menu frame count, pivots
+        and think level lived only in the server's environment. The server reports them
+        on /health, so they are copied from there, next to this process's own NAV_* and
+        QVLA_* settings and the commit the code ran at.
+        """
+        import subprocess
+
+        info = dict(getattr(self, "_policy_info", None) or {})
+        # Counters and rolling state, not configuration
+        for key in ("ok", "recent", "pivots", "predictions", "generations"):
+            info.pop(key, None)
+        env = {k: v for k, v in os.environ.items() if k.startswith(("NAV_", "QVLA_"))}
+        try:
+            sha = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent),
+                                  "rev-parse", "--short", "HEAD"], capture_output=True,
+                                 text=True, timeout=5).stdout.strip()
+            dirty = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent),
+                                    "status", "--porcelain", "--untracked-files=no"],
+                                   capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            sha, dirty = "", ""
+        # The fault rules this run was judged by. The code is uncommitted for long
+        # stretches ("+dirty" says nothing about WHICH dirty), and the rules changed twice
+        # on 2026-10-05; a row's physics_faults means nothing without them.
+        from base_drive import KinematicBase
+
+        rules = {
+            "jump_m": KinematicBase.RESYNC_TOLERANCE_M,
+            "z_jump_m": KinematicBase.Z_STEP_FAULT_M,
+            "speed_mps": round(self._fault_speed_mps, 3),
+            "speed_steps": self.fault_speed_steps,
+            # The contact layer this run drove with (None = the bare base): its constants,
+            # which decide what a "contact" and a blocked step are.
+            "contact": (None if self.contact is None else {
+                "max_step_m": self.contact.env.max_step_m, "skin_m": self.contact.skin,
+                "rot_skin_m": self.contact.rot_skin,
+                "sustained_steps": self.contact.sustained_steps(),
+                "envelope": self.contact.env.describe()}),
+            "fall_steps": FAULT_FALL_STEPS,
+            "tilt_deg": FAULT_TILT_DEG,
+            # Every physics step, by the base's post-step callback, read right after the
+            # update; "end_of_update" when Kit offered no post-step stream.
+            "judged": ("physics_step" if getattr(self.base, "_per_step", False)
+                       else "end_of_update"),
+            "settle": f"held until at rest, cap {SETTLE_STEPS}",
+        }
+        colliders = None
+        if self.scene_colliders is not None:
+            colliders = {k: v for k, v in self.scene_colliders.items() if k != "map"}
+        return {"server": info, "env": env, "git": sha + ("+dirty" if dirty else ""),
+                "fault_rules": rules,
+                # What setup() added to the stage for collider-less scenery, or None when
+                # NAV_SCENE_COLLIDERS=0. A row's guard/lidar/contact numbers outdoors mean
+                # nothing without it: before 2026-10-06 the buildings there had no collider.
+                "scene_colliders": colliders}
 
     def request_stop(self) -> None:
         self._abort.set()
@@ -582,6 +772,15 @@ class NavigationRunner:
         from camera_source import NavCameraSource
         from collision_guard import CollisionGuard
         from lidar_2d import SweepingLidar2D
+        from physics_setup import raise_gpu_capacities
+
+        # Pedestrians (NAV_PEOPLE=1): their extensions must be enabled BEFORE the stage opens --
+        # enabling them after crashed Kit in libomni.anim.behavior.core (people.py).
+        import people_hooks
+
+        self.people = people_hooks.PeopleLayer.maybe(self.episode)
+        if self.people is not None:
+            self.people.before_stage(self.kit)
 
         self._set(state="loading", message=f"opening {self.scene_path.name}")
 
@@ -599,6 +798,35 @@ class NavigationRunner:
         for _ in range(30):
             self.kit.update()
 
+        # Before play, and before the capacity raise (route_drive bakes its navmesh inside
+        # that call, and should see these): colliders for environment geometry that has
+        # none, in the session layer. Detected per asset, so whichever stage this is, only
+        # what its authors left without any collider is added -- see scene_colliders.py.
+        # Authored before play so PhysX parses them with the scene and nothing appears
+        # around a robot already standing there, and never deleted (an Articulation drops
+        # its physics view on any prim deletion).
+        if NAV_SCENE_COLLIDERS:
+            import scene_colliders
+
+            t_sc = time.time()
+            self.scene_colliders = scene_colliders.add_session_colliders(
+                stage, scene_colliders.env_episodes(env_name(self.episode.scene)))
+            sc = self.scene_colliders
+            print(f"[nav] scene colliders: {sc['authored']} meshes / {sc['faces']} faces "
+                  f"from {sc['assets']} collider-less assets in {time.time() - t_sc:.1f} s "
+                  f"(region {sc['region']['box']}, band {sc['region']['band']}; "
+                  f"{sc['detect'].get('with_collider')} of {sc['detect'].get('gprims')} "
+                  f"environment gprims already collide)", flush=True)
+
+        # Before play: PhysX sizes its GPU buffers when it parses the scene. The outdoor
+        # stage overflowed the default broadphase buffer in every run ("will miss
+        # interactions"), see physics_setup.py.
+        if self.people is not None:
+            # The crowd is authored (and the navmesh baked) before play, as people.setup needs.
+            self.people.before_play(stage)
+        for line in raise_gpu_capacities(stage):
+            print(f"[nav] physics: {line}", flush=True)
+
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
         for _ in range(10):
@@ -610,6 +838,18 @@ class NavigationRunner:
 
         self.base = KinematicBase(self.art, dof_names)
         self.base.sync_from_sim()
+        # The contact response the teleported base lacks: every step's displacement is swept
+        # with the robot's whole envelope (read here, once, from /World/Aloha's own meshes)
+        # and clipped to stop short and slide. Through the base's motion_filter seam, so the
+        # guard, the recovery's reverse, the settle and idle all pass through it.
+        if NAV_CONTACT:
+            from kinematic_contact import KinematicContact
+
+            self.contact = KinematicContact.from_stage(stage).attach(self.base)
+            print(f"[nav] contact: on (max step {self.contact.env.max_step_m} m, skin "
+                  f"{self.contact.skin} m); envelope {self.contact.env.describe()}", flush=True)
+        else:
+            print("[nav] contact: OFF (NAV_CONTACT=0) -- the bare kinematic base", flush=True)
 
         self.camera = NavCameraSource(scratch_dir=self.scratch_dir)
         self.camera.warmup(self.kit)
@@ -619,7 +859,8 @@ class NavigationRunner:
         # returns taken at the same instants. Two independent sensors would be two
         # different pictures of the world and any disagreement between the layers would be
         # unexplainable from the logs.
-        self.lidar = (SweepingLidar2D(mount_height_m=NAV_LIDAR_HEIGHT_M)
+        self.lidar = (SweepingLidar2D(mount_height_m=NAV_LIDAR_HEIGHT_M,
+                                      mount_forward_m=NAV_LIDAR_FORWARD_M)
                       if NAV_LIDAR else None)
         # Raising the stop distance is not tuning, it is paying for the latency the real
         # device has. The fan is cast now; the buffer holds up to one revolution, 100 ms,
@@ -627,8 +868,19 @@ class NavigationRunner:
         self.guard = CollisionGuard(
             scan=self.lidar,
             stop_distance_m=0.6 + (0.15 if NAV_LIDAR else 0.0),
+            slow_mode=NAV_GUARD_SLOW,
+            corridor_half_width_m=NAV_GUARD_CORRIDOR_M,
         )
-        self.recovery = StuckRecovery(self.guard)
+        # The contact layer is the only witness to a robot held by its ARMS (a desk top, a
+        # stair soffit): nothing is at the guard's 0.30 m plane, so without it that stall
+        # reads as a balk -- "nothing was in front" -- which is the wrong story to tell the
+        # policy. See StuckRecovery's contact argument.
+        self.recovery = StuckRecovery(self.guard, contact=self.contact)
+        if self.people is not None:
+            # Agents alive + ghost filter against the robot's bodies, then the guard's fan learns
+            # to see people analytically (PhysX rays miss some walkers; people_hooks.py).
+            self.people.after_play()
+            self.people.install_guard(self.guard)
 
         self._set(state="ready", message="waiting for policy server")
         info = self.policy.wait_until_ready()
@@ -638,6 +890,129 @@ class NavigationRunner:
         self._set(state="idle", message=ready_message(info))
 
     # --------------------------------------------------------------- execution
+    def _spawn_pose(self, ep: Episode) -> tuple[tuple[float, float, float], dict]:
+        """The episode's start with z snapped to where this robot rests on the floor.
+
+        Main thread only (it raycasts the PhysX scene, and steps Kit once to lift the robot
+        out of the probe's way: base_drive.park_for_probe). Logged every time, both numbers,
+        because the episode z is DynaNav's and the snapped z is ours, and a reader of the
+        log should never have to wonder which one the robot actually started at.
+        """
+        from base_drive import ground_spawn_pose
+
+        # Out of the probe's way first: the robot is often standing on this very start.
+        self.base.park_for_probe(self.kit)
+        start, spawn = ground_spawn_pose(tuple(ep.start), ep.start_yaw_rad)
+        if spawn.get("robot_hits"):
+            print(f"[nav] spawn: WARNING {spawn['robot_hits']} probe casts met the robot "
+                  f"itself; the floor under {ep.name}'s start may read low", flush=True)
+        if spawn["ground_z"] is None:
+            print(f"[nav] spawn: no floor found under {ep.name}'s start: "
+                  f"{spawn.get('rays', '?')} rays over {len(spawn['tyre_ground_z'])} tyre "
+                  f"footprints, none hit; keeping episode z {ep.start[2]:.3f}", flush=True)
+        else:
+            print(f"[nav] spawn: {ep.name} episode z {spawn['episode_z']:.3f} -> floor "
+                  f"{spawn['ground_z']:.3f} ({'/'.join(spawn['ground_prim'].split('/')[-2:])}) -> "
+                  f"start z {spawn['snapped_z']:.3f}, drop removed "
+                  f"{spawn['drop_removed_m']:+.3f} m", flush=True)
+        if spawn.get("origin_inside"):
+            # A probe ray started inside a collider: the start overlaps something within
+            # SPAWN_PROBE_ABOVE_M of the episode z. Not fatal -- the floor below was still
+            # found -- but the robot may spawn embedded, and a separation kick from that is
+            # a physics fault the detector will end the run on.
+            print(f"[nav] spawn: WARNING {ep.name}'s start overlaps "
+                  f"{', '.join(spawn['origin_inside'])}", flush=True)
+        return start, spawn
+
+    def _settle(self) -> dict:
+        """Hold the robot at its just-reset start until it is at rest; log what it took.
+
+        Main thread only (it steps Kit). The record goes into `EpisodeResult.spawn`: a
+        start that never came to rest, or that faulted while held (an embedded spawn's
+        separation kick), is said so there -- reset_stats() after it would otherwise wipe
+        the evidence before the episode's own counters start.
+        """
+        rec = self.base.settle(self.kit, SETTLE_STEPS, PHYSICS_DT)
+        print(f"[nav] settle: {rec['steps']} held steps, "
+              f"{'at rest' if rec['settled'] else 'NOT at rest (cap reached)'}: "
+              f"tilt {rec['tilt_deg']:.2f} deg (worst {rec['worst_tilt_deg']:.2f}), "
+              f"|v| {rec['speed_mps']:.3f} m/s, z {rec['z']:.4f}"
+              + (f"; {rec['faults']} fault(s) while held: {rec['first_fault']}"
+                 if rec["faults"] else ""), flush=True)
+        return rec
+
+    def _source_prim(self, prim: str) -> str:
+        """A session collider's path is meaningless to a reader: name the environment mesh
+        it was copied from (scene_colliders.author's map)."""
+        if self.scene_colliders is None or not prim:
+            return prim
+        from scene_colliders import source_of
+
+        return source_of(prim, self.scene_colliders)
+
+    def _contact_summary(self) -> dict | None:
+        """The contact layer's episode record, prims named by their environment source."""
+        if self.contact is None:
+            return None
+        c = self.contact.summary()
+        c.pop("envelope", None)   # constant per process; config["fault_rules"]["contact"]
+        if c.get("first_contact"):
+            c["first_contact"]["prim"] = self._source_prim(c["first_contact"].get("prim", ""))
+        c["by_prim"] = {self._source_prim(k): v for k, v in (c.get("by_prim") or {}).items()}
+        c["spans"] = [[sp[0], sp[1], self._source_prim(sp[2]), sp[3]]
+                      for sp in (c.get("spans") or [])]
+        return c
+
+    @property
+    def fault_speed_steps(self) -> int:
+        """Consecutive steps over the fault speed that make a fault: 1 with the contact
+        layer attached (a spike means the solver pushed the body, which contact exists to
+        prevent), FAULT_SPEED_STEPS on the bare base (isolated depenetration kicks are
+        expected there). See FAULT_SPEED_STEPS_CONTACT."""
+        return FAULT_SPEED_STEPS_CONTACT if self.contact is not None else FAULT_SPEED_STEPS
+
+    def _physics_fault(self, sim_time: float) -> dict | None:
+        """None on a healthy step; otherwise what was wrong, with the numbers.
+
+        Call it right after `kit.update()`, before anything reads the pose: it judges the
+        step that just ran (KinematicBase.check_step) first, so a throw is a fault before
+        the loop can count it as driving. Read off the SIM, not off our integrated pose,
+        which by design never shows a fault. See FAULT_SPEED_STEPS for the thresholds.
+        The base's own counter is zeroed per episode (`reset_stats()`), and the first
+        fault ends the episode, so any count at all is this step's.
+        """
+        check_step = getattr(self.base, "check_step", None)
+        if check_step is not None:
+            check_step()
+        state = self.base.physics_state()
+        kinds = []
+        if self.base.faults:
+            kinds.append((self.base.last_fault or {}).get("kind", "jump"))
+        self._overspeed_steps = (self._overspeed_steps + 1
+                                 if state["speed_mps"] > self._fault_speed_mps else 0)
+        if self._overspeed_steps >= self.fault_speed_steps:
+            kinds.append("speed")
+        vz_floor = getattr(self.base, "VZ_MIN_MPS", None)
+        self._fall_steps = (self._fall_steps + 1
+                            if vz_floor is not None and state["vz_mps"] < vz_floor else 0)
+        if self._fall_steps >= FAULT_FALL_STEPS:
+            kinds.append("fall")
+        if max(abs(state["roll_deg"]), abs(state["pitch_deg"])) > FAULT_TILT_DEG:
+            kinds.append("tilt")
+        if not kinds:
+            return None
+        fault = {"t": round(sim_time, 3), "kinds": kinds,
+                 **{k: round(v, 4) for k, v in state.items()}}
+        if self.base.faults:
+            # Key kept as "jump" for both kinds, so readers of older results still work.
+            fault["jump"] = self.base.last_fault
+        if "speed" in kinds:
+            fault["overspeed_steps"] = self._overspeed_steps
+            fault["fault_speed_mps"] = round(self._fault_speed_mps, 3)
+        if "fall" in kinds:
+            fault["fall_steps"] = self._fall_steps
+        return fault
+
     def run_episode(
         self,
         instruction: str | None = None,
@@ -687,13 +1062,42 @@ class NavigationRunner:
         # that was quietly wrong before -- running twice in a row without pressing
         # Reset used to start the second run from wherever the first one stopped, and
         # score it against an `initial_distance` measured from there.
-        self.base.reset_to(tuple(ep.start), ep.start_yaw_rad)
-        for _ in range(30):  # let the teleport settle before anything measures it
-            self.kit.update()
+        #
+        # At OUR rest height, not the episode's z: that is DynaNav's Nova Carter spawn
+        # height, 0.14-2.21 m above the terrain outdoors, and the drop was what seeded
+        # every outdoor blow-up (base_drive.py). Indoors it moves the robot ~1 mm.
+        start, spawn = self._spawn_pose(ep)
+        self.base.reset_to(start, ep.start_yaw_rad)
+        # Let the teleport settle before anything measures it -- HELD level, so the first
+        # decision's frame is taken in the posture the robot drives in (base_drive.settle;
+        # a free settle left pillars' first frame rolled 13 deg), and until it is at rest
+        # rather than for a fixed count. Not over a start with no floor: that episode is not
+        # run (below), and holding it would only let it fall for the whole cap.
+        spawn["settle"] = (self._settle() if spawn.get("ground_z") is not None
+                           else {"skipped": "no_floor"})
 
         self.base.sync_from_sim()
+        # The settle is not part of the episode: z span, jitter and faults start here.
+        self.base.reset_stats()
+        if self.contact is not None:
+            # ...and so do the contact metric, the envelope (the arms and lift as the reset
+            # left them) and the clearance cache: this is a new place.
+            self.contact.reset_episode()
+        self._overspeed_steps = 0
+        self._fall_steps = 0
+        self._fault_speed_mps = fault_speed_mps(ep.max_speed_mps)
         self.guard.interventions = 0
+        self.guard.reset_slow_stats()
         self.recovery.reset()
+        if self.people is not None:
+            self.people.episode_start()      # everyone back to spawn; lists restart at t = 0
+        if self.lidar is not None:
+            # Clear the last episode's world points and sweep once at rest, so decision 0
+            # sees a full scan of THIS start pose. Without it, under bench.sh (one process
+            # per episode) the first decision got no lidar filtering at all, and in a UI
+            # session it got the previous episode's walls re-expressed around this pose.
+            self.lidar.reset()
+            self.lidar.prime(self.base.position(), self.base.yaw, 0.0)
 
         start_pos = self.base.position()
         initial_distance = math.dist(start_pos[:2], ep.goal[:2])
@@ -736,6 +1140,12 @@ class NavigationRunner:
         # that one is decisions the model made, this one is turns this robot performed,
         # and they diverge if a run ever serves a pivot twice or drops one.
         pivots = 0
+        # Contiguous stretches the guard held the robot back: (t_start, t_end, nearest_m,
+        # prim). A bare intervention COUNT cannot say whether 4077 interventions were one
+        # wedge or a thousand brushes, nor what was hit -- and aisle6's lidar arm put 89%
+        # of a whole ladder's count into one episode before anyone could look.
+        guard_spans: list[tuple[float, float, float, str]] = []
+        guard_span: list | None = None
         prev_pos = start_pos
         prev_yaw = self.base.yaw
         # How much of the current in-place turn is left, in radians, and the step by which
@@ -752,6 +1162,20 @@ class NavigationRunner:
         t0 = time.time()
         success = False
         timed_out = False
+        # Why the loop ended early, if it did: "physics_fault", "no_floor" or "user_stop".
+        # "" for a run that reached its goal or its timeout.
+        abort_reason = ""
+        physics_fault: dict = {}
+        if spawn.get("ground_z") is None:
+            # No floor under any tyre within SPAWN_PROBE_RANGE_M of the start. Driving
+            # anyway is not a navigation result: the robot falls for the whole episode
+            # (fake Kit: 43 m in 20 s, scored as an ordinary timeout). Not run, and said so.
+            abort_reason = "no_floor"
+            physics_fault = {"t": 0.0, "kinds": ["no_floor"],
+                             "episode_z": spawn.get("episode_z"),
+                             "tyre_ground_z": spawn.get("tyre_ground_z")}
+            print(f"[nav] NO FLOOR under {ep.name}'s start -- episode not run", flush=True)
+            self._set(message="no floor under the start pose -- episode not run")
         history = WaypointHistory(PHYSICS_DT)
         history.observe(0, start_pos, self.base.yaw)
         frames = FrameHistory()
@@ -788,7 +1212,7 @@ class NavigationRunner:
         think_wall_s = 0.0
         check_plan_period(self.policy, replan_steps)
 
-        while True:
+        while not abort_reason:
             # SIM time, not wall time. DynaNav's timeouts (70-100 s) budget how long the
             # robot has to do the task, not how long the hardware takes to decide. That
             # mattered enormously when every call froze the robot for ~1.0-1.5 s; with
@@ -821,9 +1245,11 @@ class NavigationRunner:
                 break
             if self._abort.is_set():
                 self._set(message="stopped by user")
+                abort_reason = "user_stop"
                 break
 
             # --- replan ---------------------------------------------------
+            frame_path = None
             if step == next_decision_step:
                 # The third-person twin of this decision was grabbed at the top of the
                 # loop, a few lines and no simulation steps ago, so `chase_<step>.jpg` and
@@ -831,12 +1257,16 @@ class NavigationRunner:
                 frame_path = self.camera.grab_to_file()
                 if frame_path is None:
                     # An empty render means the sensor pipeline is not up. Driving on
-                    # a stale plan here would look fine and mean nothing.
+                    # a stale plan here would look fine and mean nothing, so HOLD and
+                    # ask again in CAMERA_RETRY_STEPS -- through the ordinary step below,
+                    # so the held steps are fault-checked and counted. This used to step
+                    # Kit ten times right here and `continue`: no fault check, `step`
+                    # never advanced, so sim time and the timeout froze and a camera that
+                    # never came back held the episode forever.
                     self._set(message="camera returned an empty frame; holding")
-                    for _ in range(10):
-                        self.kit.update()
-                    continue
-
+                    command = Command(0.0, 0.0, 0.0)
+                    next_decision_step = step + CAMERA_RETRY_STEPS
+            if frame_path is not None:
                 frames.add(sim_time, frame_path)
                 self.latest_jpeg = frame_path.read_bytes()
 
@@ -856,7 +1286,7 @@ class NavigationRunner:
                     # about. These zeros are not a simplification, they are the
                     # measurement -- exactly as this file's header says of the
                     # synchronous era that preceded the async switch.
-                    time_delay, dx, dy = 0.0, 0.0, 0.0
+                    time_delay, dx, dy, yaw_delta = 0.0, 0.0, 0.0, 0.0
                 elif gen_starts:
                     # WHICH generation produced the plan about to come back differs by
                     # mode, and the list is the same either way -- `gen_starts` holds the
@@ -879,10 +1309,17 @@ class NavigationRunner:
                     cos_r, sin_r = math.cos(ref_yaw), math.sin(ref_yaw)
                     dx = cos_r * dxw + sin_r * dyw
                     dy = -sin_r * dxw + cos_r * dyw
+                    # Same anchor, same frame: how far the robot has TURNED since the
+                    # plan's origin. The server's reframe() subtracts (dx, dy) and then
+                    # rotates by -yaw_delta; without this it only translated, and a
+                    # cached arc re-served while the robot was already turning along it
+                    # was turned again from the new heading.
+                    yaw_delta = math.atan2(math.sin(self.base.yaw - ref_yaw),
+                                           math.cos(self.base.yaw - ref_yaw))
                 else:
                     # Nothing has been generated yet, so the first call is genuinely
                     # not stale -- it blocks until the first cache exists.
-                    time_delay, dx, dy = 0.0, 0.0, 0.0
+                    time_delay, dx, dy, yaw_delta = 0.0, 0.0, 0.0, 0.0
 
                 try:
                     out = self.policy.predict(
@@ -906,6 +1343,16 @@ class NavigationRunner:
                         # paper's latency compensation. The action head is not asked to
                         # guess that its cache is old, it is told, in seconds.
                         time_delay=time_delay,
+                        # The rotational half of dx/dy: see the comment where it is
+                        # computed. Only server_qwen reads it.
+                        yaw_delta_rad=yaw_delta,
+                        # The pose and clock of THIS call. With them server_qwen picks
+                        # the anchor itself, because only it knows which generation's
+                        # plan it is about to serve; the three values above are then
+                        # what TIC-VLA's server.py reads and server_qwen's fallback.
+                        pose_world=[float(position[0]), float(position[1]),
+                                    float(self.base.yaw)],
+                        sim_time=float(sim_time),
                         # What the robot has already done. Omitting this (the default
                         # "") is why every plan used to come back as a fresh straight
                         # line: with no record of having driven for the last minute,
@@ -1048,7 +1495,11 @@ class NavigationRunner:
                     # regime the paper trained for. The action head plans 3.0 s
                     # ahead, so a delay approaching that means the robot is being
                     # steered by a plan that has nearly expired.
-                    round(time_delay, 3),
+                    # The server's own figure when it reports one: on the call that
+                    # picks up a freshly finished plan, the `time_delay` computed here
+                    # is one generation too old (see PredictRequest.pose_world).
+                    round(out["plan_age_s"] if out.get("plan_age_s") is not None
+                          else time_delay, 3),
                 ))
                 self._set(
                     policy_calls=policy_calls,
@@ -1091,6 +1542,17 @@ class NavigationRunner:
             if self.lidar is not None:
                 self.lidar.step(position, self.base.yaw, PHYSICS_DT, sim_time)
             guard = self.guard.check(position, self.base.yaw, drive.vx, drive.vy)
+            if guard.blocked:
+                if guard_span is None:
+                    guard_span = [sim_time, sim_time, guard.distance_m, guard.hit_prim]
+                else:
+                    guard_span[1] = sim_time
+                    if guard.distance_m < guard_span[2]:
+                        guard_span[2], guard_span[3] = guard.distance_m, guard.hit_prim
+            elif guard_span is not None:
+                guard_spans.append((round(guard_span[0], 2), round(guard_span[1], 2),
+                                    round(guard_span[2], 3), guard_span[3]))
+                guard_span = None
             self.base.apply(
                 # Already guarded, and directionally: what survives is the part of the
                 # command that was not driving into anything.
@@ -1106,7 +1568,26 @@ class NavigationRunner:
             )
             self.kit.update()
 
+            # Checked BEFORE the step is accounted for, so a throw never enters the path,
+            # the trace, the success check or the z span: everything recorded ends at the
+            # last healthy step. The speed and fall tests wait `fault_speed_steps` /
+            # FAULT_FALL_STEPS steps before they fire; x/y are pinned on every one of
+            # those, so what they record is still the drive.
+            fault = self._physics_fault((step + 1) * PHYSICS_DT)
+            if fault is not None:
+                physics_fault = fault
+                abort_reason = "physics_fault"
+                print(f"\n[nav] PHYSICS FAULT at t={fault['t']:.2f} s: "
+                      f"{'+'.join(fault['kinds'])} -- |v| {fault['speed_mps']:.2f} m/s, "
+                      f"roll {fault['roll_deg']:.1f}, pitch {fault['pitch_deg']:.1f} deg, "
+                      f"z {fault['z']:.3f}; ending the episode as a failure", flush=True)
+                self._set(message=f"physics fault ({'+'.join(fault['kinds'])}) at "
+                                  f"{fault['t']:.1f} s -- episode ended")
+                break
+
             new_pos = self.base.position()
+            if self.people is not None:
+                self.people.step(PHYSICS_DT, new_pos[:2], self.base.yaw)
             path_length += math.dist(new_pos[:2], prev_pos[:2])
             prev_pos = new_pos
             step += 1
@@ -1187,9 +1668,14 @@ class NavigationRunner:
                 )
 
         self.base.stop()
-        final_pos = self.base.position()
+        # After a fault the sim's pose is wherever the solver threw the robot; the last
+        # healthy one is the honest end of the run.
+        final_pos = prev_pos if physics_fault else self.base.position()
         final_distance = math.dist(final_pos[:2], ep.goal[:2])
         trace.append((*final_pos[:2], self.base.yaw))
+        if guard_span is not None:
+            guard_spans.append((round(guard_span[0], 2), round(guard_span[1], 2),
+                                round(guard_span[2], 3), guard_span[3]))
 
         result = EpisodeResult(
             episode=ep.name,
@@ -1210,6 +1696,7 @@ class NavigationRunner:
             # four wedges and one with four balks have nothing in common, and a single
             # number would report them as the same run.
             balks=self.recovery.balks,
+            recoveries_by_contact=int(getattr(self.recovery, "contact_wedges", 0)),
             recoveries_blocked_behind=self.recovery.blocked_behind,
             recovery_replans=replans,
             recovery_replans_failed=replans_failed,
@@ -1219,14 +1706,49 @@ class NavigationRunner:
             policy=self.policy_label(),
             plan_mode=PLAN_MODE,
             plan_period_s=(replan_steps * PHYSICS_DT) if PLAN_MODE != "async" else 0.0,
-            lidar=(f"c1@{NAV_LIDAR_HEIGHT_M:.2f}" if self.lidar is not None else "fan"),
+            lidar=(f"c1@{NAV_LIDAR_HEIGHT_M:.2f}+{NAV_LIDAR_FORWARD_M:.2f}"
+                   if self.lidar is not None else "fan"),
             think_wall_s=round(think_wall_s, 1),
             base_z_step_max_m=round(self.base.z_step_max, 6),
             base_z_span_m=(round(self.base.z_max - self.base.z_min, 6)
                            if self.base.z_max > self.base.z_min else 0.0),
+            physics_faults=1 if physics_fault else 0,
+            physics_fault=physics_fault,
+            base_resyncs=int(self.base.resyncs),
+            base_step_anomalies=int(self.base.step_anomalies),
+            contact=self._contact_summary(),
+            people=self.people.summary() if self.people is not None else None,
+            guard_slow=self.guard.slow_stats(),
+            abort_reason=abort_reason,
+            spawn={**spawn, "start": [round(float(v), 4) for v in start],
+                   "yaw_rad": round(ep.start_yaw_rad, 6)},
             trace=trace,
             plans=plans,
+            guard_spans=[(a, b, d, self._source_prim(p)) for a, b, d, p in guard_spans],
+            config=self.run_config(),
         )
+        if result.contact is not None:
+            c = result.contact
+            fc = c.get("first_contact") or {}
+            print(f"[nav] contact: {c['contact_steps']} contact steps ({c['blocked_steps']} "
+                  f"blocked, {c['rot_blocked_steps']} turns refused, {c['in_contact_steps']} "
+                  f"in contact), longest {c['max_run_s']:.2f} s"
+                  + (f", first at t={fc.get('t')} s on {str(fc.get('prim', '')).split('/')[-1]}"
+                     f" ({fc.get('box')})" if fc else "")
+                  + ("  -> PHYSICAL COLLISION (DynaNav: >= 3.33 s pressed)"
+                     if c["physical_collision"] else ""), flush=True)
+        if result.guard_slow is not None:
+            gs = result.guard_slow
+            print(f"[nav] guard slow band ({gs['mode']}): {gs['slow_checks']}/{gs['moving_checks']} "
+                  f"moving steps slowed ({100 * gs['slow_frac']:.1f}%), {gs['floor_checks']} at the "
+                  f"15% floor; radial would have slowed {gs['radial_slow_checks']} "
+                  f"({gs['radial_floor_checks']} at the floor)", flush=True)
+        if result.people is not None:
+            pm = result.people
+            print(f"[nav] people: {pm['num_people']} walkers, human_collision "
+                  f"{pm['human_collision']}" + (f" at t={pm['human_collision_t']} s ({pm['human_collision_person']})"
+                                                if pm['human_collision'] else "")
+                  + f", closest {pm.get('min_dist_m')} m", flush=True)
         # Save unconditionally, including aborted runs. The run you most want the trace
         # for is the one that went wrong, and that is exactly the one someone stops early.
         try:
@@ -1264,8 +1786,10 @@ class NavigationRunner:
         while self.take_job(timeout=0.0) is not None:
             pass
 
-        self.base.reset_to(tuple(ep.start), ep.start_yaw_rad)
+        start, spawn = self._spawn_pose(ep)
+        self.base.reset_to(start, ep.start_yaw_rad)
         self.guard.interventions = 0
+        self.guard.reset_slow_stats()
         # Clear the policy's KV cache as well. Without this the model carries the
         # previous attempt's context into a run that is supposed to start fresh, and
         # the "reset" run is not comparable to a first one.
@@ -1274,23 +1798,44 @@ class NavigationRunner:
         except PolicyServerError as exc:
             self._set(message=f"reset the robot, but the policy server did not: {exc}")
 
-        # Let the teleport settle before anyone renders or measures.
-        for _ in range(30):
-            self.kit.update()
+        # Let the teleport settle before anyone renders or measures -- held level, as
+        # run_episode does, so the preview shows the frame the first decision will see.
+        # Not over a start with no floor, for the same reason run_episode skips it: holding
+        # there only lets the robot fall for the whole cap (2 s, ~4 m), and run_episode
+        # refuses that start anyway.
+        no_floor = spawn.get("ground_z") is None
+        if not no_floor:
+            self._settle()
+        if self.contact is not None:
+            self.contact.reset_episode()
+        if self.people is not None:
+            self.people.episode_start()
+        if self.lidar is not None:
+            self.lidar.reset()        # the old pose's returns are not this pose's walls
         self._preview_t = 0.0  # force a refresh; both panels must show the start pose
         self._update_idle_views()
 
         self._set(
             state="idle", distance_m=None, initial_distance_m=None, elapsed_s=0.0,
             wall_s=0.0, steps=0, policy_calls=0, guard_interventions=0, reasoning="",
-            message=f"reset to start: {tuple(round(v, 2) for v in ep.start)} "
-                    f"@ {ep.start_yaw_deg:g} deg",
+            message=(f"NO FLOOR under {ep.name}'s start -- it will not run" if no_floor
+                     else f"reset to start: {tuple(round(v, 2) for v in start)} "
+                          f"@ {ep.start_yaw_deg:g} deg"),
         )
 
     def idle(self, seconds: float = 0.05) -> None:
-        """Keep Kit alive between jobs so the viewport and camera stay live."""
+        """Keep Kit alive between jobs so the viewport and camera stay live.
+
+        The base is HELD while idling (a zero command, exactly as a stopped robot is held
+        inside an episode), not left free: a free robot on a slope does not come to rest --
+        on outdoor_pillars' 6.7 deg start it swings to ~2x the slope and tips over within
+        ~120 free steps (scene/outdoor_small probe2) -- so a UI left on Reset would show,
+        and the next Run would start its re-spawn from, a robot lying on its side.
+        """
         for _ in range(max(1, int(seconds / PHYSICS_DT))):
+            self.base.apply(0.0, 0.0, 0.0, PHYSICS_DT)
             self.kit.update()
+            self.base.check_step()
         self._update_idle_views()
 
     def close(self) -> None:

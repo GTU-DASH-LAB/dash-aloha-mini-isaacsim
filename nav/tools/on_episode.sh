@@ -7,10 +7,11 @@
 # best-effort by construction -- `bench.sh` already counted the verdict before calling
 # us, and a ladder must not end because an encoder or an SMTP hop had a bad minute.
 #
-# WHY THE VIDEO IS BUILT HERE AND NOT AT THE END. The decision images live in
-# /tmp/qvla-menus, which is a tmpfs on some machines and a directory somebody clears on
-# all of them; and a two-hour ladder that renders 13 videos in its last five minutes is
-# a two-hour ladder with a single point of failure at the end. Building per episode also
+# WHY THE VIDEO IS BUILT HERE AND NOT AT THE END. The decision images live in the menu
+# directory -- once /tmp/qvla-menus, a tmpfs on some machines and cleared on all of them,
+# now nav/results/menus but still pruned by hand; and a two-hour ladder that renders 13
+# videos in its last five minutes is a two-hour ladder with a single point of failure at
+# the end. Building per episode also
 # means the mail can carry the thing it is reporting on.
 set -uo pipefail
 
@@ -18,7 +19,7 @@ EP="${1:?episode}"; CONTROLLER="${2:?controller}"; VERDICT="${3:-unknown}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO" || exit 0
 
-MENUS="${QVLA_MENU_DIR:-/tmp/qvla-menus}"
+MENUS="${QVLA_MENU_DIR:-$REPO/nav/results/menus}"
 VIDEO_DIR="$REPO/nav/results/videos"
 # Names this ladder. Set it to the thinking level and the three runs of the same thirteen
 # episodes stay three separate measurements instead of one averaged mess: their own

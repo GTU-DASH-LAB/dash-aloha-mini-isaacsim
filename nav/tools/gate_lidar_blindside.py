@@ -94,6 +94,10 @@ scene = REPO / "assets" / "usd" / f"nav_{args.env}.usda"
 print(f"\n{len(jobs)} failed runs in {args.env}; {args.rays} rays at z+{args.height:.2f} m, "
       f"{args.range:.0f} m; camera blind outside +/-{args.fov / 2:.0f} deg")
 
+# nav/tools/profile.py shadows the stdlib `profile` module, which warp imports while Kit
+# starts, and Kit then fails to load omni.warp.core (see replay_lidar_trace.py). Nothing
+# here imports from nav/tools, so drop it from the path first.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 from isaacsim import SimulationApp  # noqa: E402
 
 kit = SimulationApp({"headless": True, "active_gpu": 0, "physics_gpu": 0, "multi_gpu": False})

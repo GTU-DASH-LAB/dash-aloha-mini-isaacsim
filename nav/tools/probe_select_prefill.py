@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -62,7 +63,7 @@ from arc_menu import (  # noqa: E402
     SELECT_PREFILL, SELECT_PREFILL_SPEED, parse_choice_speed, select_system, stop_label,
 )
 
-MENUS = Path("/tmp/qvla-menus")
+MENUS = Path(os.environ.get("QVLA_MENU_DIR", REPO / "nav/results/menus"))
 # Rebuilt here rather than imported, because importing them means importing the server,
 # which means importing torch. Kept verbatim; a paraphrase would make this probe measure a
 # prompt the robot never ran.
@@ -144,7 +145,7 @@ def main() -> int:
 
     cases = failing_decisions(args.limit)
     if not cases:
-        print("!! no unparsed decisions found under /tmp/qvla-menus")
+        print(f"!! no unparsed decisions found under {MENUS}")
         return 1
     print(f"-- replaying {len(cases)} decisions that produced no answer, "
           f"{args.answer_tokens}-token budget, with and without the prefill\n")

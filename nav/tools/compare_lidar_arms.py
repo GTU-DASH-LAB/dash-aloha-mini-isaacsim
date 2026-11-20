@@ -325,8 +325,13 @@ def main() -> None:
         for e in c.blown():
             for lbl, arm in ((c.a_label, c.arm_a), (c.b_label, c.arm_b)):
                 if arm[e]["blown_up"]:
-                    print(f"    {e:<26} {lbl:<9} path {arm[e]['path_m']:.0f} m, "
-                          f"largest single step {arm[e]['max_step_m']:.1f} m")
+                    # Which test fired first: a row flagged by z span or by the runner's
+                    # fault record can have an ordinary path and step, and those two
+                    # columns alone then read as if nothing happened.
+                    why = "+".join(arm[e].get("blown_why") or []) or "?"
+                    print(f"    {e:<26} {lbl:<9} [{why}] path {arm[e]['path_m']:.0f} m, "
+                          f"largest single step {arm[e]['max_step_m']:.1f} m, "
+                          f"z span {arm[e].get('z_span_m', 0.0):.2f} m")
         print("  A teleported base has nothing bounding how far it can be flung, so the")
         print("  trace records the flight as a drive. `path_m`, `closest_m` and `closed`")
         print("  are all void on such a row -- they describe the explosion, not driving.")

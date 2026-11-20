@@ -9,14 +9,23 @@ after which a single wheel spinning in isolation still produced ~200x less
 translation than expected. The pre-approved fallback was to teleport the root pose
 with set_world_poses() each step.
 
-The consequence is easy to state and easy to forget: **a teleported body does not
-collide.** PhysX is not integrating forces on it, so it will pass straight through
-walls, shelving and pedestrians without either body reacting. A navigation demo that
-looked great because the robot ghosted through a rack would be worthless.
+The consequence: **a teleported body has no contact response of its own.** PhysX does
+not integrate forces on it, so without help it passes straight through walls, shelving
+and pedestrians without either body reacting. Two layers stand in for that, both by
+querying the physics scene before each move:
 
-So obstacles are handled by explicitly querying the physics scene before each move.
-This is genuinely weaker than contact physics and should be described that way: it
-stops the robot, it does not push back, and it only sees what the ray fan samples.
+  * this guard -- a fan of rays at one height (0.30 m) that SLOWS and stops the robot
+    before it reaches an obstacle in the direction of travel, the way a cautious driver
+    would; it is the policy loop's look-ahead, and its interventions are a metric;
+  * kinematic_contact.py -- the robot's whole envelope (deck, column, lift carriage, both
+    arms) swept along every step, which clips the step at whatever it would actually hit
+    and slides along it. That is the contact response; it catches what a 0.30 m plane
+    cannot see (a stair soffit at arm height, a desk top, a 13 cm kerb).
+
+Neither pushes back or is pushed, and people are neither's job (people.py). This guard
+only sees what its ray fan samples, and only things with a collider -- which on stages
+whose authors left props without one is what scene_colliders.py adds, in the session
+layer, before play.
 """
 
 from __future__ import annotations
@@ -65,6 +74,8 @@ class CollisionGuard:
         chassis_radius_m: float = 0.35,
         robot_prim_prefix: str = "/World/Aloha",
         scan=None,
+        slow_mode: str = "radial",
+        corridor_half_width_m: float = 0.40,
     ):
         # `scan` is an optional SweepingLidar2D. With it the guard reads the sensor's
         # rolling buffer instead of casting its own fan; without it nothing changes at
@@ -97,8 +108,55 @@ class CollisionGuard:
         # the robot is about to touch.
         self.chassis_radius_m = chassis_radius_m
         self.robot_prim_prefix = robot_prim_prefix
+        # WHICH returns may slow the robot (the stop branch is the same in both modes).
+        #   radial   -- every return in the +-35 deg wedge, by its distance from the centre.
+        #               What every result before 2026-10-12 ran.
+        #   corridor -- only returns inside the strip the robot is about to sweep, |lateral|
+        #               <= corridor_half_width_m of the travel line and ahead of the centre,
+        #               ramped on their FORWARD distance. The robot is 0.31 m half-wide across
+        #               its travel (0.40 = that + 9 cm).
+        # Why corridor exists, measured on the contact ladder (2026-10-11): a wall running
+        # PARALLEL to travel at ~0.42 m puts the 35 deg ray's return at 0.42/sin 35 = 0.73 m,
+        # which radial reads as "an obstacle 0.73 m ahead" and floors the speed at 15%. The
+        # wall is nowhere on the path. past_wheelchairs spent 75-79% of its moving time at
+        # 0.45 x 0.15 = 0.0675 m/s along a window wall and timed out 2.8-3.1 m short; 17.3%
+        # of all analysed moving time sat at exactly the floor. Nothing logged it: the slow
+        # band is not an intervention.
+        if slow_mode not in ("radial", "corridor"):
+            raise ValueError(f"slow_mode must be 'radial' or 'corridor', not {slow_mode!r}")
+        self.slow_mode = slow_mode
+        self.corridor_half_width_m = float(corridor_half_width_m)
         self.interventions = 0
+        self.reset_slow_stats()
         self._query = None
+
+    def reset_slow_stats(self) -> None:
+        """Per-episode slow-band telemetry (drive checks only, `count=True`). `radial_*` is what
+        the radial rule WOULD have done on the same samples, so a corridor run carries its own
+        counterfactual and a radial run reads the same in both columns."""
+        self.moving_checks = 0
+        self.slow_checks = 0
+        self.floor_checks = 0
+        self.slow_scale_sum = 0.0
+        self.radial_slow_checks = 0
+        self.radial_floor_checks = 0
+
+    def slow_stats(self) -> dict:
+        n = self.slow_checks
+        return {"mode": self.slow_mode,
+                "corridor_half_width_m": self.corridor_half_width_m if self.slow_mode == "corridor" else None,
+                "moving_checks": self.moving_checks, "slow_checks": n, "floor_checks": self.floor_checks,
+                "slow_frac": round(n / self.moving_checks, 4) if self.moving_checks else 0.0,
+                "slow_scale_mean": round(self.slow_scale_sum / n, 4) if n else None,
+                "radial_slow_checks": self.radial_slow_checks,
+                "radial_floor_checks": self.radial_floor_checks}
+
+    def _ramp(self, distance: float) -> float:
+        # Ramp linearly between stop and slow distance rather than dropping to zero at a
+        # threshold -- a hard cutoff makes the robot judder in and out of the guard band as
+        # the fan flickers on and off a thin obstacle.
+        span = self.slow_distance_m - self.stop_distance_m
+        return max(0.15, (distance - self.stop_distance_m) / span)
 
     def _scene_query(self):
         if self._query is None:
@@ -203,15 +261,44 @@ class CollisionGuard:
                 nearest = distance
                 nearest_prim = prim
 
+        if count:
+            self.moving_checks += 1
+            if not blockers and nearest < self.slow_distance_m:
+                r = self._ramp(nearest)
+                self.radial_slow_checks += 1
+                self.radial_floor_checks += r <= 0.15
+
+        if self.slow_mode == "corridor" and not blockers:
+            # Only what lies in the swept strip slows the robot, by how far AHEAD it is.
+            ahead = float("inf")
+            ahead_prim = ""
+            for angle, distance, prim in samples:
+                rel = angle - travel
+                fwd = distance * math.cos(rel)
+                if fwd > 0.0 and abs(distance * math.sin(rel)) <= self.corridor_half_width_m \
+                        and fwd < ahead:
+                    ahead, ahead_prim = fwd, prim
+            if ahead >= self.slow_distance_m:
+                return GuardResult(False, nearest, vx, vy, nearest_prim)
+            scale = self._ramp(ahead)
+            if count:
+                self.slow_checks += 1
+                self.floor_checks += scale <= 0.15
+                self.slow_scale_sum += scale
+            # distance_m stays the NEAREST return, as in radial: stuck_recovery reads it as front
+            # clearance (count=False), and the wedge/release thresholds must not change with
+            # the slow rule. `scale` is what corridor changes.
+            return GuardResult(False, nearest, vx * scale, vy * scale, ahead_prim, scale)
+
         if nearest >= self.slow_distance_m:
             return GuardResult(False, nearest, vx, vy, nearest_prim)
 
         if not blockers:
-            # Ramp linearly between stop and slow distance rather than dropping to
-            # zero at a threshold -- a hard cutoff makes the robot judder in and out
-            # of the guard band as the fan flickers on and off a thin obstacle.
-            span = self.slow_distance_m - self.stop_distance_m
-            scale = max(0.15, (nearest - self.stop_distance_m) / span)
+            scale = self._ramp(nearest)
+            if count:
+                self.slow_checks += 1
+                self.floor_checks += scale <= 0.15
+                self.slow_scale_sum += scale
             return GuardResult(False, nearest, vx * scale, vy * scale, nearest_prim, scale)
 
         # --- blocked: keep whatever motion is not INTO an obstacle -----------------

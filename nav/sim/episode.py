@@ -1,4 +1,5 @@
-"""Episode definitions loaded from ../config/episodes.yaml.
+"""Episode definitions loaded from ../config/episodes.yaml (or the table NAV_EPISODES_CONFIG
+names -- see CONFIG_PATH).
 
 Pure data + validation, no Isaac Sim imports, so this is importable from the UI
 process and from tests without paying a 90 s Kit startup.
@@ -20,8 +21,43 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import paths  # noqa: E402
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "episodes.yaml"
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "episodes.yaml"
+# Which episode table this process runs from. Default: the 19-episode ladder. Set
+# NAV_EPISODES_CONFIG (absolute, or relative to nav/config/) to run another table --
+# `episodes_full.yaml` holds all 85 DynaNav episodes (hospital_e01 ... outdoor_e60), and
+# until this existed nothing that defaulted to CONFIG_PATH could load them: run_navigation's
+# --episode choices, resolve_env (bench.sh, build_nav_scene.sh) and the UI all saw only
+# the ladder. An environment variable rather than a flag so it reaches every process of a
+# bench run through bench.sh -> run.sh -> run_navigation, and run_config() records it in
+# every result (it copies all NAV_* variables).
+CONFIG_PATH = Path(os.environ.get("NAV_EPISODES_CONFIG", "") or DEFAULT_CONFIG_PATH)
+if not CONFIG_PATH.is_absolute():
+    CONFIG_PATH = CONFIG_DIR / CONFIG_PATH
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+
+
+def all_episode_specs() -> dict[str, dict]:
+    """Every episode of EVERY table in nav/config/, as raw YAML dicts with that table's
+    `defaults` filled in underneath (the episode's own fields win).
+
+    For readers of result files, which must score a row by its OWN episode whatever table
+    the run came from. Episode names are unique across the tables (the ladder's
+    `hospital_vending_machine` is `hospital_e01` in the full table, by name); the selected
+    table (CONFIG_PATH) wins a clash. `summarize_runs` used to read only episodes.yaml, so
+    an `outdoor_e53` row had no spec at all: it was judged against the INDOOR 0.5 m z-span
+    bound -- healthy outdoor runs span up to ~0.9 m -- and the default 1.5 m arrival radius
+    instead of its own.
+    """
+    specs: dict[str, dict] = {}
+    tables = [CONFIG_PATH] + sorted(p for p in CONFIG_DIR.glob("episodes*.yaml")
+                                    if p.resolve() != CONFIG_PATH.resolve())
+    for path in tables:
+        raw = yaml.safe_load(Path(path).read_text()) or {}
+        defaults = raw.get("defaults") or {}
+        for name, spec in (raw.get("episodes") or {}).items():
+            specs.setdefault(name, {**defaults, **(spec or {})})
+    return specs
 
 
 @dataclass(frozen=True)
@@ -205,6 +241,11 @@ class EpisodeResult:
     # so runs recorded before the balk trigger existed still load; 0 there means "not
     # measured", and specifically not "the robot never stalled".
     balks: int = 0
+    # How many of the wedges were engaged on the contact layer's evidence alone -- the robot
+    # pressed against something for the whole 3 s stall window while the guard's 0.30 m
+    # plane saw room (an arm on a desk, under a stair soffit). Another subset of
+    # `recoveries`. 0 on rows before 2026-10-06 and on the bare base: not measured.
+    recoveries_by_contact: int = 0
     # How many of those ended in a forced re-decision, and how many could not. A run with
     # `recoveries > 0` and `recovery_replans == 0` is a robot that reversed and was then
     # handed the same plan back -- the manoeuvre without the point of it.
@@ -259,6 +300,58 @@ class EpisodeResult:
     # buzz. Defaulted, so runs recorded before this was measured still load.
     base_z_step_max_m: float = 0.0
     base_z_span_m: float = 0.0
+    # Steps on which the SIM, not the drive, moved the robot: a > 0.25 m sideways or
+    # > 0.15 m vertical jump on one driven physics step, |v| over the episode's fault speed
+    # on 3 steps in a row (the solver fighting the base), a 1 s fall at the vz clamp, or
+    # roll/pitch > 30 deg (run_navigation.FAULT_*); or a start with no floor under it
+    # ("no_floor", the episode is not run). The first one ends the episode as a failure, so
+    # this is 0 or 1, and `physics_fault` holds that step's time, kinds and numbers.
+    # config["fault_rules"] records the rules a row was judged by: rows without it used the
+    # first ones (x/y jump only, judged one step late, 3.0 m/s on 3 steps), and rows from
+    # the evening of 2026-10-05 whose speed_steps is 30 used a rule that could not fire on
+    # anything but the pump the fix removed. Before any of these existed the run carried on
+    # and recorded the solver's throw as a drive -- 0.5 to 194 km of "path" on 19 rows.
+    # Defaulted, so older runs still load; 0 on them means "not checked", which is why
+    # summarize_runs also bounds their z span and trace steps.
+    physics_faults: int = 0
+    physics_fault: dict = field(default_factory=dict)
+    # Divergences the base FOLLOWED because nothing here was driving when they happened
+    # (KinematicBase.resyncs), and windows in which more physics ran than the drive had
+    # commanded (step_anomalies). Both 0 on a healthy run; a nonzero count is not a fault,
+    # but it says the trace contains motion the drive did not produce. Defaulted: 0 on
+    # older rows means "not recorded".
+    base_resyncs: int = 0
+    base_step_anomalies: int = 0
+    # The contact layer's record of the episode (kinematic_contact.KinematicContact.summary):
+    # steps on which the command pushed into something and was clipped (`blocked_steps`), a
+    # turn into something was refused (`rot_blocked_steps`), or the envelope already
+    # overlapped something (`in_contact_steps`); their union `contact_steps`; the longest
+    # unbroken run of them, `max_run_s`; and `physical_collision`, DynaNav's own collision
+    # metric -- a contact held for >= 100 frames at 30 FPS (3.33 s, benchmark.py:1276-1295).
+    # Never a reason to end the episode: DynaNav does not, and a robot held at a wall is the
+    # robot the recovery exists for. `first_contact` names the prim (an environment mesh,
+    # also for the session colliders scene_colliders.py authors) and the robot box that met
+    # it. None on the bare base (NAV_CONTACT=0) and on every row recorded before 2026-10-06,
+    # which drove through obstacles with no record of it -- None means "not modelled", never
+    # "no contact".
+    contact: dict | None = None
+    # DynaNav's pedestrians (NAV_PEOPLE=1, people_hooks.py): people.PeopleSim.metrics(), incl.
+    # DynaNav's human_collision latch (2-D base origin within 0.2 m of a person root). None =
+    # run without people -- every result before 2026-10-11, and every NAV_PEOPLE=0 run.
+    people: dict | None = None
+    # The guard's slow band (collision_guard.CollisionGuard.slow_stats): mode, how many moving
+    # steps it slowed and how many sat at the 15% floor, plus what the radial rule would have
+    # done on the same samples. The slow band is not an intervention, so before 2026-10-12 a
+    # robot crawling at 15% along a wall left no record at all. None = an older result.
+    guard_slow: dict | None = None
+    # Why the loop stopped before the goal or the timeout: "physics_fault", "no_floor",
+    # "user_stop", or "" for neither.
+    abort_reason: str = ""
+    # Where the robot actually started. The episode's z is DynaNav's Nova Carter spawn
+    # height, 0.14-2.21 m above the terrain outdoors; the runner snaps it to this robot's
+    # rest height on the floor (base_drive.ground_spawn_pose) and records both, the floor
+    # it found and the start it used, so the snap can be audited per run.
+    spawn: dict = field(default_factory=dict)
     # (x, y, yaw_rad). Yaw is in here because position alone cannot distinguish a
     # robot that chose to drive the wrong way from one that never turned at all.
     trace: list[tuple[float, float, float]] = field(default_factory=list)
@@ -283,9 +376,18 @@ class EpisodeResult:
     plans: list[tuple[float, float, float, float, float | None, float, float]] = field(
         default_factory=list
     )
+    # (t_start, t_end, nearest_m, prim) per contiguous stretch the guard held the robot
+    # back. See the runner, where they are collected. Defaulted, so older runs load.
+    guard_spans: list[tuple[float, float, float, str]] = field(default_factory=list)
+    # {"server": /health minus counters, "env": NAV_*/QVLA_* of this process, "git":
+    # short sha}. What `policy`/`controller`/`lidar` cannot say on their own.
+    config: dict = field(default_factory=dict)
 
     def summary(self) -> str:
-        verdict = "SUCCESS" if self.success else ("TIMEOUT" if self.timed_out else "FAILED")
+        verdict = ("SUCCESS" if self.success else
+                   "PHYSICS FAULT" if self.abort_reason == "physics_fault" else
+                   "NO FLOOR" if self.abort_reason == "no_floor" else
+                   "TIMEOUT" if self.timed_out else "FAILED")
         # Closing the gap matters more than the raw final number -- a run that ends
         # 3 m out having started 20 m out did something; one that ends 3 m out having
         # started 3 m out did not.
@@ -298,6 +400,10 @@ class EpisodeResult:
             f"({self.wall_s:.1f} s wall, {self.steps} steps, "
             f"{self.policy_calls} policy calls)\n"
             f"  guard stops      : {self.guard_interventions}"
+            + (f"\n  contact          : {self.contact.get('contact_steps', 0)} steps, longest "
+               f"{self.contact.get('max_run_s', 0.0):.2f} s"
+               + (" (PHYSICAL COLLISION)" if self.contact.get("physical_collision") else "")
+               if self.contact else "")
         )
 
     def save(self, directory: Path | str = RESULTS_DIR) -> Path:

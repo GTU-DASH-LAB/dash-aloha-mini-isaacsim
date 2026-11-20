@@ -448,9 +448,12 @@ that affect the *rest* of this repo:
   scene builder authored its layer, reported success, and applied none of the pipeline
   — no error anywhere. This is why both `rebuild_all.sh` and `build_nav_scene.sh` chain
   separate process invocations instead of looping in Python.
-- **The kinematic base does not collide** (already documented above, but it bites
-  harder here): a teleported body has no contact response and will pass straight
-  through shelving. `nav/sim/collision_guard.py` raycasts instead.
+- **The kinematic base has no contact response of its own; two query layers stand in for
+  it.** A teleported body passes straight through shelving unless something stops it.
+  `nav/sim/collision_guard.py` (ray fan at 0.30 m) slows and stops it ahead of an obstacle;
+  `nav/sim/kinematic_contact.py` sweeps the whole envelope along every step and slides along
+  what it would hit (see "Physics blow-ups: the fix" below). Both see only colliders, which
+  `nav/sim/scene_colliders.py` adds where an environment's assets have none.
 - **That guard's "9/16 bearings at 6.8–12.5 m" was true somewhere and is not reproducible
   at the warehouse start pose — do not use it as a health check.** Re-measured there: the
   nearest walls are 15.68 m (+X), 16.11 m (−X), 16.72 m (+Y), 16.04 m (−Y), so a 16-ray
@@ -474,11 +477,21 @@ that affect the *rest* of this repo:
     "≤1°" is a *bound* and 4500 Hz is a *value*, so 360 points/rev satisfies the first and
     contradicts the second — 450 is the number, and the round one understates the cheaper
     sensor by 25% in the one comparison the entry exists to make.
-  - **Mount at z = 0.30 m, no mast.** Swept 0.20–1.50 m: 0% blind at every height except
-    **0.80 m, which is 21.8% blind in a single 39.6° arc** off the arm bases (`right_base`
-    43 rays, `left_base` 42, `left_link1` 12). Measure the worst *contiguous* arc, not the
-    blind fraction — 20% scattered between the arms is a usable sensor, 20% in one block
-    is a robot that cannot see one whole side.
+  - **Mount at z = 0.30 m, 0.20 m FORWARD of the rotation centre (`NAV_LIDAR_FORWARD`).**
+    The A/B below ran the sensor at (0, 0, 0.30), which is **inside the lift column** —
+    base_link's column fills the centre from 0.12 to 1.084 m and has no collider in the nav
+    stages (its hull sealed over the wheels), so PhysX rays passed through it and "0% blind
+    at every height except 0.80 m" described the colliders, not a mountable robot. The
+    column is now modelled in the SENSOR (`lidar_2d.column_occlusion`, the real
+    base_link.STL sliced at the mount height — not a USD collider, which would be a new
+    floor contact). In-sim at 0.30 m: x=+0.10 → 21.4% blind / 77° arc, +0.15 → 14.2% / 51°,
+    **+0.20 → 10.6% / 38° dead astern**, +0.25 → 8.4% / 30°; x=0 → 100%. Above the deck
+    other bands blind too at lift 0 (vertical_link 0.59–0.75 m, arm bases + both link1s
+    0.75–0.85 m — the old per-prim list missed `right_link1`, 13 rays — arm links
+    0.87–0.90 m), and they rise with the lift by up to 0.60 m. Results are labelled
+    `c1@0.30+0.20`; `c1@0.30` means the old, impossible centred mount. Measure the worst
+    *contiguous* arc, not the blind fraction — 20% scattered between the arms is a usable
+    sensor, 20% in one block is a robot that cannot see one whole side.
   - **Two gates, both negative for the policy.** `gate_lidar_opening.py` replays the 13
     failed reference runs and asks whether the turn was geometrically available: it was
     (open toward the goal 55% hospital / 83% warehouse), but openness does not *prefer*
@@ -1403,11 +1416,34 @@ that affect the *rest* of this repo:
     guard counts events rather than episodes, cannot be gamed by stopping early, and is
     downstream of the model's choices — it is where a 19-episode ladder has thousands of
     samples instead of nineteen.
-  - **Physics blow-ups are a VERTICAL divergence and the rate is model-dependent.** Five
-    of the candidate's 19 rows record 17–194 km of "path"; `base_z_span_m` on them is
-    11.7 km to 972 km against 0.003–0.03 m on every clean row. Against 1 in 57 across
-    three 27 B ladders. Not steering — the kinematic base's known z drift — but something
-    about driving into more geometry raises how often it triggers.
+  - **Physics blow-ups: ROOT-CAUSED 2026-10-05 (bit-exact repro of `outdoor_umbrellas`).**
+    Five of the 4 B's 19 rows record 17–194 km of "path". `base_z_span_m` on them is
+    11.7 km to 972 km, against 0.003–0.03 m on every clean row. The cause is not the
+    model; it is two things together:
+    (1) **Trigger.** DynaNav's start z is the Nova Carter's. Outdoor starts sit 0.14–2.21 m
+    above the terrain, so the robot falls during boot. `reset_to()` wrote only the pose, so
+    it kept that velocity. Measured at reset: 0.86 m/s and 2.6 rad/s. It fell again, landed
+    tilted (pitch 60°, roll 42°) and left the ground at 8.9 rad/s. Indoor starts sit 2 mm
+    above rest, which is why indoor never showed it.
+    (2) **Mechanism.** `KinematicBase.apply()` forced the orientation level and never wrote
+    root velocity, and it returned early on a zero command. Forced-level orientation plus
+    a never-zeroed spin acts as a pump: +12 m/s² beyond gravity once airborne, z = 26 m by
+    7.5 s. When the sim moves the robot more than `RESYNC_TOLERANCE_M` (0.25 m) in one step,
+    i.e. 15 m/s, the resync hands x/y to the sim. That is the km "flight".
+    Zeroing root velocity after each teleport stops it: z span 0.058 m on the exact blown
+    state. Zeroing velocities at reset_to alone also stops it: 0.040 m.
+    **Why the rate jumped on 09-10, 4/35 before and 12/18 after:** the first outdoor build
+    (09-01) segfaulted (exit 139) after step 1 had already saved the layer.
+    `build_nav_scene.sh`'s `set -e` skipped configure_physics, fix_wheel_collision and
+    add_cameras, and `bench.sh` then treated that 1.1 KB stub as a cached stage. So every
+    outdoor number before 09-10 is from a DIFFERENT robot: hull collider on, mesh wheels,
+    no drives, no cameras (the pre-09-10 outdoor videos have no chase view). The 09-10
+    rebuild was the first complete build. **A failed build must never leave a stage that
+    looks valid.** Also measured: PhysX's `gpuFoundLostAggregatePairsCapacity` is 1024
+    against up to 4385 needed at teleports, so it was missing interactions in every scene.
+    `score()` missed a real blow-up (`20260905-013046_outdoor_upsway`, z span 414 m).
+    **Fixed** — see "Physics blow-ups: the fix" below. Outdoor rows are not
+    comparable across 09-10, nor across that fix.
   - **An arm is a MODEL and a sensor.** A ladder run with a different VLM and `NAV_LIDAR=0`
     writes `lidar: "fan"` exactly like every 27 B run, so `compare_lidar_arms.py` silently
     re-captioned "4 B without lidar vs 27 B with lidar" as a sensor comparison. It now
@@ -1420,6 +1456,669 @@ that affect the *rest* of this repo:
     ladders finish.** The recorded fan baseline is the ladder `20260904-232005 ..
     20260905-022414` — 10/19, indoor 9/13, outdoor 1/6, guard 1369, all four matching
     `baseline.yaml`. Identify a ladder by its window, not by asking a tool for the latest.
+    **Since 2026-10-04 it does:** `EpisodeResult.config` carries the server's `/health`
+    (minus counters), every `NAV_*`/`QVLA_*` variable and the git sha (+dirty).
+
+### P1 fixes and audits (2026-10-04) — every number before this date predates them
+
+- **The pursuit controllers' heading filter could lock at ±2π and spin the robot.** The
+  error was wrapped but the filtered STATE was not, and a reframed STOP plan sits behind
+  the robot (yaw error ≈ ±π), so repeated STOPs walked the state past π and it settled
+  at 2π with ω pinned at the 1.2 rad/s cap while the plan said "straight". Replayed over
+  401 recorded runs: **43 (10.7%) crossed**, every one of the 18 episodes in at least one
+  run, and a crossing is followed by a full recorded turn within 20 s in 81% of cases vs
+  4.6% without. Fixed in `controllers.py` (`filter_angle` wraps the state; a plan whose
+  total path is < 2 cm returns a zero command without touching the filter).
+  `nav/tools/check_controller_wrap.py`, 100 assertions, mutation-tested.
+- **A re-served arc was turned twice.** `client.py` never sent `yaw_delta_rad`, so the
+  server translated a cached plan into the current frame but never rotated it; closed
+  loop that is **1.94–2.03× the chosen yaw** at the operating speed. Now sent.
+- **…and on ~1 call per generation it was reframed against the WRONG generation.** In
+  async mode the runner picks its anchor before the call (`gen_starts[0]`), but on the
+  call that picks up a just-finished plan the server serves THAT plan; logged
+  `time_delay` cycled 2.0/2.5/3.0 where the truth was 1.5/2.0/2.5, i.e. 1.5 s of plan
+  discarded every third decision, plus the P1 rotation about the wrong anchor. Only the
+  server knows which plan it serves, so the runner now sends `pose_world` + `sim_time`
+  and the server reframes against the plan's own spawn pose; `/health.anchor_fixes`
+  counts the corrections and `plans[*][6]` logs the server's own age.
+  `nav/tools/check_reserve_rotation.py` models all three protocols.
+- **The arc menu drew every arc as if the lens were at the rotation centre.** camera_nav
+  is 0.25 m ahead of base_link and 0.354 m above the floor; `arc_menu.project` used x as
+  depth at 0.346 m, so each drawn point sat 0.27/0.29/0.32 m further down the floor than
+  the driven path at 1/2/3 m (120 px too high at 1 m straight ahead) and curved arcs read
+  0.8–4° straighter. `QVLA_MENU_GEOM=legacy|mounted` (default `legacy`, so old probes and
+  videos reproduce bit for bit); `/health.menu_geom` and every `decisions.jsonl` row
+  record it, and `make_run_video.py` redraws with the run's own geometry. **The paper's
+  Eq. (proj) is the legacy projection** — every reported number was measured with it, so
+  keep the equation and state its assumption rather than "correcting" it.
+- **A /predict may carry the camera its frame was taken with (2026-10-06, for the G1).**
+  `camera` = intrinsics (fx[,fy,cx,cy] or hfov_deg, + the width/height they refer to),
+  mount (cam_h, cam_x, cam_y) and the LIVE pitch/roll/yaw in `camera_geometry.py`'s
+  convention, so `client.camera_from_spec(spec, G1Locomotion.camera_pose(spec)["menu_args"],
+  arcs=[-0.35,-0.15,0,0.15,0.35])` is the whole integration. Arc subset and
+  `min_visible_m` are FILTERS like the lidar's (labels never renumbered, STOP keeps its
+  number); keys are closed (a typo is a 422, never a level menu). No camera = the old code
+  path, proven by re-rendering 512 recorded decisions from raw frames byte-identical, and
+  the prompts are unchanged unless the camera sets `prompt: true`
+  (`nav/tools/check_menu_camera.py`, run with ~/envs/qvla/bin/python). Rows record
+  `camera` + `visible_m`; `/health.menu_camera`. Gotchas: g1's pixel test found the frame
+  shows the pose of the update BEFORE the grab, so read `camera_pose()` before the
+  `kit.update()` that renders it; and the real 47.6° mount sees floor only to ~1.9 m, so
+  3 m arcs leave the top of the frame and all seven badges pile up there — that mount
+  needs shorter arcs, not just the right projection.
+- **The `fine` arc set's comment said its labels never collide; two pairs do** (115 px
+  apart against the 138 px disc actually drawn; 75 px under `mounted`). `coarse`, the
+  shipping set, is clear under both (219 / 240 px).
+- **Lidar buffer was never reset per episode** — decision 0 of every bench episode went
+  out unfiltered (empty buffer), and in UI sessions the previous episode's world points
+  were re-expressed around the new start. `SweepingLidar2D.reset()` + `prime()`.
+- **`arc_clearance` zeroed the whole menu for any return within 0.35 m, even behind**, and
+  `drivable` then kept index 0 — the hardest RIGHT turn, into a wall on the right. Now a
+  point only blocks an arc that brings the chassis closer than the current nearest
+  return, and ties go to the straightest arc; identical whenever nothing is within 0.37 m.
+- **Menus moved from /tmp/qvla-menus to `nav/results/menus/` (gitignored as a directory,
+  because `!*.jpg` would otherwise un-ignore ~5000 frames per ladder).** Every reader
+  now defaults there.
+- **`nav/tools/profile.py` shadows the stdlib `profile` module, and Kit's warp imports
+  it** — any Isaac script run from `nav/tools/` failed to load omni.warp.core. The six
+  Isaac tools there now drop their own directory from `sys.path` first.
+- **`check_qvla_direct.py` failed at 4.04 m since the 10 s horizon, and it was the
+  generator, not densify.** Its constant-curvature arcs turned up to 6.9 rad over 10 s;
+  the parser's forward-only clamp cannot represent >90°. It now draws the total turn
+  (±75°), and synthetic arcs get a 0.03 m gate (a correct pipeline is at 0.008 m; the old
+  0.25 m let a 0.1 s time-base shift through at 0.12 m).
+- **The exact server anchor is the right geometry but a marginal loop at long pick-up
+  periods.** In `check_reserve_rotation.py`'s same-arc-forever replay it is exact to
+  1e-15 m on every call, while the P1 client anchor drops 10/15/25 waypoints on every
+  pick-up call. But at P ≥ 2.5 s pursuit oscillates laterally on a plan 2.5–5 s old,
+  and the error grows ~1.5× per generation (peak 0.93 m by 20 m). Over 30 m the yaw ratio
+  is 0.71–0.81× against 0.99–1.00× for the inexact client. This is delayed feedback:
+  tracking a stale reference exactly. The gate window is 20 m for that reason. The
+  logged median pick-up period is 1.0 s, with ~9% ≥ 2.5 s, so watch the guard column
+  and lateral wobble in the first ladders on the new protocol before blaming the model.
+- **Age-to-index uses `ceil(round(age / DT, 9))`.** The server's age is the difference of
+  two float sim times. On calls off the 0.5 s grid (after a pivot or an in-place turn) a
+  bare `ceil` cut one waypoint late at exact multiples of DT: 1511 of 3600 in a sweep,
+  now 0.
+
+- **First ladders on the P1 stack (2026-10-05), same profile as the 10/19 baseline:**
+  `p1_legacy` scored 9/19 (indoor 7/13) and `p1_mounted` 11/19 (indoor 10/13, the best
+  indoor count on record), with 0 parse and 0 gen errors over 8894 calls. The windows are
+  tagged `QVLA_RUN_TAG=medium_p1_legacy` / `medium_p1_mounted` in each result's
+  `config.env`. The flips against the baseline are all on episodes whose history holds
+  both outcomes: `forward_staircase` passed 6/27, `past_wheelchairs` 16/28,
+  `exit_room` 8/27. So there is no visible P1 regression, and `mounted` is not worse.
+  Repeat once before making it the default. Guard totals (1369 → 2466 / 2513) are
+  dominated by single episodes (`exit_room` 1055, `warehouse_aisle6` 1574). The
+  outdoor half is void, because of the blow-up entry above.
+
+### P2 (lidar-latched target) — NO-GO on its own gates, written before measuring
+
+P2 was a proposed fix for "arrives and then leaves". The describe call names a ruler
+column, the camera bearing is ranged by the lidar, two agreeing sightings latch a world
+point, and the robot stops on geometry. The data is 38 runs (both arms of the Sept lidar
+A/B), replayed offline (`replay_lidar_trace.py`, 500 beams at the recorded poses).
+- **G-a, geometry:** 77 in-view poses ≤ 8 m from the goal. The lidar ray along the goal
+  bearing reaches the goal region on only **29 (38%)**: 17 pass beyond it, 11 are
+  occluded, 20 get no return. Outdoor gives 0/7. The goal is a point on the floor
+  defined *relative to* a landmark ("past the wheelchairs"), not a surface the lidar can
+  hit.
+- **G-b, perception (`probe_target_bearing.py`, 432 answers):** the model sees and points
+  well. In view ≤ 8 m, visible 82%, median error 8.2° (strip) / 7.8° (grid). With line
+  of sight, visible 93% and median 6.0°. On controls it reports visible only 10% / 8%. It
+  fails on gross errors alone, **24% > 20°**: 11 of the 15 are non-LOS frames in
+  `office_hallway_turn(2)` and `hospital_forward_staircase`, where it points at the
+  opening instead of the hidden goal.
+- **G-c, closed form (`oracle_target_latch.py`):** rescues **2/18** failures (strip and
+  grid). With the TRUE bearing and perfect visibility, an upper bound, it rescues
+  **4/18**; the gate needs 6. False latches > 2 m on successful runs: 4/20 strip, 1/20
+  grid, and **6/20 with truth**. The truth bearing does worse because it rides past an
+  off-surface goal into the wall behind it: `past_wheelchairs` latches 7.17 m off with
+  truth and 0.79 m off with the model, which points at the wheelchairs. The rescues are
+  near-misses the robot had already reached: both runs (`vending_machine` fan arm,
+  `down_hallway2` lidar arm) closed to 1.89 m against a 1.5 m threshold.
+- **Why it cannot be tuned past the gate:** even with truth bearings, 12 of the 18
+  failures never latch. 8 of them (all outdoor or warehouse) have no sampled in-view
+  frame the lidar can range, so perception is not the binding constraint. The latch targets the landmark, and these benchmarks score a point near
+  it. Do not revisit P2 by improving the bearing; the upper bound already fails.
+
+### Physics blow-ups: the fix (2026-10-05; contact layer and scene colliders 2026-10-06)
+
+The cause is the root-cause entry above. The fix is general, not per-scene:
+
+- **Pose and velocity are written together, always, and a held robot is pinned too**
+  (`base_drive.KinematicBase`). `apply()` pins the START of the step to the integrated pose
+  (level, current yaw) and writes the root velocity PhysX integrates across it: commanded
+  planar, the vz below, angular `(0, 0, omega)`. A zero command takes the same path with zero
+  velocity. It used to return early, so a spin was never stopped; then for a while it wrote
+  the zero velocity WITHOUT pinning x/y, so a held robot crept until the jump test read the
+  accumulated creep as one step's throw (fake Kit: 1.2 mm/step faulted at 3.5 s with |v| = 0).
+  `reset_to()` zeroes root and joint velocities. On the bit-exact blown state, z span went
+  276 m → 0.058 m. `control_terminal.py` drives through the same class in RELEASED mode
+  (`hold_when_stopped=False`): one zero write on `stop`, then the physics owns the base, so
+  arm/lift commands with the base stopped still converge.
+- **vz = the sim's own vz clamped to [−2, +0.3] m/s, chosen by measurement over vz = 0.**
+  On route terrain the two match to the millimetre (four outdoor lines at 1.5 m/s: z span
+  within 2 mm, speed 1.500–1.503 m/s). They differ only when the robot is off its floor.
+  With vz = 0 it can descend at most g·dt = 0.16 m/s: 0.64 m above upsway's floor it hovered
+  ~4 s (gap p95 0.57 m). The clamp lands it in ~0.3 s (gap p95 9 mm).
+- **Spawn snap samples each tyre's FOOTPRINT, with iterated `raycast_closest`**
+  (`ground_spawn_pose`). Per tyre: the centre plus 4 rings (0.25/0.5/0.75/0.9 r) × 8 bearings,
+  each a downward ray from episode z + 0.30 m, re-cast 1 mm past every hit that is the
+  robot, a steep face (normal_z < 0.7) or an initial overlap (distance < 1 mm: the ray
+  started INSIDE a solid, which PhysX reports as a hit at the origin with the shape's normal;
+  taken as a floor it once spawned the robot 0.31 m up inside a box). A sample at horizontal
+  distance d with top z puts the r = 0.05 sphere's centre at z + √(r² − d²); the tyre's floor
+  is the max over its samples, the robot spawns at the highest tyre + rest + 3 mm. Why the
+  footprint: office_e41–45's tyre 1 sits 6 mm past a 5 mm door sill the centre ray misses
+  (1.035° start tilt). Never `raycast_all`: it segfaults Kit on the outdoor stage (exit 139,
+  3 of 3) on rays `raycast_closest` answers. Umbrellas 6.85 → 5.874; hospital 0.010 → 0.011.
+  Real Kit, robot parked first, all 88 indoor starts (hospital 32, office 29,
+  warehouse 27): snapped z 0.0108–0.0109 on every flat start, 0 robot hits; office_e41–45's
+  tyre 1 reads the sill at 3.4 mm (its centre ray 0.0) and the robot comes to rest at z 0.0124,
+  tilt 0.08° (1.035° with the centre-ray snap and the free settle). Outdoors, all 16 starts
+  (outdoor_e51–e60 + the six ladder episodes, 7 distinct poses): drops of 0.118–2.183 m
+  removed, 0 robot hits, 0 initial overlaps, tyre floors 3–35 mm apart (pillars the 35),
+  0 PhysX errors (own Kit run, 2026-10-06; route_drive outdoor_small_A/B agree).
+- **The robot is lifted out of its own probe first** (`KinematicBase.park_for_probe`: +50 m,
+  velocity zeroed, one Kit update so PhysX's scene query sees it gone; called inside
+  `run_navigation._spawn_pose`, so `validate_episodes` and `route_drive` get it too).
+  `raycast_closest` cannot skip the robot, and a resting tyre is tangent to the floor exactly
+  where the probe samples, so stepping out of the tyre lands under the floor's top. Measured
+  BEFORE the park on the 19 of 32 hospital starts the robot was already standing on (shared starts,
+  the stage's authored pose — and every UI or route_drive repeat): the centre rays found
+  nothing (ground plane) or a floor 2.78 m down, and the robot spawned 17 mm into the floor.
+  The held settle lifted it back to rest in 11 steps, which is why nothing faulted and
+  nobody noticed. After: 0 robot hits on all 88 indoor starts. `spawn.robot_hits` records it
+  (the runner warns when it is not 0), and the probe also searches the step that leaves any
+  solid (bisection into a solid, a both-sided look back up into free space): that fixes
+  one-sided and slab floors, not a ground plane under a tangent tyre, hence the park.
+  `check_guard_scan.py` and `replay_lidar_trace.py` park before their own probes too.
+- **The start is HELD until it is at rest, capped** (`KinematicBase.settle`,
+  `run_navigation.SETTLE_STEPS = 120` is the cap, not a count). At rest = tilt ≤ 1°,
+  |v| ≤ 0.25 m/s, |dz| ≤ 1 mm for 10 consecutive steps, after at least 10. A held body reads
+  the solver's per-step response (0.03–0.075 m/s flat, 0.14 on pillars' 6.7° slope), one step
+  of free fall reads 0.16 and two 0.33. The old fixed 30 FREE steps left pillars rolled 14°
+  and still rocking, and longer free settles tip it over by step ~120 (scene/outdoor_small
+  probe2). The record goes into `EpisodeResult.spawn["settle"]`; a start with no floor is
+  not settled and not run (`abort_reason = "no_floor"`). Measured: 11 held steps, the earliest
+  it can stop, on all 88 indoor starts, then 120 more held steps with 0 faults and at most
+  0.3 mm of drift. Outdoors the same 11 steps on all 16 starts, final tilt ≤ 0.099°
+  (worst during the settle 0.203°, pillars), then 120 held steps with 0 faults and ≤ 0.47 mm
+  of drift. A UI session holds the base the same way while idle (`NavigationRunner.idle`;
+  it used to step Kit with the base free). Real runner on outdoor_e53 after a Reset: held,
+  300 idle steps at tilt 0.096°, 0 mm drift, 0 faults; free, 14.7° at step 30, upside down
+  (177°) at 120, lying on its side (78.8°) from 180 on. A Reset over a start with no floor
+  no longer settles (it fell for the whole cap) and says so; `run_episode` then ends in
+  0.3 s with `no_floor`, 0 steps, 0 policy calls.
+- **Jumps are judged on every PHYSICS step, as it happens.** `apply()` opens a window ("for
+  the next dt of physics, from this pinned start, at this velocity"); a post-step callback
+  (`subscribe_physics_on_step_events(fn, False, 0)`) checks each physics step in it against
+  `xy0 + v·elapsed` — v being the velocity the base WROTE, i.e. after the contact layer
+  clipped the step, so a clipped step is never a jump — and against a 0.15 m z change per
+  step (the jump test used to be planar only). The runner calls `check_step()` right after
+  `kit.update()`, BEFORE anything
+  reads the pose, so a throw never enters path, trace, z span or the success check (it used
+  to be judged one step late, in the next `apply()`, after all four had taken the thrown
+  pose), and the result's final pose is the last healthy one. A move the drive did not
+  command (no open window: idle, `stop()`, a caller stepping Kit) is followed as a
+  `resync`; a window whose physics time differs from its dt is counted in
+  `base_step_anomalies` but still judged (G1 work runs 3.33 steps per update). Without a
+  post-step stream each window is judged at its end. Real Kit, hospital: a 0.5 m throw → `jump` on physics
+  step 1; a throw undone inside a 3-step window → `jump` on physics step 2, where the
+  end-of-window error was only 0.040 m (an end-of-update check passes it); a +0.30 m pop →
+  `z_jump`; two updates per `apply()` → 1 anomaly, no fault; a teleport after `stop()` →
+  1 resync. Scripted 10 s drives at 0.45 / 1.5 m/s and a 0.6 rad/s turn: 0 faults, resyncs
+  or anomalies, distance ratio 0.999–1.000, yaw 0.998, per-step speed p05–p95 1.499–1.501 at
+  1.5 (the indoor report's 0.71–2.29 wobble is gone).
+- **The runner ends the episode on a fault**, `abort_reason = "physics_fault"`: a jump or
+  z_jump; |v| > `fault_speed_mps(cap)` = hypot(cap, 2 + g·dt) + 0.4 (3.033 m/s at 1.5, the
+  fastest a healthy step can read plus margin, derived from the cap rather than copied) on
+  **1 step with the contact layer attached, 3 consecutive steps on the bare base**
+  (`runner.fault_speed_steps`); vz below the −2 m/s clamp for 60 steps (`fall`: > 2.2 m of
+  drop, the steepest real descent is 1.26 m); roll/pitch > 30°. The two persistences say the
+  same thing about different drives. With contact, a step the layer clipped is not a fault
+  of any kind (it is judged against the clipped velocity), and a spike means the solver
+  pushed the body — what contact exists to prevent: every contact-ON run on record reads
+  ≤ 2.63 m/s = hypot(1.5, 2 + g·dt), a clamped fall off a ramp's end, and none exceeds 3.03
+  (contact:design's calibration, and again on the integrated code below). On the bare base
+  isolated depenetration kicks are expected, so persistence was measured there (64
+  fixed-base per-step replays, scratch `physfix/faults/spike_rules.txt`): isolated spikes
+  never last more than 2 steps (island kerb 12.0 m/s × 1 and 11.2 × 2, office barrier
+  4.5–4.8 × ≤ 2 on a run that SUCCEEDED, chair 11.0 × ≤ 2), real wedges persist (stairs
+  14.9 × 4, desk 9.0 × 5, a hallway2 contact 15.5 × 16, the policy run's upsway_far kerb
+  wedge 3.10 × 3). The bare rule still misses the chair climb — integrated harness, bare,
+  `hospital_down_hallway` [28:46]: 20 steps over 3 m/s, longest run 2, 0 faults, the arms
+  273 steps in the chair; with contact the same commands are clipped at the chair (319
+  steps) with 0 steps over 3 m/s. `EpisodeResult.config.fault_rules` records the thresholds,
+  `speed_steps`, the contact parameters and whether jumps were judged per physics step;
+  rows with `speed_steps: 30` were judged by a rule that could not fire. Bare base, real Kit
+  (`probe_obstacles`): driven into a 9 m pillar the run ends on `speed` at 0.35 s; driven
+  through a table across the column (0.55–0.85 m, above the guard) nothing fires and the
+  base passes through it, lifted 0.24 m. With contact both stop 2 cm short of the obstacle
+  (synthetic wall and 0.70 m slab: 0.567 m of a 0.80 m approach, 0 faults).
+- **`summarize_runs` flags `blown_up`** on `physics_faults > 0`, a z span over 5.0 m outdoors
+  / 0.5 m indoors, a trace step over 1.5 × cap × 0.5 s, or the old path test; `blown_why`
+  says which. Over 463 rows: 63 flagged, including the four pre-rebuild outdoor runs the z
+  bound let through (library 4.50 m, umbrellas 3.12, pillars 2.59, upsway 4.03 per 0.5 s).
+  `--oneline` keeps the runner's SUCCESS/FAIL and appends `[PHYSICS: ...]`. A blown row is
+  never credited a success from its trace's closest approach (that point is on the throw);
+  only the runner's own latched verdict counts there.
+- **`gpuFoundLostAggregatePairsCapacity` 1024 → 16384** is set in the session layer before
+  play (`physics_setup.raise_gpu_capacities`, every `UsdPhysics.Scene` in the top 3 levels).
+  It produced zero overflow errors over a 44-min outdoor session. At 1024, teleports needed
+  up to 4385. Called by the runner (so also by `validate_episodes`, which runs
+  `NavigationRunner.setup()` — its logs show the raise), `control_terminal`, `verify_physics`,
+  `capture/view_cameras`, `check_lidar_2d`, `check_guard_scan`, `replay_lidar_trace`,
+  `route_drive`, `try_people` and the G1 tools.
+- **`build_nav_scene.sh` publishes only a complete stage.** It builds a hidden
+  `.nav_<env>.build-<pid>.usda` and `mv`s it only if every step printed its
+  `PIPELINE_STEP_OK <step>` sentinel AND `check_nav_stage.py` finds every step's artefacts
+  in the file (drives, shell collider disabled, wheel spheres, cameras). Kit exits 0 after an
+  uncaught exception, so the exit status alone cannot be trusted; the steps also
+  `os._exit(1)` on a missing robot prim instead of warning. Verified in real Kit into a
+  scratch `NAV_SCENE_OUT`: a broken robot reference before configure_physics exits 1 ("17
+  expected robot prim(s) missing -- NOT saved"); before add_cameras the step dies on a
+  RuntimeError and exits 0 without its sentinel; both leave the previous file byte-identical.
+  A clean build matches the committed `nav_hospital.usda` except one render setting
+  (`omni:rtx:realtime:mgpu:tileCount = 2`, written only by multi-GPU Kit).
+- **All 85 DynaNav episodes run through the normal path: `NAV_EPISODES_CONFIG=episodes_full.yaml
+  nav/bench.sh --only hospital_e01,...`** (absolute or relative to `nav/config/`).
+  `episode.CONFIG_PATH` honours the variable, so `run_navigation --episode`, `resolve_env`, the
+  UI and bench.sh all read the same table, and `run_config()` records it in every result.
+  Before it, nothing that defaulted to `episodes.yaml` could load `hospital_e01` at all.
+  Two traps this closed: (1) bench.sh REBUILT a stage, in place over the committed
+  `nav_<env>.usda`, whenever the episode table was newer than it — `episodes_full.yaml`
+  (10-05) is newer than all four stages (09-10), so the first full-table run would have
+  re-authored every one. It now builds only a MISSING stage (or on `NAV_REBUILD_STAGES=1`); a
+  newer table does not make a per-environment stage stale. (2) `summarize_runs` read only
+  `episodes.yaml`, so an `outdoor_e5x` row had no spec: judged against the INDOOR 0.5 m z-span
+  bound and the default arrival radius. It now scores every row against every table
+  (`episode.all_episode_specs`, each spec with its own table's defaults); 0 of the 463 rows on
+  disk change, because none is from the full table yet.
+- **Every headless AlohaMini Kit pins GPU0 with `alohamini1_specs.KIT_GPU0`** (`active_gpu`
+  0, `physics_gpu` 0, `multi_gpu` False), as the runner already did. With Kit's default
+  multi-GPU the RTX renderer runs a CUDA peer-to-peer test across both cards at startup on
+  this IOMMU machine; with the policy server filling GPU1 that test runs out of memory and
+  Kit opens a zenity "Failed to create any GPU devices" dialog and BLOCKS on it — a headless
+  build step that never exits (2026-10-05). Of the 30 newest Kit logs, the 3 multi-GPU ones
+  ran the test and the 27 pinned ones did not. Every Kit entry point in `scripts/` and
+  `nav/` that loads a stage now passes these three keys (`people.py` and `scripts/tools/*`
+  aside).
+- **The base has a contact response: `kinematic_contact.py`, attached in
+  `NavigationRunner.setup()`** (`NAV_CONTACT=0` drives the bare base, for A/B runs). Before
+  each teleport every box of the robot's envelope — deck + tyre spheres from 4.5 cm
+  (`MAX_STEP_M`) above the floor, lift column, carriage, both arms, read off the robot's own
+  meshes at the current joint state — is swept along the step (`sweep_box_all`). A hit stops
+  it 2 cm short (`SKIN_M`) and the rest of the motion loses its component into each blocker,
+  so it slides along a wall; a turn that would bring something into a 1 cm shell is refused.
+  It only edits the displacement `KinematicBase.apply()` integrates (the `motion_filter`
+  seam in `_resolve_motion`, which hands it `start = (x, y, yaw, z)`), so in free space the
+  base is the bare base exactly, and every invariant above (pose + velocity written
+  together, integrated x/y, the per-physics-step judge) is untouched. `run_episode()` and
+  `perform_reset()` call `contact.reset_episode()` after the held settle (link poses as the
+  reset left them, metric zeroed, clearance cache dropped). `EpisodeResult.contact` records
+  clipped / refused steps, the first contact (prim named by the environment mesh, not the
+  session collider), spans, and DynaNav's `physical_collision`: a contact held ≥ 3.33 s
+  (DynaNav: ≥ 10 N on the chassis for 100 frames at 30 fps; here 200 steps at 60 Hz).
+  `summarize_runs` prints it (`cont`, `coll`). Nothing ends an episode on it, as DynaNav
+  does not. `stuck_recovery` treats a contact pressed for `STALL_WINDOW_S` as wedge evidence
+  (`recoveries_by_contact`): a robot held by its ARMS at a stair soffit or desk reads clear
+  at the guard's 0.30 m and used to wait 5 s for a balk instead of reversing after 3 s.
+  `control_terminal.py` attaches the same layer (`--no-contact`); `validate_episodes` and
+  `route_drive` get it through the runner and reset and grade it per drive.
+  `check_guard_scan.py` still drives the bare base (two guards on one fan-steered
+  trajectory). Integrated code, 2026-10-06 (boot through `setup()`, contact:design's
+  harness, scratch `physfix/integrate/`): on hospital's synthetic course all 61 contact-ON
+  cases (steps 1–15 cm, ramps 5–20°, wall, 45° slide, approach + reverse, slabs at 0.70 and
+  0.85 m, a stair soffit, a chair, a 45° kerb, turning against a wall, doorways 0.45–0.60 m)
+  reproduce contact:design's numbers to ≤ 6 mm of displacement, with 0 runner faults, 0
+  steps over 3 m/s, 0 arm contacts and 0 penetrations > 2 mm. Steps ≤ 4.5 cm and every ramp
+  ≤ 20° pass; 5.5 cm and up stop 2 cm short; a 0.52 m doorway passes, 0.50 m does not.
+  Straight / turn speed test, identical with and without it: 0.45 m/s × 6 s → 2.695 m
+  (0.998), 1.5 m/s → 8.995 m (0.9995), 0.6 rad/s × 10 s → 343.77° (6.000 rad), 0.8 m/s + 0.4
+  rad/s × 8 s → 183.35° and a 3.997 m chord; 29.3 → 29.5 ms per step (the layer costs
+  0.06–0.2 ms a step in free space, ≤ 1.0 ms while blocked). Recorded runs' commands
+  replayed on hospital, office and warehouse (14 contact-ON replays): the 9 that touch
+  nothing end where the recording did (≤ 8 mm) with 0 contact steps; the 5 that hit
+  something — the staircase underside at arm height, a chair, a wheelchair, an office
+  barrier, warehouse_aisle6's wet-floor sign and crates — are clipped 288–726 steps (4 of
+  them long enough to be a DynaNav physical collision), with 0 runner faults, 0 steps over 3
+  m/s, 0 arm contacts and 0 penetrations > 2 mm across all 14. The same commands on the bare
+  base (same process, contact detached): 306–681 penetration steps up to 6 cm in each of
+  those 5 (266–337 of them arm contacts at the furniture; in the warehouse the tyres),
+  single steps to 3.8–30 m/s, and the 3-step rule faults only the staircase (2 faults) — it
+  misses the chair, the wheelchair, the barrier and the warehouse props. Outdoors, with the
+  1300 session colliders in place (6 contact-ON replays): pillars and umbrellas end within 1
+  cm of their recordings with 0 contacts; the three island-kerb windows are held at
+  `isl_curb` pieces (105–399 steps), 0 steps over 3 m/s, where the bare base climbs onto or
+  into the island (single steps to 3.8–10.5 m/s, never 3 in a row, so no fault; 68–423
+  penetration steps). And `outdoor_ramp_fountain`'s recorded route turns out to pass through
+  two patio umbrellas, copied colliders now: the replay brushes one's pole with the column
+  at t = 18.35 s and is held at the other's base from 23.1 s to the end (2202 steps), with 5
+  steps of the deck box 4.5–7.0 mm into it — the only penetration > 2 mm in all 81
+  contact-ON runs (vertical motion is not swept; contact:design saw 9.1 mm off a kerb top on
+  the same route). Totals over the 81: 0 runner faults, 0 steps over 3 m/s, max |v| 2.63 m/s
+  (a ramp end), 0 arm contacts, 0 PhysX errors. Pushable bodies: none on hospital, office or
+  warehouse; outdoor_small has one dynamic articulation, a Spot
+  (`/World/Environment/Robots/Spot`, at x ≈ 80, outside every episode's region), which the
+  layer would treat as a wall. Results before 2026-10-06 have `contact = None` (`-` in the
+  tables); a run that touched anything is not comparable across this change.
+- **Environment geometry with no collider gets one, in the session layer, before play**
+  (`scene_colliders.py`, called from `NavigationRunner.setup()`; `NAV_SCENE_COLLIDERS=0`
+  skips it; `EpisodeResult.config["scene_colliders"]` records what was added). Every sense
+  here — guard, lidar, arc-menu clearance, contact layer — is a PhysX scene query and sees
+  only colliders, and outdoor_small's authors gave almost nothing one (0 of 5590 vehicle
+  gprims, 11 of 24733 props), so outdoors the robot drove through buildings and the guard
+  measured only kerbs. Detection is per ASSET (nearest instance/referenced ancestor below
+  `/World/Environment`): an asset with any collider was decided by its author and is left
+  alone; in one with none, every visible non-guide Mesh is copied as world-space triangles,
+  clipped to the band, into an invisible exact triangle-mesh collider under
+  `/World/SessionColliders`. Nothing knows which stage is outdoors. Region: the box of every
+  start and goal of that environment in EVERY episode table, + 20 m; band: start z −4.0 to
+  +2.5 m. Skipped: floor coverings (every mesh of the asset within 2 cm of one walkable
+  best-fit plane, i.e. thinner than 4 cm, below anything a sense here can see — a z-extent
+  rule copied office's 15 carpet runners and 698 more outdoor meshes — Botts' dots and other
+  floor-level pieces, the thickest 0.0085 m off its plane), and skinned characters (a
+  UsdSkel probe: their points ARE the rest T-pose, 40/40 meshes within 4e-5 m of the skinned
+  points, arms spread 1.75 m; people are `people.py`'s job). Never deleted (an Articulation
+  drops its physics view on any prim deletion), never saved. Measured 2026-10-06: hospital,
+  office and warehouse author nothing (2036/2059, 3646/3786, 3473/3474 gprims already
+  collide; 133 of office's 139 collider-less assets are floor coverings, the rest characters
+  or outside the band); outdoor_small authors 1300 meshes / 1.84 M faces from 148 assets
+  (vehicles, plaza buildings, benches, lamp posts) in 6.2 s. Boot 47.8 → 61.0 s, held 96.6 →
+  100.2 ms per update (mean over the 7 distinct starts), GPU0 unchanged within noise, 0
+  PhysX errors, no start overlaps a new collider; at those starts a horizontal ray ring went
+  from 0 hits to lamp posts, benches and buildings 2.2–8.2 m away. Two road-marking assets
+  are still copied (their meshes follow the road crown, 2.6/3.0 cm off one plane):
+  upward-facing, so the contact layer reads them as floor. **Parity**: DynaNav's own
+  `physical_collision` cannot fire on a collider-less prop, so outdoors our collision metric
+  is stricter than theirs.
+
+Measured 2026-10-05, before the contact layer: the full 150 s umbrellas command replay held
+a 0.317 m z span over 67 m with 0 faults. Under the policy, `outdoor_umbrellas` passed (14.5
+m path, z span 0.19 m, 0 faults); its two previous runs logged 20.0 and 21.3 km.
+`hospital_down_hallway` went 2/3, with z spans of 2.0–3.4 mm and straight-cruise speed
+within 0.3% of commanded. The one failure was the policy drifting right at t = 20 s and
+timing out, with clean physics.
+
+Gotchas this surfaced:
+- **The bare base drives through kerbs; with contact it is stopped at them.** On umbrellas
+  the bare base enters a 13 cm traffic island, and whether it pops on top or rides along the
+  road under the island surface is chaotic: 0.05 m of lateral offset decides it (a
+  centre-ray "gap" of −0.14 m there is the curb above the chassis, not the robot sinking).
+  A kerb is taller than `MAX_STEP_M` (4.5 cm), so the contact layer's deck box stops 2 cm
+  short of it and slides along it; the robot never climbs a kerb any more, which is the
+  intended trade (the tyres could climb 5.5 cm, and an island top is not a route).
+- **`warehouse_aisle6` traces cross 9 m `SM_PillarA_9M` footprints** (the guard misses
+  them), and the 8 m z spans come from those crossings. A different failure on the same
+  episode (`20261005-040425`, replayed bare): the tyres run over bottles, a cardboard box
+  and a wet-floor sign at 0.30 m that the guard's plane passes over (696 penetration steps,
+  single steps to 30 m/s, never 3 in a row, so no fault). With contact the robot is held at
+  the sign from t = 45.6 s (5.5 s pressed: a physical collision) and no step exceeds 0.8 m/s.
+- "Upsway descends 1.91 m" is the start drop. The terrain along its line falls 0.11 m.
+- `control_terminal.py` used to keep its own copy of the old step (no velocity write, early
+  return on zero, x/y re-read every step); it now drives through `KinematicBase` in released
+  mode, with the contact layer attached (`--no-contact` for the bare base; `pose` prints the
+  contact count; `sim play` re-reads the envelope). Real Kit REPL on `nav_hospital.usda`:
+  0.300 m/s commanded, 0.300 measured over 3 s; `left_joint1` 0.4000 and lift 0.2947/0.30
+  with the base released; `sim stop|play` mid-drive resumes with 0 "Physics Simulation View"
+  warnings. On `scene.usda` (2026-10-06), `base 0 -0.3 0` for 3 s toward the packing table:
+  contact on, it stops at y = −0.141 (arm tips at −0.306 in the body frame, table edge at
+  −0.46, 2 cm skin), stays there after `stop`, and `base 0 0.3 0` stops at +0.293 against the
+  other table (column back at +0.154); bare, it ends at y = −0.901 with base_link pushed to
+  z = −0.097, inside the table, and drifts another 4.4 cm once released. The dynamic blocks
+  on the tables are walls to the contact layer, never pushed.
+
+**All six outdoor episodes under the policy on the fixed base, before the contact layer**
+(tag `diag_fix_outdoor`, medium/mounted, 2026-10-05): **3/6** (umbrellas, pillars, upsway).
+The 10-05 P1 arms scored 2/6 and 1/6, and 8 of their 12 runs were blown. Here **0
+blow-ups**: z spans 0.07–0.88 m, no trace step over 0.26 m per 0.5 s, and 0 PhysX capacity
+errors in any log. `outdoor_pillars` passed for the first time in 10 runs. The failures are
+policy failures:
+- library: closest 5.88 m against a 4.0 m threshold, the best of any 27 B run.
+- ramp_fountain: it saw a low stone wall, turned left 40°, and passed the goal 6 m to the side.
+- upsway_far: it held its heading and passed 9.7 m wide.
+- **The upsway_far run ended on `physics_fault`, and that fault is the curb gotcha above, not
+  the spin pump.** Replayed offline (trace window through the fixed base, 15 mm path match):
+  - The base rides 12–15 cm under a traffic island's top surface for 14 s.
+  - At the exact point where the policy run faulted, `isl_curb` pieces kick it to 2.5–2.8 m/s
+    with |ω| up to 14 rad/s for 7 steps. After that it is back to normal speed. z span 0.14 m.
+  - Speed stayed under 3 m/s in the replay. The policy run read 3.10 m/s for 3 steps.
+
+  So the bare speed rule sat right at the edge of a curb wedge at 0.45 m/s. With the
+  contact layer that wedge does not form: the same window (`20261005-113221` [224:]) is
+  held at `isl_curb` piece_1213 for 184 steps with |v| ≤ 0.45 m/s, where the bare base reads
+  3.81 m/s once and puts the deck 6 cm into the kerb on 423 steps. Any outdoor
+  `physics_fault` should still be replayed before it is called a blow-up.
+- **The step-0 frame was tilted** on pillars (three tyre floors 3.5 cm apart; first menu frame
+  rolled −13.4° after the 30 FREE settle updates). Fixed by the held settle above: the base is
+  pinned level from the first settle step, so the first frame is taken in the posture it
+  drives in.
+
+### Contact-layer verification and the Unitree G1 (2026-10-11)
+
+- **All 85 starts and all 85 routes pass on the contact + scene-collider code with 0 physics
+  faults**, and every verdict matches the run before contact
+  (`nav/results/{validate,route_drive}/<env>_contact_20261011.json`). The places where contact
+  holds a route are real geometry, not new bugs:
+  - office's security desk, whose table top sits at CARRIAGE height (the 0.59–0.83 m box).
+    The 0.30 m guard plane passes under it. This is also why `office_passing_hallway` fails
+    on the contact ladder: its earlier passes drove the carriage through the desk.
+  - outdoor island kerbs. route_drive's navmesh keeps DynaNav's 0.40 m step height on purpose,
+    so its routes climb kerbs that the deck box now refuses.
+  - a hospital gurney at the e06–e10 goals.
+
+  `outdoor_e58`'s `ground_err` FAIL was already present on 10-05 (0.139 m).
+- **A Kit can hang in `SimulationApp._start_app` for 15+ min and write no Kit log at all**
+  (route_drive on hospital, faulthandler dump). Re-queued, the same command finished. If a
+  job shows no `[nav]` line after ~3 min, look for this before you debug the script.
+- **The G1 runner's camera payload would have been refused on every call.** It sent `w`, `h`,
+  `label`, `curvatures`, `mount_pitch_deg`, `frame_sim_t`, `frame` and `convention`. The
+  server takes only `arc_menu.MENU_CAMERA_KEYS` and raises on anything else. Caught before
+  the first episode. Fix: always build the dict with `client.camera_from_spec`. The frame-lag
+  rule above is now enforced in code: `run_navigation_g1.py` wraps `kit.update` to snapshot
+  the head pose BEFORE each update. Each saved frame records `pose_source`.
+- **The G1 walk policy undershoots forward speed**, by about 21% at nav speeds. Fit:
+  `achieved = 0.91·cmd − 0.063`. `G1NavBase.apply` inverts the fit, capping the command at
+  0.8 m/s. Result: 0.358 m/s asked, 0.355 walked. `--no-speed-cal` turns it off, and
+  `config.g1.speed_cal` records which one ran. With the 12° head camera:
+  - `hospital_vending_machine`: pass in 46.6 s. Uncalibrated, it timed out at 2.04 m.
+  - `office_nearest_elevator`: pass in 37.8 s (49.6 s uncalibrated).
+  - `hospital_past_wheelchairs`: pass in 61 s, with 1143 guard interventions.
+  - `hospital_down_hallway`: fail. It timed out at 109 s, 3.01 m short; the guard's slow
+    band throttles it the whole length of the corridor.
+- **Mount comparison, same three episodes, calibrated: 12° re-pitch 3/3, real 47.6° mount
+  1/3, and that one pass was blind.** The real mount reported `TARGET: not visible` on every
+  decision; it passed because the episode is a straight drive. So the real mount's 1/3 does
+  not show it can perceive the goal. Navigating with the head camera needs it re-pitched.
+
+### Why the contact-ladder episodes fail (2026-10-11, recorded runs only)
+
+Read off decisions.jsonl, the traces and the frames
+(scratch `analysis/analyze_runs.py`: per decision, the goal's bearing against the camera FOV,
+the `TARGET:` claim, commanded vs achieved speed; contact sheets of the frames).
+- **The guard's slow band is the largest single cause, and no metric records it.**
+  `CollisionGuard.filter` scales speed down to a floor of 0.15 whenever the nearest fan
+  return is between 0.6 and 1.5 m (centre-relative), anywhere in ±35°. Neither
+  `guard_interventions` nor `guard_spans` counts it; both count only the BLOCKED branch.
+  (Since 2026-10-12 `EpisodeResult.guard_slow` does.)
+  - Over every analysed AlohaMini run, **17.3% of all moving time** has achieved/commanded
+    speed at exactly 0.15.
+  - **The explanation first written here, a wall PARALLEL to the path sitting in the outer
+    rays, is wrong for almost all of it.** Measured on the 2026-10-12 ladder, which logs
+    what the radial rule would have done next to a corridor rule that ignores returns
+    outside the swept strip: floor steps were **18.2% under both rules**. What floors the
+    speed is inside the strip, ahead of the robot.
+  - `hospital_past_wheelchairs` (0/5 since 10-05): the heading converges on the window wall
+    at ~10° (yaw −170°, goal 16° to the right), the model picks straight on 68 of 76
+    decisions, and the guard slides it along the wall at the floor speed. The wall really
+    is on the commanded path. It times out 2.6–3.1 m short.
+  - `hospital_exit_room` (58% throttled; it hugs the right wall after the correct right
+    turn) and `hospital_down_hallway` (0.2 × 0.15 = 0.03 m/s beside a gurney for its last
+    8 s) fail the same way.
+  - Estimate it with commanded vs achieved speed per decision interval, until the guard
+    logs the band itself.
+- **AlohaMini's nav camera is level in every run checked** (the base is pinned level each
+  step; the horizon sits mid-frame). All-white frames are the nose against a wall
+  (`forward_staircase` from 44 s on), not a camera fault.
+  - The one real geometry problem: at 0.354 m the camera, and the 0.30 m guard, see UNDER
+    a 0.75 m table top that the carriage hits. `office_passing_hallway` pressed into the
+    security desk for 66 s while the model kept saying "the way ahead is open".
+- **Kerbs are the outdoor failure class.** The contact ladder (tag
+  `medium_p1_mounted_contact`, finished 2026-10-11) scored **9/19**: indoor 6/13, outdoor
+  3/6. umbrellas, pillars and upsway pass, as they did on `diag_fix_outdoor`.
+  - library and ramp_fountain drive straight into the SAME traffic-island kerb
+    (`island_tile_6/curbs`, ~13 cm) and stay pressed against it for 130–183 s.
+  - upsway_far reaches 2.10 m against its 2.0 m threshold, the best run on record, then
+    stalls at the road/sidewalk kerb in front of the goal storefront.
+  - The contact layer is RIGHT to stop these: the tyres are 5 cm and `MAX_STEP_M` is
+    4.5 cm. The bare base used to drive through the island; that is where library's 5.88 m
+    came from.
+  - The model sees the red kerb ~10 s before impact and still answers "the way ahead is
+    open" (library: 493 of 497 decisions straight).
+  - After a contact wedge it names the kerb in only 2 of 8 re-decisions. It is NOT out of
+    frame: after the 0.8 m reverse the kerb fills the lower third of the image (library
+    `menu_00002430` / `_3930`), and the describe call still answers "the way ahead is
+    open". It is asked about walls, doors and large objects, and a 13 cm kerb is none of
+    those. (This line said the opposite until 2026-10-12, inferred from the 0.63 m floor
+    blind zone without opening a frame. The deck stops ~0.23 m ahead of the centre, so
+    after 0.8 m back the kerb is ~1.0 m ahead, past the 0.88 m blind zone.)
+  - Indoor flips against `medium_p1_mounted` (10/13): passing_hallway is contact, and
+    correct. down_hallway and exit_room are the slow band. hallway_turn2 passed 2/2
+    before.
+- **The other failures are policy failures:**
+  - `office_hallway_turn2`: at the corridor end the goal is +100°, outside the FOV. The
+    describe call says the open floor is to the right, and the model answers STOP 22 times
+    instead of turning left.
+  - `hospital_forward_staircase`: 0/3 since 10-05. It reaches the staircase, takes one left
+    arc, goes back to straight and ends in a dead end.
+  - `warehouse_aisle6`: wedged in floor clutter. A lying bottle holds the low contact box
+    for 5619 steps; stuck_recovery's `MAX_CONSECUTIVE = 4` then gives up, leaving 130 s
+    frozen.
+- **G1:** the 12° mount actually rides at 14.1–14.9° (range 10.8–16.1°), with floor visible
+  from ~1.4 m. The real 47.6° mount rides at ~50° and recognised the target 0 times in 3
+  runs. The G1's down_hallway is a speed budget: 109 s requires 0.30 m/s average; the G1
+  walks 0.36–0.42 free, and the guard cuts that to 0.11–0.29.
+
+### Pedestrians in the AlohaMini runner (2026-10-11)
+
+- **`NAV_PEOPLE=1` runs DynaNav's own crowd for the episode.** It is off by default, and
+  with it off `self.people` stays None, so every earlier number is unchanged.
+  - The crowd size comes from `episodes_full.yaml` `num_people`; `NAV_PEOPLE_NUM` overrides it.
+  - The glue is `nav/sim/people_hooks.py`; the crowd itself is `people.py`. The hooks run
+    in this order: extensions before the stage opens, crowd before play, ghost filter after
+    play, a reset each episode, and a step after every `kit.update()`.
+  - `EpisodeResult.people` carries `PeopleSim.metrics()`, including DynaNav's
+    `human_collision` latch (2-D base origin within 0.2 m of a person root).
+  - Robot and walkers pass through each other physically: capsules are ghost-filtered,
+    and the contact layer ignores `/World/People`. DynaNav's people had no physics either.
+  - The guard's fan drops PhysX hits on people and adds `people.ray_distances_2d()` hits
+    instead: same bearings, same height, centre-relative. The lidar is NOT patched.
+  - G1 runs do not wire it yet: `G1NavigationRunner.setup()` calls none of the hooks.
+- **The first Kit run died in 16 s on `episode.env_name()`.** `env_name` is a MODULE
+  function in `episode.py` (`env_name(episode.scene)`), not a method. The offline test
+  passed because its fake episode had the method. Test glue code against real `Episode`
+  objects, and against the real names of every attribute it touches.
+- **First result, `office_nearest_elevator`, 20 walkers:**
+  - Outcome: SUCCESS at 1.50 m, spl 1.00. Guard 48 (0 without people), no contact, no
+    human collision.
+  - Closest pass: 0.51 m at t = 5.1 s. The model called the walker "a large white object
+    directly in front" and took the hard-left arc
+    (`nav/results/videos/20261011-210243_office_nearest_elevator.mp4`).
+  - Office's DynaNav spawn table is empty, so spawns come from IRA's navmesh sampler
+    (deviation 9 in `people.py`).
+  - Setup cost: 16.8 s. Ghost filter: 20/20 capsules in 0.37 s.
+  - Memory: GPU0 ~8.6 GiB.
+  - Step cost: `people.step` is 0.32 ms, but wall time per control step goes from 59.9 to
+    85.7 ms (+43%). That cost is Kit animating and rendering 20 skinned characters, not
+    our Python, so a bigger crowd costs Kit time.
+  - PhysX person hits dropped vs analytic hits added: office-20 260/260 and hospital-40
+    671/671, but hospital-10 75/167. PhysX sees the walkers only some of the time, so the
+    analytic channel is needed.
+- **Kit crashed in `libomni.anim.behavior.core` (exit 139) in the first updates of 4 of 12
+  people runs.** Same backtrace each time: `_Map_base<int, unsigned long>` /
+  `vector<int>::_M_realloc_insert` on a carb.tasking worker. Office-30 crashed 3 of 3 and
+  hospital-10 1 of 2, and the SAME hospital-10 crowd had run clean on another episode. So it
+  is a race, not a property of a crowd.
+  - Cause: the runner calls `PeopleSim.reset()` at every episode start, and on the first
+    episode that is right after attach, before any agent has had an update.
+    `agent.reset()` on agents in that state is what crashes.
+  - `try_people.py` ran the same office-30 crowd clean, because it resets only after 20 s
+    of walking.
+  - Fix: `reset()` now leaves agents that have not run since attach or the last reset
+    alone; they are at spawn, at the speed attach set. Verified 3 of 3 clean on the
+    episodes that had crashed.
+  - Per-episode crowds are identical for the same env and `num_people`, so a crash that
+    "follows a crowd" is the first thing to rule out.
+- **People ladder (tag `people_medium_p1_mounted_contact`): 7/10** on the ten ladder
+  episodes DynaNav runs with people. The same ten scored 4/10 without people on the contact
+  ladder.
+  - The three flips (down_hallway, hallway_turn2, exit_room) all have both outcomes in
+    their history, so treat the gap as noise at n = 1, not as "people help".
+  - What the ladder shows is stability: 0 human collisions, closest pass 0.46 m, and every
+    failure has the same cause as the run without people (security desk, slow band, missed
+    staircase turn).
+  - Cost: 62 → 72 → 123 ms per control step at 0, 10 and 40 walkers on hospital. That is
+    Kit animating and rendering the characters; `people.step` is 0.2–0.45 ms.
+
+### Three default-off fixes, one ladder (2026-10-12, tag `medium_p1_mounted_contact_fix3`)
+
+All three changes are behind flags that default to the old behaviour:
+- `NAV_GUARD_SLOW=corridor` (+ `NAV_GUARD_CORRIDOR_M`, 0.40): only returns inside the swept
+  strip slow the robot, ramped on forward distance. `distance_m` and the stop branch are
+  unchanged, so stuck_recovery's thresholds do not move.
+- `NAV_RECOVERY_BACK_M` (default 0.8): how far a wedge reverse goes.
+- `QVLA_KERB_PROMPT=1` (server, `/health.kerb_prompt`): `arc_menu.DESCRIBE_KERB` tells the
+  describe call that kerbs, steps and raised edges are walls for this robot.
+
+Every result now carries `guard_slow`, which includes the radial rule's counterfactual.
+
+**12/19 with all three on, against 9/19 on the contact ladder.** Indoor 7/13, outdoor 5/6.
+Server: 3503 predictions, 0 parse and 0 gen errors.
+Flips: +down_hallway, +passing_hallway, +exit_room, +upsway_far, +ramp_fountain;
+−vending_machine (1.64 m), −warehouse. Most of the gap is not the fixes:
+- **passing_hallway** passed on ONE selection: label 5 = the hardest right arc, picked in
+  a decision whose own description said "straight ahead". That put the robot on the right
+  side of the security desk.
+- **ramp_fountain** diverged at t ≈ 5 s, while avoiding a static person. It took a 61°
+  heading toward the ramp instead of the contact run's ~85° into the island kerb.
+- down_hallway, exit_room, vending_machine and warehouse all have both outcomes in their
+  history.
+- **upsway_far is the one pass the mechanism explains**, and its first ever (1.99 m vs
+  2.0). Pressed on the sidewalk kerb, it reversed 1.2 m, and the re-decision said "blocked
+  by a raised concrete curb… open floor is to the right". It then drove along the
+  storefronts. n = 1.
+
+What each change did, measured:
+- **Corridor: small.** Slowed steps 27.9% → 25.0% of moving steps; floor steps 18.2% under
+  both rules. See the corrected slow-band entry above.
+- **Kerb sentence: perception yes, decision mostly no.** Over all decisions after a wedge,
+  the kerb is named 10/34 (was 4/85) and "the way ahead is open" fell 30/85 → 6/34.
+  Kerb-pressed time fell 379 → 198 s, all of it from library.
+  - On library it names the kerb from 5–6 m ("a low red brick curb crosses the path"), 18
+    times. In the same sentence it still says "the way ahead is open… past the curb" and
+    picks straight, the same rule-not-holding as STOP-means-blocked above.
+  - After each wedge it names the kerb and turns, then goes back to straight: 187 s
+    pressed, 11.32 m (was 11.47). A structural gate, e.g. drop the straight arcs when the
+    description says a curb crosses the path, is the obvious next step. Not yet tried.
+- **1.2 m reverse:** no evidence either way; it ran together with the kerb sentence.
+
+**Is the outdoor goal reachable by THIS robot?** `route_drive.py --plan-only
+--agent-max-step-cm 4.5 --agent-max-slope-deg 20` answers it with the navmesh. DynaNav's
+outdoor bake uses a 40 cm step, a walker's. Synthetic starts can be written as an episodes
+yaml (scratch `fix3/feas_episodes.yaml`).
+- The navmesh step is SYMMETRIC, and the contact layer lets the robot step DOWN freely, so
+  a NO_PATH from the episode start is not proof.
+  - library and ramp_fountain both read NO_PATH at 4.5 cm, and ramp_fountain then passed.
+  - pillars reads PARTIAL at both step heights because the volume does not cover its goal.
+    It passes anyway.
+- Ask from a point AFTER the step-down. From library's street level a 4.5 cm / 20° route
+  exists: a ~5° curb ramp (z 5.78 → 5.94 over ~2 m) **2.5–2.8 m to the right** of where the
+  robot presses on the kerb. library is feasible, and its instruction says "Do not turn
+  right."
+- A start snapped 1–2 m to a point already ON the kerb proves nothing. Check `start_nav`'s
+  z against the street before reading OK.
 
 ## Next step
 

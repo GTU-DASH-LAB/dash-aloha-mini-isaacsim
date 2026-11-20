@@ -52,7 +52,10 @@ from episode import load_episode  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--episode", default="warehouse")
-ap.add_argument("--heights", default="0.20,0.30,0.50,0.80,1.10,1.30,1.50",
+ap.add_argument("--forward", type=float, default=0.20,
+                help="mount, m ahead of the rotation centre; 0 is inside the lift column")
+ap.add_argument("--heights", default="0.20,0.30,0.50,0.60,0.70,0.75,0.80,0.85,0.90,0.95,"
+                                    "1.00,1.10,1.30,1.50",
                 help="Candidate mount heights above the robot base, metres.")
 ap.add_argument("--spec", default="c1", choices=("c1", "ld19"))
 args = ap.parse_args()
@@ -62,6 +65,10 @@ scene = REPO / "assets" / "usd" / f"nav_{ep.name}.usda"
 if not scene.is_file():
     raise SystemExit(f"nav scene not built: {scene}\n  nav/sim/build_nav_scene.sh {ep.name}")
 
+# nav/tools/profile.py shadows the stdlib `profile` module, which warp imports while Kit
+# starts, and Kit then fails to load omni.warp.core (see replay_lidar_trace.py). Nothing
+# here imports from nav/tools, so drop it from the path first.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 from isaacsim import SimulationApp  # noqa: E402
 
 kit = SimulationApp({"headless": True, "active_gpu": 0, "physics_gpu": 0, "multi_gpu": False})
@@ -82,6 +89,13 @@ for _ in range(240):
 stage.Load()
 for _ in range(30):
     kit.update()
+
+# Before play: the PhysX GPU capacities every entry point that drives AlohaMini raises
+# (nav/sim/physics_setup.py), in the session layer so the stage file is never touched.
+from physics_setup import raise_gpu_capacities  # noqa: E402
+
+for _line in raise_gpu_capacities(stage):
+    print(f"[physics] {_line}")
 
 # Scene queries only report colliders while the timeline is running; querying a stopped
 # timeline is its own way to get a confident, wrong "nothing is there".
@@ -131,7 +145,7 @@ print("  " + "-" * 66)
 rows = []
 for text in args.heights.split(","):
     h = float(text)
-    lidar = Lidar2D(spec=spec, mount_height_m=h)
+    lidar = Lidar2D(spec=spec, mount_height_m=h, mount_forward_m=args.forward)
     s = lidar.scan(position, yaw)
     external = s.hit & ~s.self_hit
     nearest = float(s.ranges[external].min()) if external.any() else float("nan")

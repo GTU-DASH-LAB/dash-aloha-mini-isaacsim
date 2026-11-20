@@ -1,0 +1,1712 @@
+{
+ "schema": "g1 asset spec v1 (g1/asset agent, 2026-10-05)",
+ "decision": {
+  "spawn_usd": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/IsaacLab/Robots/Unitree/G1/g1_minimal.usd",
+  "why": "It is the asset Isaac-Velocity-{Flat,Rough}-G1-v0 trains on (IsaacLab-2.2.1 rough_env_cfg.py:111 G1_MINIMAL_CFG -> unitree.py:378-379; same on GitHub main and develop). Its 37 PhysX DOF names/order equal the policy's policy_joint_names exactly (checked against scratchpad/g1/policy_spec.json). Isaac/Robots/Unitree/G1/g1.usd (29dof rev_1_0 + 3-finger hands, 43 DOF, waist_*/wrist_* names) does NOT match the policy.",
+  "head_camera_for_nav": "nav_camera (below): the G1's own head camera -- D435 mount point on head_link, D435i colour optics -- re-pitched from 47.6 to 12.0 deg down. The faithful 47.6 deg mount (head_camera_real) has its top image row 26.5 deg below the horizon: nothing farther than 2.42 m ahead is ever in frame (floor or object), so no landmark a DynaNav instruction names can be seen. Render-confirmed for both pitches."
+ },
+ "asset": {
+  "url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/IsaacLab/Robots/Unitree/G1/g1_minimal.usd",
+  "size_bytes": 22195512,
+  "md5_local_copy": "09bcaf3667df0bde5686f32d74019a97",
+  "same_file_on_cdn": "4.5 / 5.1 / 6.0 share ETag 59b4aaae2661e38c97507637b48acf2e-3; 5.0 same size (different multipart ETag)",
+  "default_prim": "/g1",
+  "articulation_root_rel": "pelvis",
+  "articulation_root_when_referenced_at_/World/G1": "/World/G1/pelvis",
+  "num_dof": 37,
+  "num_bodies": 44,
+  "total_mass_kg": 32.2389,
+  "joint_prims": "43 USD joints = 37 revolute + 6 fixed (pelvis_contour, head, imu, logo, L/R palm)",
+  "root_settings_authored": {
+   "enabledSelfCollisions": true,
+   "solverPositionIterationCount": 32,
+   "solverVelocityIterationCount": 1,
+   "sleepThreshold": 4.999999873689376e-05,
+   "stabilizationThreshold": 9.999999747378752e-06
+  },
+  "root_settings_training": "Isaac Lab overrides: self-collisions OFF, solver 8 pos / 4 vel, physics dt 0.005 (see policy_spec.json)",
+  "authored_drive_warning": "Every revolute drive is authored kp=100/deg (5729.58 N*m/rad), kd=0, armature 0.1 -- NOT the trained gains; override through Articulation.set_gains/set_max_efforts/set_armatures (g1/policy board entry 10:53)."
+ },
+ "joints_physx_dof_order": [
+  {
+   "index": 0,
+   "name": "left_hip_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -2.35,
+    3.05
+   ],
+   "usd_limits_deg": [
+    -134.6450653076172,
+    174.7521209716797
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": -8.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": -0.2,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 200.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 1,
+   "name": "right_hip_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -2.35,
+    3.05
+   ],
+   "usd_limits_deg": [
+    -134.6450653076172,
+    174.7521209716797
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": -8.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": -0.2,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 200.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 2,
+   "name": "torso_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -2.618,
+    2.618
+   ],
+   "usd_limits_deg": [
+    -150.00035095214844,
+    150.00035095214844
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 200.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 3,
+   "name": "left_hip_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -0.26,
+    2.53
+   ],
+   "usd_limits_deg": [
+    -14.89690113067627,
+    144.95831298828125
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 150.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 4,
+   "name": "right_hip_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -2.53,
+    0.26
+   ],
+   "usd_limits_deg": [
+    -144.95831298828125,
+    14.89690113067627
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 150.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 5,
+   "name": "left_shoulder_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -2.9671,
+    2.7925
+   ],
+   "usd_limits_deg": [
+    -170.00228881835938,
+    159.9984588623047
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.35,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 6,
+   "name": "right_shoulder_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -2.9671,
+    2.7925
+   ],
+   "usd_limits_deg": [
+    -170.00228881835938,
+    159.9984588623047
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.35,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 7,
+   "name": "left_hip_yaw_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -2.75,
+    2.75
+   ],
+   "usd_limits_deg": [
+    -157.56338500976562,
+    157.56338500976562
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 150.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 8,
+   "name": "right_hip_yaw_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -2.75,
+    2.75
+   ],
+   "usd_limits_deg": [
+    -157.56338500976562,
+    157.56338500976562
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 88.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 32.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 150.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 9,
+   "name": "left_shoulder_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -1.5882,
+    2.2515
+   ],
+   "usd_limits_deg": [
+    -90.99715423583984,
+    129.00143432617188
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.16,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 10,
+   "name": "right_shoulder_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -2.2515,
+    1.5882
+   ],
+   "usd_limits_deg": [
+    -129.00143432617188,
+    90.99715423583984
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": -0.16,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 11,
+   "name": "left_knee_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.33489,
+    2.5449
+   ],
+   "usd_limits_deg": [
+    -19.187782287597656,
+    145.81201171875
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 139.0,
+    "target_position_deg_usd": 18.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 20.0,
+   "isaaclab_default_pos_rad": 0.42,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 200.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 12,
+   "name": "right_knee_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.33489,
+    2.5449
+   ],
+   "usd_limits_deg": [
+    -19.187782287597656,
+    145.81201171875
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 139.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 20.0,
+   "isaaclab_default_pos_rad": 0.42,
+   "isaaclab_training_actuator": {
+    "group": "legs",
+    "stiffness": 200.0,
+    "damping": 5.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 13,
+   "name": "left_shoulder_yaw_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -2.618,
+    2.618
+   ],
+   "usd_limits_deg": [
+    -150.00035095214844,
+    150.00035095214844
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 14,
+   "name": "right_shoulder_yaw_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -2.618,
+    2.618
+   ],
+   "usd_limits_deg": [
+    -150.00035095214844,
+    150.00035095214844
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 15,
+   "name": "left_ankle_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.68,
+    0.73
+   ],
+   "usd_limits_deg": [
+    -38.96112823486328,
+    41.8259162902832
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 40.0,
+    "target_position_deg_usd": -10.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": -0.23,
+   "isaaclab_training_actuator": {
+    "group": "feet",
+    "stiffness": 20.0,
+    "damping": 2.0,
+    "effort_limit": 20.0,
+    "velocity_limit": null,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 16,
+   "name": "right_ankle_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.68,
+    0.73
+   ],
+   "usd_limits_deg": [
+    -38.96112823486328,
+    41.8259162902832
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 40.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": -0.23,
+   "isaaclab_training_actuator": {
+    "group": "feet",
+    "stiffness": 20.0,
+    "damping": 2.0,
+    "effort_limit": 20.0,
+    "velocity_limit": null,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 17,
+   "name": "left_elbow_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.2268,
+    3.4208
+   ],
+   "usd_limits_deg": [
+    -12.994681358337402,
+    195.9973907470703
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.87,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 18,
+   "name": "right_elbow_pitch_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.2268,
+    3.4208
+   ],
+   "usd_limits_deg": [
+    -12.994681358337402,
+    195.9973907470703
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.87,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 19,
+   "name": "left_ankle_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -0.2618,
+    0.2618
+   ],
+   "usd_limits_deg": [
+    -15.000033378601074,
+    15.000033378601074
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 40.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "feet",
+    "stiffness": 20.0,
+    "damping": 2.0,
+    "effort_limit": 20.0,
+    "velocity_limit": null,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 20,
+   "name": "right_ankle_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -0.2618,
+    0.2618
+   ],
+   "usd_limits_deg": [
+    -15.000033378601074,
+    15.000033378601074
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 40.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "feet",
+    "stiffness": 20.0,
+    "damping": 2.0,
+    "effort_limit": 20.0,
+    "velocity_limit": null,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 21,
+   "name": "left_elbow_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -2.0943,
+    2.0943
+   ],
+   "usd_limits_deg": [
+    -119.99454498291016,
+    119.99454498291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 22,
+   "name": "right_elbow_roll_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "X",
+   "limits_rad": [
+    -2.0943,
+    2.0943
+   ],
+   "usd_limits_deg": [
+    -119.99454498291016,
+    119.99454498291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 21.0,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 53.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.01
+   }
+  },
+  {
+   "index": 23,
+   "name": "left_five_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.84,
+    0.3
+   ],
+   "usd_limits_deg": [
+    -105.42423248291016,
+    17.18873405456543
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 24,
+   "name": "left_three_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.84,
+    0.3
+   ],
+   "usd_limits_deg": [
+    -105.42423248291016,
+    17.18873405456543
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 25,
+   "name": "left_zero_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.523598,
+    0.523598
+   ],
+   "usd_limits_deg": [
+    -29.999954223632812,
+    29.999954223632812
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 26,
+   "name": "right_five_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -0.3,
+    1.84
+   ],
+   "usd_limits_deg": [
+    -17.18873405456543,
+    105.42423248291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 27,
+   "name": "right_three_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -0.3,
+    1.84
+   ],
+   "usd_limits_deg": [
+    -17.18873405456543,
+    105.42423248291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 28,
+   "name": "right_zero_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Y",
+   "limits_rad": [
+    -0.523598,
+    0.523598
+   ],
+   "usd_limits_deg": [
+    -29.999954223632812,
+    29.999954223632812
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 29,
+   "name": "left_six_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.84,
+    0.0
+   ],
+   "usd_limits_deg": [
+    -105.42423248291016,
+    0.0
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 30,
+   "name": "left_four_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.84,
+    0.0
+   ],
+   "usd_limits_deg": [
+    -105.42423248291016,
+    0.0
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 31,
+   "name": "left_one_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.0,
+    1.2
+   ],
+   "usd_limits_deg": [
+    -57.2957763671875,
+    68.75493621826172
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 1.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 32,
+   "name": "right_six_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    0.0,
+    1.84
+   ],
+   "usd_limits_deg": [
+    0.0,
+    105.42423248291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 33,
+   "name": "right_four_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    0.0,
+    1.84
+   ],
+   "usd_limits_deg": [
+    0.0,
+    105.42423248291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 34,
+   "name": "right_one_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.2,
+    1.0
+   ],
+   "usd_limits_deg": [
+    -68.75493621826172,
+    57.2957763671875
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": -1.0,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 35,
+   "name": "left_two_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    0.0,
+    1.84
+   ],
+   "usd_limits_deg": [
+    0.0,
+    105.42423248291016
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": 0.52,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  },
+  {
+   "index": 36,
+   "name": "right_two_joint",
+   "type": "PhysicsRevoluteJoint",
+   "axis": "Z",
+   "limits_rad": [
+    -1.84,
+    0.0
+   ],
+   "usd_limits_deg": [
+    -105.42423248291016,
+    0.0
+   ],
+   "authored_drive": {
+    "usd_type": "force",
+    "stiffness_per_deg_usd": 100.0,
+    "damping_per_deg_usd": 0.0,
+    "stiffness_SI_Nm_per_rad": 5729.578,
+    "damping_SI_Nms_per_rad": 0.0,
+    "max_force_Nm": 0.699999988079071,
+    "target_position_deg_usd": 0.0
+   },
+   "authored_armature": 0.1,
+   "authored_max_joint_velocity": 23.0,
+   "isaaclab_default_pos_rad": -0.52,
+   "isaaclab_training_actuator": {
+    "group": "arms",
+    "stiffness": 40.0,
+    "damping": 10.0,
+    "effort_limit": 300.0,
+    "velocity_limit": 100.0,
+    "armature": 0.001
+   }
+  }
+ ],
+ "bodies": [
+  {
+   "name": "pelvis",
+   "mass_kg": 2.86
+  },
+  {
+   "name": "left_hip_pitch_link",
+   "mass_kg": 1.299
+  },
+  {
+   "name": "pelvis_contour_link",
+   "mass_kg": 0.0
+  },
+  {
+   "name": "right_hip_pitch_link",
+   "mass_kg": 1.299
+  },
+  {
+   "name": "torso_link",
+   "mass_kg": 6.3396
+  },
+  {
+   "name": "left_hip_roll_link",
+   "mass_kg": 1.446
+  },
+  {
+   "name": "right_hip_roll_link",
+   "mass_kg": 1.446
+  },
+  {
+   "name": "head_link",
+   "mass_kg": 1.1798
+  },
+  {
+   "name": "imu_link",
+   "mass_kg": 0.0
+  },
+  {
+   "name": "left_shoulder_pitch_link",
+   "mass_kg": 0.713
+  },
+  {
+   "name": "logo_link",
+   "mass_kg": 0.001
+  },
+  {
+   "name": "right_shoulder_pitch_link",
+   "mass_kg": 0.713
+  },
+  {
+   "name": "left_hip_yaw_link",
+   "mass_kg": 2.052
+  },
+  {
+   "name": "right_hip_yaw_link",
+   "mass_kg": 2.052
+  },
+  {
+   "name": "left_shoulder_roll_link",
+   "mass_kg": 0.642
+  },
+  {
+   "name": "right_shoulder_roll_link",
+   "mass_kg": 0.642
+  },
+  {
+   "name": "left_knee_link",
+   "mass_kg": 2.252
+  },
+  {
+   "name": "right_knee_link",
+   "mass_kg": 2.252
+  },
+  {
+   "name": "left_shoulder_yaw_link",
+   "mass_kg": 0.713
+  },
+  {
+   "name": "right_shoulder_yaw_link",
+   "mass_kg": 0.713
+  },
+  {
+   "name": "left_ankle_pitch_link",
+   "mass_kg": 0.074
+  },
+  {
+   "name": "right_ankle_pitch_link",
+   "mass_kg": 0.074
+  },
+  {
+   "name": "left_elbow_pitch_link",
+   "mass_kg": 0.601
+  },
+  {
+   "name": "right_elbow_pitch_link",
+   "mass_kg": 0.601
+  },
+  {
+   "name": "left_ankle_roll_link",
+   "mass_kg": 0.391
+  },
+  {
+   "name": "right_ankle_roll_link",
+   "mass_kg": 0.391
+  },
+  {
+   "name": "left_elbow_roll_link",
+   "mass_kg": 0.227
+  },
+  {
+   "name": "right_elbow_roll_link",
+   "mass_kg": 0.227
+  },
+  {
+   "name": "left_palm_link",
+   "mass_kg": 0.2813
+  },
+  {
+   "name": "right_palm_link",
+   "mass_kg": 0.2813
+  },
+  {
+   "name": "left_five_link",
+   "mass_kg": 0.0488
+  },
+  {
+   "name": "left_three_link",
+   "mass_kg": 0.0488
+  },
+  {
+   "name": "left_zero_link",
+   "mass_kg": 0.051
+  },
+  {
+   "name": "right_five_link",
+   "mass_kg": 0.0488
+  },
+  {
+   "name": "right_three_link",
+   "mass_kg": 0.0488
+  },
+  {
+   "name": "right_zero_link",
+   "mass_kg": 0.051
+  },
+  {
+   "name": "left_six_link",
+   "mass_kg": 0.0139
+  },
+  {
+   "name": "left_four_link",
+   "mass_kg": 0.0139
+  },
+  {
+   "name": "left_one_link",
+   "mass_kg": 0.0478
+  },
+  {
+   "name": "right_six_link",
+   "mass_kg": 0.0139
+  },
+  {
+   "name": "right_four_link",
+   "mass_kg": 0.0139
+  },
+  {
+   "name": "right_one_link",
+   "mass_kg": 0.0478
+  },
+  {
+   "name": "left_two_link",
+   "mass_kg": 0.0139
+  },
+  {
+   "name": "right_two_link",
+   "mass_kg": 0.0139
+  }
+ ],
+ "standing": {
+  "default_pose": "Isaac Lab G1_CFG.init_state.joint_pos (unitree.py:270-373)",
+  "pelvis_height_default_pose_m": 0.7216,
+  "pelvis_height_method": "Kit/PhysX, gravity off, joints driven to the default pose (max err 1.9e-8 rad), pelvis z minus lowest foot-collider corner (ankle_roll_link Cube). Offline pxr FK of the USD joint frames gives the same 0.7216 m (fk_check.py).",
+  "pelvis_height_zero_pose_m": 0.7541,
+  "isaaclab_spawn_z_m": 0.74,
+  "isaaclab_spawn_drop_m": 0.0184,
+  "pd_only_gravity_on": {
+   "pelvis_z_mean_first_0.25s_m": 0.7118,
+   "falls": true,
+   "note": "No policy: Isaac Lab PD gains holding the default pose tip over (tilt 9.5 deg at 0.68 s, 45 deg at 1.08 s, on the floor by 1.35 s). Expected for a humanoid without a balance controller; the 0.71 m sag is contact compression + knee give before the fall."
+  }
+ },
+ "head_camera_real": {
+  "label": "g1_head_d435_real",
+  "prim_path_when_robot_at_/World/G1": "/World/G1/head_link/g1_head_cam",
+  "parent_link": "/World/G1/head_link",
+  "parent_link_rel": "head_link",
+  "parent_note": "head_link is a 1.18 kg rigid body FIXED to torso_link (head_joint), so the camera yaws with torso_joint and bobs/pitches with the torso exactly like the real head D435",
+  "local_pos_m_in_head_link": [
+   0.0482,
+   0.0175,
+   0.4629
+  ],
+  "local_orient": "USD camera (-Z view, +Y up) rotated so view = head_link +X pitched DOWN by pitch_down_deg about head_link +Y; see probe_g1_asset.py:camera_quat_in_link",
+  "pitch_down_deg_rel_head": 47.6,
+  "focal_length_mm": 15.2449,
+  "horizontal_aperture_mm": 20.955,
+  "vertical_aperture_mm": 11.7872,
+  "hfov_deg": 69.0,
+  "vfov_deg": 42.273,
+  "resolution_wh": [
+   1920,
+   1080
+  ],
+  "intrinsics_px": {
+   "fx": 1396.80859375,
+   "fy": 1396.80859375,
+   "cx": 960.0,
+   "cy": 540.0
+  },
+  "clipping_range_m": [
+   0.05,
+   1000.0
+  ],
+  "measured_default_pose": {
+   "height_above_floor_m": 1.1844,
+   "forward_of_pelvis_m": 0.0485,
+   "left_of_pelvis_m": 0.0176,
+   "view_pitch_below_horizontal_deg": 47.638,
+   "view_dir_world_usd": [
+    0.6743,
+    0.0,
+    -0.73846
+   ],
+   "image_up_world_usd": [
+    0.73846,
+    0.0,
+    0.6743
+   ]
+  },
+  "floor_window": {
+   "top_edge_deg_below_horizon": 26.5,
+   "bottom_edge_deg_below_horizon": 68.77,
+   "nearest_visible_floor_ahead_of_pelvis_m": 0.509,
+   "farthest_visible_floor_ahead_of_pelvis_m": 2.424
+  },
+  "renders": {
+   "head_d435_mount": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe/g1_head_cam_d435_pitch47.6.png",
+   "head_d435_mount_near0.01": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe/g1_head_cam_d435_near0.01.png",
+   "head_level": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe/g1_head_cam_level.png",
+   "head_after_phaseB": null
+  }
+ },
+ "nav_camera": {
+  "label": "g1_head_nav",
+  "prim_path_when_robot_at_/World/G1": "/World/G1/head_link/g1_head_cam",
+  "parent_link": "/World/G1/head_link",
+  "parent_link_rel": "head_link",
+  "parent_note": "head_link is a 1.18 kg rigid body FIXED to torso_link (head_joint), so the camera yaws with torso_joint and bobs/pitches with the torso exactly like the real head D435",
+  "local_pos_m_in_head_link": [
+   0.0482,
+   0.0175,
+   0.4629
+  ],
+  "local_orient": "USD camera (-Z view, +Y up) rotated so view = head_link +X pitched DOWN by pitch_down_deg about head_link +Y; see probe_g1_asset.py:camera_quat_in_link",
+  "pitch_down_deg_rel_head": 12.0,
+  "focal_length_mm": 15.2449,
+  "horizontal_aperture_mm": 20.955,
+  "vertical_aperture_mm": 11.7872,
+  "hfov_deg": 69.0,
+  "vfov_deg": 42.273,
+  "resolution_wh": [
+   1920,
+   1080
+  ],
+  "intrinsics_px": {
+   "fx": 1396.80859375,
+   "fy": 1396.80859375,
+   "cx": 960.0,
+   "cy": 540.0
+  },
+  "clipping_range_m": [
+   0.05,
+   1000.0
+  ],
+  "measured_default_pose": {
+   "height_above_floor_m": 1.1844,
+   "forward_of_pelvis_m": 0.0485,
+   "left_of_pelvis_m": 0.0176,
+   "view_pitch_below_horizontal_deg": 12.038,
+   "view_dir_world_usd": [
+    0.97815,
+    0.0,
+    -0.20791
+   ],
+   "image_up_world_usd": [
+    0.20791,
+    0.0,
+    0.97815
+   ]
+  },
+  "floor_window": {
+   "top_edge_deg_below_horizon": -9.1,
+   "bottom_edge_deg_below_horizon": 33.17,
+   "nearest_visible_floor_ahead_of_pelvis_m": 1.86,
+   "farthest_visible_floor_ahead_of_pelvis_m": "horizon in view (unbounded)"
+  },
+  "renders": {
+   "head_d435_mount": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe_pitch12/g1_head_cam_d435_pitch12.0.png",
+   "head_d435_mount_near0.01": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe_pitch12/g1_head_cam_d435_near0.01.png",
+   "head_level": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe_pitch12/g1_head_cam_level.png",
+   "head_after_phaseB": "/tmp/claude-1000/-home-gtu-dsa-robotics-dash-aloha-mini-isaacsim/b4469602-c8d7-462c-adbc-d4a0ef742011/scratchpad/g1/probe_pitch12/g1_head_cam_after_pd_stand.png"
+  },
+  "deviation_from_real": "pitch only (47.6 -> 12.0 deg down). Mount point, parent link, optics, resolution unchanged.",
+  "arc_menu_integration": "nav/arc_menu.project() assumes a LEVEL lens (v = h/2 + fx*cam_h/depth). For this camera use v = h/2 + fx*tan(atan2(cam_h, depth) - pitch) with depth measured from the lens, cam_h = height_above_floor_m, cam_x = forward_of_pelvis_m, fov = hfov_deg; the 3 m arc tip then lands at row ~783 of 1080 and the near end of every arc is below the frame until ~1.86 m."
+ },
+ "lidar": {
+  "present_in_asset": false,
+  "note": "No lidar (or camera) prim exists in ANY G1 asset on the 6.0 CDN; g1_minimal has no mid360_link at all.",
+  "real_sensor": "Livox MID-360 (Livox spec page, saved src/mid360.html): FOV 360 deg x (-7..+52 deg), 40 m @10% / 70 m @80% reflectivity, 0.1 m blind zone, 200,000 pts/s, 10 Hz, 265 g",
+  "unitree_urdf_mount": {
+   "source": "g1_29dof_with_hand_rev_1_0.urdf / g1_29dof_rev_1_0.urdf / g1_comp.urdf mid360_joint",
+   "parent": "torso_link",
+   "xyz": [
+    0.0002835,
+    3e-05,
+    0.428434
+   ],
+   "rpy": [
+    3.141592653589793,
+    0.05112069379091391,
+    0.0
+   ],
+   "meaning": "mounted UPSIDE DOWN (roll pi), pitched 2.93 deg"
+  },
+  "cdn_29dof_usd_mount": {
+   "source": "Robots/Unitree/G1/configuration/g1_29dof_with_hand_rev_1_0_base.usd /torso_link/mid360_link",
+   "xyz": [
+    0.0002835,
+    3e-05,
+    0.41618
+   ],
+   "pitch_down_deg": 2.3,
+   "roll": 0.0,
+   "note": "disagrees with Unitree's current URDF (z 12 mm lower, no roll) -- trust the URDF"
+  },
+  "transplanted_to_g1_minimal_head_link": {
+   "xyz": [
+    -0.00918,
+    3e-05,
+    0.46143
+   ],
+   "rpy": [
+    3.141592653589793,
+    0.05112069379091391,
+    0.0
+   ],
+   "height_above_floor_default_pose_m": 1.183,
+   "method": "URDF pelvis-frame position + the same rigid head-mesh fit shift (-0.0055, 0, -0.0110) used for the camera"
+  }
+ },
+ "cross_checks": {
+  "d435_usd_vs_urdf": "29dof USD d435_link == URDF d435_joint exactly: xyz (0.0576235, 0.01753, 0.42987) in torso_link, +X pitched 47.60 deg down (rpy pitch 0.8307767 rad)",
+  "d435i_colour_published": "69 x 42 deg, 1920x1080 @30 fps (Intel D435i datasheet values as given in the task; intelrealsense.com timed out / 403 from this network, not re-fetched). Our 69.0 x 42.27 deg is the 16:9 square-pixel form of 69 deg HFOV.",
+  "unitree_g1_page": "unitree.com/g1 (saved src/unitree_g1.html): standing 1320 x 450 x 200 mm, ~35 kg with battery, 'Depth Camera + 3D LiDAR' (no model names on the page; the D435/MID-360 identification comes from the URDF link names)",
+  "self_occlusion": "Palms at bearing +-100 deg (outside the 69 deg HFOV); renders at near clip 0.05 vs 0.01 differ by mean 0.16/255 (RTX noise) -- the head shell does not occlude the lens.",
+  "nvidia_humanoid_precedent": "Isaac Sim's own MobilityGen H1 config (isaacsim.replicator.mobility_gen.examples robots.py:454-460) does NOT use H1's D435 orientation (50.8 deg down): it mounts a Hawk camera on d435_left_imager_link re-rotated to ~30.8 deg down (computed offline, assuming the Hawk asset looks along its root +X as on Nova Carter)."
+ },
+ "compare_29dof_g1_usd": {
+  "url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/Robots/Unitree/G1/g1.usd",
+  "root": "/World/G1_compare/pelvis",
+  "num_dof": 43,
+  "num_bodies": 46,
+  "total_mass_kg": 34.236,
+  "dof_names": [
+   "left_hip_pitch_joint",
+   "right_hip_pitch_joint",
+   "waist_yaw_joint",
+   "left_hip_roll_joint",
+   "right_hip_roll_joint",
+   "waist_roll_joint",
+   "left_hip_yaw_joint",
+   "right_hip_yaw_joint",
+   "waist_pitch_joint",
+   "left_knee_joint",
+   "right_knee_joint",
+   "left_shoulder_pitch_joint",
+   "right_shoulder_pitch_joint",
+   "left_ankle_pitch_joint",
+   "right_ankle_pitch_joint",
+   "left_shoulder_roll_joint",
+   "right_shoulder_roll_joint",
+   "left_ankle_roll_joint",
+   "right_ankle_roll_joint",
+   "left_shoulder_yaw_joint",
+   "right_shoulder_yaw_joint",
+   "left_elbow_joint",
+   "right_elbow_joint",
+   "left_wrist_roll_joint",
+   "right_wrist_roll_joint",
+   "left_wrist_pitch_joint",
+   "right_wrist_pitch_joint",
+   "left_wrist_yaw_joint",
+   "right_wrist_yaw_joint",
+   "left_hand_index_0_joint",
+   "left_hand_middle_0_joint",
+   "left_hand_thumb_0_joint",
+   "right_hand_index_0_joint",
+   "right_hand_middle_0_joint",
+   "right_hand_thumb_0_joint",
+   "left_hand_index_1_joint",
+   "left_hand_middle_1_joint",
+   "left_hand_thumb_1_joint",
+   "right_hand_index_1_joint",
+   "right_hand_middle_1_joint",
+   "right_hand_thumb_1_joint",
+   "left_hand_thumb_2_joint",
+   "right_hand_thumb_2_joint"
+  ],
+  "standing_pelvis_zero_pose_m": 0.7929,
+  "d435_height_zero_pose_m": 1.2667,
+  "sensor_layer": "configuration/g1_29dof_with_hand_rev_1_0_sensor.usd is an EMPTY Xform (626 B); d435_link / mid360_link exist only as reference Xforms in the base layer"
+ }
+}

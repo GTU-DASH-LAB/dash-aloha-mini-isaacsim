@@ -121,6 +121,13 @@ NAV_CAMERA_RESOLUTION = (1920, 1080)     # DynaNav's render product size
 NAV_CAMERA_FOCAL_MM = 2.8734347820281982
 NAV_CAMERA_APERTURE = (5.760000228881836, 3.5999999046325684)
 NAV_CAMERA_HEIGHT_M = 0.346              # Nova Carter's Hawk height on chassis_link
+# Ahead of base_link, which is the robot's ROTATION CENTRE and the origin of every plan.
+# x=+0.25 clears the base's own front face (half-extent ~0.21 in X), so the chassis does
+# not occlude the lower frame. Anything that projects the floor into this camera has to
+# subtract it: `arc_menu.project` once drew every arc as if the lens sat at the rotation
+# centre, which put each drawn point ~0.25-0.32 m further down the floor than the path the
+# controller drives (120 px too high at 1 m straight ahead).
+NAV_CAMERA_FORWARD_M = 0.25
 
 # A light co-mounted with camera_nav, facing the same +X driving direction it does.
 # DynaNav's own environments cannot be trusted to light themselves: office.usd has 121
@@ -153,6 +160,12 @@ CHASE_CAMERA_PRIM_PATH = f"{_BASE_LINK}/camera_chase"
 # --- Mobile base (LeKiwi 3-wheel omni base, alohamini1 dims) ---
 WHEEL_RADIUS_M = 0.05
 BASE_RADIUS_M = 0.125  # center to each wheel
+# The wheel joints sit 0.0422 m above the base_link origin (Aloha.urdf:91/144/197) and
+# carry r=0.05 sphere colliders (fix_wheel_collision.py), so base_link rests this far above
+# the floor. Measured 0.0078 in sim too (base_drive.py). It is why a sensor "0.346 m above
+# base_link" is 0.354 m above the floor.
+WHEEL_JOINT_Z_M = 0.0422
+BASE_LINK_REST_Z_M = WHEEL_RADIUS_M - WHEEL_JOINT_Z_M
 # Wheel mounting angles (radians), from lekiwi.py: np.radians([240, 0, 120] - 90)
 # = [150, -90, 30] degrees. IMPORTANT: this order does NOT naively match our URDF's
 # wheel1/wheel2/wheel3 naming -- verified by computing each wheel's actual XY position
@@ -163,7 +176,27 @@ BASE_RADIUS_M = 0.125  # center to each wheel
 # So the correct pairing is ["wheel1", "wheel3", "wheel2"], not naive wheel1/2/3 order.
 WHEEL_ANGLES_RAD = [math.radians(a - 90) for a in (240, 0, 120)]
 WHEEL_NAMES = ["wheel1", "wheel3", "wheel2"]
+# Where the wheels physically SIT, which is not BASE_RADIUS_M: |(-0.1538, 0.091161)| =
+# 0.1788 m from the URDF origins above, against LeKiwi's 0.125 m kinematic constant.
+# body_to_wheel_speeds keeps 0.125 (it is the real robot's control code, ported verbatim);
+# anything asking "what floor does this robot stand on" must sample at 0.179, or on a
+# slope it reads the ground under the chassis instead of under the tyres
+# (base_drive.ground_spawn_pose).
+WHEEL_MOUNT_RADIUS_M = 0.179
 
+
+# --- Kit process GPU selection ---
+# Every headless AlohaMini Kit process pins itself to GPU0 with these (the nav runner does
+# the same with its own --sim-gpu). Not tidiness: GPU1 holds the policy server (~30.5 of
+# 31.8 GiB), and Kit's default multi_gpu=True makes the RTX renderer run a CUDA
+# peer-to-peer bandwidth test across BOTH cards at startup on this IOMMU machine. With
+# GPU1 full that test fails ("p2pBandwidthLatencyTest.cu:174: 'out of memory'",
+# ERROR_OUT_OF_DEVICE_MEMORY) and Kit then opens a zenity "Failed to create any GPU
+# devices" dialog and BLOCKS on it -- a headless build step that never exits and never
+# fails (build_nav_scene.sh step 1, 2026-10-05 22:18). Of the 30 newest Kit logs that
+# evening, the 3 with multiGpu enabled ran the test and the 27 without it did not. Pin
+# through Kit's config, never CUDA_VISIBLE_DEVICES, which Kit warns against.
+KIT_GPU0 = {"active_gpu": 0, "physics_gpu": 0, "multi_gpu": False}
 
 def body_to_wheel_speeds(vx: float, vy: float, omega: float) -> list[float]:
     """Convert body-frame velocity (vx, vy in m/s, omega in rad/s) to per-wheel angular

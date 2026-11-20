@@ -38,6 +38,10 @@ scene = REPO / "assets" / "usd" / f"nav_{ep.name}.usda"
 if not scene.is_file():
     raise SystemExit(f"nav scene not built: {scene}\n  nav/sim/build_nav_scene.sh {ep.name}")
 
+# nav/tools/profile.py shadows the stdlib `profile` module, which warp imports while Kit
+# starts, and Kit then fails to load omni.warp.core (see replay_lidar_trace.py). Nothing
+# here imports from nav/tools, so drop it from the path first.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 from isaacsim import SimulationApp  # noqa: E402
 
 kit = SimulationApp({"headless": True, "active_gpu": 0, "physics_gpu": 0, "multi_gpu": False})

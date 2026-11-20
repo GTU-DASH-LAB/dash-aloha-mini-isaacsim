@@ -29,8 +29,10 @@ sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohami
 from alohamini1_specs import (  # noqa: E402
     CAMERA_PRIM_PATHS,
     CHASE_CAMERA_PRIM_PATH,
+    KIT_GPU0,
     NAV_CAMERA_APERTURE,
     NAV_CAMERA_FOCAL_MM,
+    NAV_CAMERA_FORWARD_M,
     NAV_CAMERA_HEIGHT_M,
     NAV_CAMERA_PRIM_PATH,
     NAV_HEADLIGHT_INTENSITY,
@@ -44,7 +46,7 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import omni.usd  # noqa: E402
 from pxr import UsdGeom, UsdLux  # noqa: E402
@@ -131,7 +133,7 @@ CAMERA_SPECS = {
         # does not occlude the lower frame. z from NAV_CAMERA_HEIGHT_M = Nova Carter's
         # own Hawk height. y=0: the Hawk's 0.075 offset is just the left eye of a
         # stereo pair, and the policy is fed one image.
-        "translate": (0.25, 0.0, NAV_CAMERA_HEIGHT_M),
+        "translate": (NAV_CAMERA_FORWARD_M, 0.0, NAV_CAMERA_HEIGHT_M),
         "rotateXYZ": (90.0, 0.0, -90.0),
         "focal": NAV_CAMERA_FOCAL_MM,
         "aperture": NAV_CAMERA_APERTURE,
@@ -221,4 +223,9 @@ print(f"Authored headlight at {NAV_HEADLIGHT_PRIM_PATH} (co-aimed with camera_na
 stage.Save()
 print(f"\nSaved: {args.scene}")
 
+# The pipeline's proof that this step got to the end. Kit's python.sh exits 0 on an
+# uncaught exception and after kit.close() whatever came first (measured 2026-10-05),
+# so the exit status cannot say whether a step worked; build_nav_scene.sh requires
+# this exact line instead. Printed last, just before close.
+print("PIPELINE_STEP_OK add_cameras", flush=True)
 kit.close()

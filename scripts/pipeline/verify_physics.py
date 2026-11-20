@@ -7,15 +7,22 @@ Usage:
 
 import argparse
 import math
+import sys
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/scene.usda")
 parser.add_argument("--screenshot", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/docs/physics_verification.png")
 args = parser.parse_args()
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/, for alohamini1_specs
+from alohamini1_specs import KIT_GPU0  # noqa: E402
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+# GPU0 only, multi-GPU off: Kit's default multi_gpu runs a CUDA P2P test across both cards
+# at startup, and with the policy server filling GPU1 it fails and BLOCKS on a zenity
+# dialog (alohamini1_specs.KIT_GPU0).
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import omni.usd  # noqa: E402
 import omni.timeline  # noqa: E402
@@ -32,6 +39,14 @@ for _ in range(60):
 stage.Load()
 for _ in range(10):
     kit.update()
+
+# Before play: the PhysX GPU capacities every entry point that drives AlohaMini raises
+# (nav/sim/physics_setup.py), in the session layer so the stage file is never touched.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "nav" / "sim"))
+from physics_setup import raise_gpu_capacities  # noqa: E402
+
+for _line in raise_gpu_capacities(stage):
+    print(f"[physics] {_line}")
 
 # STEP 2: start physics and wrap the robot in an Articulation handle.
 timeline = omni.timeline.get_timeline_interface()

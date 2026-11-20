@@ -14,15 +14,33 @@ actually lives: it no longer has to imagine where (1.8, -0.6) is, it can see the
 drawn on the floor. And the failure mode we measured becomes structurally impossible --
 there is no number to copy when the answer is an integer.
 
-The geometry is a level-camera flat-floor pinhole projection, exact for this rig:
+The geometry is a level-camera flat-floor pinhole projection:
 
     fx = (W/2) / tan(fov_h / 2),  cx = W/2, cy = H/2, square pixels
-    a ground point (x forward, y left) at camera height h maps to
-    u = cx - fx * y / x        v = cy + fy * h / x
+    a ground point (x forward, y left) seen from a lens c metres ahead of the rotation
+    centre and h metres above the floor maps to
+    u = cx - fx * y / (x - c)        v = cy + fy * h / (x - c)
 
-Nothing here is learned or fitted. Both parameters come from the sim camera the frames
-were rendered with (`server_qwen.py`: 0.346 m, 90.1 deg), so if the numbers change, change
-them in one place.
+Nothing here is learned or fitted, and there are two geometries, chosen once per process
+by QVLA_MENU_GEOM:
+  legacy   c = 0, h = 0.346 -- the lens at the rotation centre. Every result recorded up to
+           2026-10 was drawn this way, including the paper's. It is wrong by the camera's
+           0.25 m forward mount and 0.008 m ride height, so each drawn point sits ~0.27 /
+           0.29 / 0.32 m further down the floor than the driven path at 1 / 2 / 3 m and
+           curved arcs look 0.8-4 deg straighter than they are.
+  mounted  c = NAV_CAMERA_FORWARD_M, h = NAV_CAMERA_HEIGHT_M + BASE_LINK_REST_Z_M, from
+           scripts/alohamini1_specs.py -- what camera_nav actually is.
+`legacy` stays the default so probes and videos of old runs reproduce bit for bit; a new
+measurement should run `mounted` and say so (it is on /health as `menu_geom`).
+
+A THIRD SOURCE, per request: `MenuCamera`. One server drives more than one body -- AlohaMini's
+level camera_nav and the G1's head D435, pitched 12 deg down on its mount and bobbing 11-16 deg
+while walking -- so a /predict request may carry the camera its frame was taken with:
+intrinsics, mount and the LIVE attitude at frame time, plus an optional subset of the menu's
+arcs. That camera is a full pinhole with pitch/roll/yaw (same convention as
+nav/sim/g1/camera_geometry.py, checked against it by nav/tools/check_menu_camera.py). A request
+WITHOUT one goes through the exact code path above, untouched, so every recorded menu still
+reproduces byte for byte.
 
 Label assignment is deliberately NOT left-to-right. Numbering the arcs in spatial order
 lets a model score well by answering "1" for left and "K" for right without ever looking
@@ -37,10 +55,27 @@ import os
 import re
 from dataclasses import dataclass
 
+import sys
+from pathlib import Path
+
 import numpy as np
 
-# The nav camera, from `nav/policy_server/server_qwen.py`'s prompt block. Level, forward.
-CAM_HEIGHT_M = 0.346
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from alohamini1_specs import (  # noqa: E402
+    BASE_LINK_REST_Z_M, NAV_CAMERA_FORWARD_M, NAV_CAMERA_HEIGHT_M,
+)
+
+# The nav camera: level, looking along +x. See the module docstring for the two geometries.
+MENU_GEOM = os.environ.get("QVLA_MENU_GEOM", "legacy").strip().lower()
+_GEOMS = {
+    "legacy": (0.346, 0.0),
+    "mounted": (NAV_CAMERA_HEIGHT_M + BASE_LINK_REST_Z_M, NAV_CAMERA_FORWARD_M),
+}
+if MENU_GEOM not in _GEOMS:
+    # Loudly: a typo falling back to `legacy` would label a run with the geometry it was
+    # meant to replace.
+    raise SystemExit(f"QVLA_MENU_GEOM must be one of {sorted(_GEOMS)}, got {MENU_GEOM!r}")
+CAM_HEIGHT_M, CAM_FORWARD_M = _GEOMS[MENU_GEOM]
 CAM_FOV_DEG = 90.1
 CAM_W, CAM_H = 1920, 1080
 
@@ -52,15 +87,21 @@ CAM_W, CAM_H = 1920, 1080
 # model's own downsample: frames are capped at QVLA_MAX_PIXELS (200704 px = 448x448),
 # which is 0.31x, so a 96 px label arrives about 30 px across.
 #
-# Measured, at 3 m, against a label disc ~115 px wide at full resolution:
+# Measured, at 3 m. CORRECTED 2026-10: the first version of this table said the disc was
+# ~115 px and that `fine` had no collisions. The disc `render_menu` draws is 2 * 96 * 0.72
+# = 138 px, and with `badge_xy` as written (unchanged since this table was added) `fine`
+# has two colliding pairs, the +-0.45/+-0.60 badges 115 px apart -- visible in recorded
+# warehouse_aisle6 videos of the hard_study 'all' arm. 158 px is its smallest gap that does
+# NOT collide. Under the `mounted` geometry those pairs close to 75 px.
 #
-#     set       n    smallest gap between adjacent labels    colliding pairs
-#     coarse    7          219 px                                  0
-#     fine     11          158 px                                  0
-#     (13)     13          108 px                                  4   <- rejected
+#     set       n    smallest gap (legacy)    colliding pairs    smallest gap (mounted)
+#     coarse    7          219 px                   0                  240 px
+#     fine     11          115 px                   2                   75 px
+#     (13)     13          108 px                   4   <- rejected
 #
-# So 11 is the densest menu whose labels still separate, and 13 is not a finer menu, it
-# is the same menu with two pairs of labels drawn on top of each other. The extra
+# So `coarse`, the shipping set, separates under both geometries; `fine` needs the outer
+# badges walked back along their arcs before it can be trusted, and 13 is not a finer menu,
+# it is the same menu with pairs of labels drawn on top of each other. The extra
 # resolution goes where there was a real gap -- between "gentle" (0.15) and "medium"
 # (0.35), a 26-to-60 degree jump with nothing in between. Nothing is added inside +-0.15:
 # those endpoints are 108 px apart and would collide, and a 3 m arc at 0.075 differs from
@@ -211,13 +252,25 @@ def arc_clearance(arcs: list[Arc], points, radius_m: float = CHASSIS_RADIUS_M,
     if points is None or len(points) == 0:
         return [length_m] * len(arcs)
     P = np.asarray(points, dtype=float).reshape(-1, 2)
+    # Blocked means "brings the chassis CLOSER than it already is", once something is
+    # already inside the disc. Every arc starts at the robot centre, so with a fixed 0.35 m
+    # disc any return within 0.35 m -- a wall to one side, or BEHIND -- blocked every arc at
+    # sample 0 and zeroed the whole menu, and `drivable` then kept index 0, the hardest
+    # right turn, even with that wall on the right. Measured: wall 0.30 m behind ->
+    # [0]*7; wall 0.30 m to the right -> [0]*7, kept kappa -0.60, i.e. into it. Shrinking
+    # the threshold to just under the current nearest return keeps the open side open
+    # (right wall at 0.30 -> [0.31, 0.38, 0.54, 3, 3, 3, 3]) and is IDENTICAL to the fixed
+    # disc whenever the nearest return is beyond 0.37 m, so the normal regime -- and every
+    # recorded number -- is unchanged.
+    d0 = float(np.hypot(P[:, 0], P[:, 1]).min())
+    thr = min(radius_m, d0 - 0.02)
     out = []
     for arc in arcs:
         A = arc.points
         # (n_arc, n_points) -- 7 x 40 x 500 for the coarse menu and a full revolution,
         # which is 140k distances and takes microseconds. No need to be clever.
         near = ((A[:, None, 0] - P[None, :, 0]) ** 2
-                + (A[:, None, 1] - P[None, :, 1]) ** 2) <= radius_m ** 2
+                + (A[:, None, 1] - P[None, :, 1]) ** 2) < thr ** 2
         idx = np.flatnonzero(near.any(axis=1))
         # The first blocked sample, not the count: an arc clear for 2 m and blocked after
         # is drivable for 2 m, and taking the whole arc as blocked would throw away the
@@ -247,22 +300,307 @@ def drivable(arcs: list[Arc], labels: list[int], clearance: list[float],
     """
     keep = [i for i, c in enumerate(clearance) if c >= min_clear_m]
     if not keep:
-        keep = [max(range(len(clearance)), key=lambda i: clearance[i])]
+        # Ties go to the STRAIGHTEST arc. `max` alone returns the first index, which is
+        # kappa -0.60, so an all-equal menu always collapsed to the hardest right turn.
+        keep = [max(range(len(clearance)),
+                    key=lambda i: (clearance[i], -abs(arcs[i].kappa)))]
     kept = set(keep)
     return ([arcs[i] for i in keep], [labels[i] for i in keep],
             [labels[i] for i in range(len(arcs)) if i not in kept])
 
 
 def project(x_forward: float, y_left: float, w: int = CAM_W, h: int = CAM_H,
-            fov_deg: float = CAM_FOV_DEG,
-            cam_h: float = CAM_HEIGHT_M) -> tuple[float, float] | None:
-    """Ground point -> pixel. None when the point is at or behind the camera plane."""
-    if x_forward <= 0.05:                       # behind, or on, the image plane
+            fov_deg: float = CAM_FOV_DEG, cam_h: float = CAM_HEIGHT_M,
+            cam_x: float = CAM_FORWARD_M) -> tuple[float, float] | None:
+    """Ground point in the ROBOT frame (rotation centre) -> pixel.
+
+    None when the point is at or behind the camera plane. Points between the robot and
+    the bottom of the frame project below `h`; callers draw through them and PIL clips.
+    """
+    depth = x_forward - cam_x                   # distance in front of the LENS
+    if depth <= 0.05:                           # behind, or on, the image plane
         return None
     fx = (w / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
-    u = w / 2.0 - fx * (y_left / x_forward)
-    v = h / 2.0 + fx * (cam_h / x_forward)      # square pixels, so fy == fx
+    u = w / 2.0 - fx * (y_left / depth)
+    v = h / 2.0 + fx * (cam_h / depth)          # square pixels, so fy == fx
     return u, v
+
+
+# --------------------------------------------------------------------------------------
+# A CAMERA PER REQUEST
+# --------------------------------------------------------------------------------------
+# `project()` above is the server's own camera: level, 90.1 deg, 1920x1080, mount fixed per
+# process by QVLA_MENU_GEOM. It is right for AlohaMini's camera_nav and wrong for anything
+# else, and the G1 is the case that forced the issue: its head D435 is 69 deg wide, sits
+# ~1.09 m up and looks 12 deg down on its mount, and the walking gait swings that to 11-16 deg
+# and rolls it a few degrees. The level formula puts every arc 150-250 px too high on that
+# camera (camera_geometry.py), and constants measured "while walking" are 253 px off the live
+# pose in the worst frame (g1/check, 64 frames). So the menu has to be drawn with the pose of
+# the frame it is drawn ON, which only the caller knows -- hence a camera in the request.
+#
+# The convention is camera_geometry.project_ground()'s, on purpose, so the G1 runner can pass
+# G1Locomotion.camera_pose()["menu_args"] through unchanged:
+#
+#     R_cam = Rz(yaw) @ Ry(pitch) @ Rx(roll) @ M_LEVEL          (heading frame: x fwd, y left, z up)
+#     pitch + = looking DOWN, roll + = image right side DOWN, yaw + = looking LEFT of the heading
+#     the lens at (cam_x forward, cam_y left, cam_h up) from the floor point under the rotation centre
+#
+# With B = Rz Ry Rx, B's columns are the camera's own forward / left / up axes, and a floor
+# point d = (x - cam_x, y - cam_y, -cam_h) maps to
+#
+#     depth = fwd . d     u = cx - fx * (left . d) / depth     v = cy - fy * (up . d) / depth
+#
+# which at zero attitude, cam_y = 0, fx = fy = (W/2)/tan(hfov/2), (cx, cy) = (W/2, H/2) is
+# exactly `project()`. Written out here rather than imported from camera_geometry so the check
+# tool compares two independent implementations, and so the server does not depend on the G1
+# package.
+#
+# THE KEYS ARE CLOSED. An unknown key is a ValueError, not ignored: `pitch` for `pitch_deg`
+# would otherwise draw a LEVEL menu on a pitched camera with no error anywhere -- the
+# second-copy-of-a-constant failure this repo keeps paying for.
+MENU_CAMERA_KEYS = (
+    "name", "width", "height", "fx", "fy", "cx", "cy", "hfov_deg",
+    "cam_h", "cam_x", "cam_y", "pitch_deg", "roll_deg", "yaw_deg",
+    "arcs", "min_visible_m", "prompt", "robot",
+)
+# The live-pose keys, the same six camera_geometry.MENU_ARG_KEYS names.
+MENU_POSE_KEYS = ("cam_h", "cam_x", "cam_y", "pitch_deg", "roll_deg", "yaw_deg")
+
+
+def _finite(name: str, v, lo: float | None = None, hi: float | None = None) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"camera.{name} must be a number, got {v!r}") from None
+    if not math.isfinite(f):
+        raise ValueError(f"camera.{name} must be finite, got {v!r}")
+    if (lo is not None and f < lo) or (hi is not None and f > hi):
+        raise ValueError(f"camera.{name} must be in [{lo}, {hi}], got {f}")
+    return f
+
+
+@dataclass(frozen=True)
+class MenuCamera:
+    """The camera a /predict frame was taken with, as far as drawing the menu needs.
+
+    `width`/`height` are the pixels the intrinsics refer to; when the frame actually drawn on
+    has another size the intrinsics are scaled to it (`for_image`). Either `fx` (optionally
+    `fy`, `cx`, `cy`) or `hfov_deg` gives the focal length, never both -- two statements of
+    one number are a disagreement waiting to happen. Square pixels and a centred principal
+    point are the defaults.
+    """
+
+    cam_h: float                       # lens height above the floor, m
+    cam_x: float = 0.0                 # lens forward of the rotation centre, m
+    cam_y: float = 0.0                 # lens left of the rotation centre, m
+    pitch_deg: float = 0.0             # + = looking down
+    roll_deg: float = 0.0              # + = image right side down
+    yaw_deg: float = 0.0               # + = looking left of the robot's heading
+    width: int | None = None
+    height: int | None = None
+    fx: float | None = None
+    fy: float | None = None
+    cx: float | None = None
+    cy: float | None = None
+    hfov_deg: float | None = None
+    name: str = ""
+    # Curvatures to offer, a subset of the server's set; None = all of them.
+    arcs: tuple[float, ...] | None = None
+    # Drop an arc from THIS frame's menu when less than this much of it is in frame.
+    min_visible_m: float | None = None
+    # Describe this camera (and `robot`) in the prompts instead of the server's own.
+    prompt: bool = False
+    robot: str = ""
+
+    # ------------------------------------------------------------------ construction
+    @classmethod
+    def from_request(cls, d: dict, curvatures=None) -> MenuCamera:
+        """Validate a request's `camera` dict. Raises ValueError naming the bad key."""
+        if not isinstance(d, dict):
+            raise ValueError(f"camera must be an object, got {type(d).__name__}")
+        unknown = sorted(set(d) - set(MENU_CAMERA_KEYS))
+        if unknown:
+            raise ValueError(f"camera has unknown keys {unknown}; allowed: {list(MENU_CAMERA_KEYS)}")
+        if d.get("cam_h") is None:
+            raise ValueError("camera.cam_h (lens height above the floor, m) is required")
+        has_fx, has_fov = d.get("fx") is not None, d.get("hfov_deg") is not None
+        if has_fx == has_fov:
+            raise ValueError("camera needs exactly one of fx (pixels) or hfov_deg")
+        kw: dict = {"cam_h": _finite("cam_h", d["cam_h"], 0.01, 10.0)}
+        kw["cam_x"] = _finite("cam_x", d.get("cam_x", 0.0), -5.0, 5.0)
+        kw["cam_y"] = _finite("cam_y", d.get("cam_y", 0.0), -5.0, 5.0)
+        # Under 90 deg each: a camera turned past that does not look along the floor ahead,
+        # and an arc menu drawn for it is meaningless rather than merely skewed.
+        for k in ("pitch_deg", "roll_deg", "yaw_deg"):
+            kw[k] = _finite(k, d.get(k, 0.0), -89.0, 89.0)
+        for k in ("width", "height"):
+            if d.get(k) is not None:
+                v = _finite(k, d[k], 1, 20000)
+                if v != int(v):
+                    raise ValueError(f"camera.{k} must be a whole number of pixels, got {v}")
+                kw[k] = int(v)
+        if has_fov:
+            kw["hfov_deg"] = _finite("hfov_deg", d["hfov_deg"], 1.0, 179.0)
+            for k in ("fy", "cx", "cy"):
+                if d.get(k) is not None:
+                    raise ValueError(f"camera.{k} needs fx; with hfov_deg the pixels are square "
+                                     f"and the principal point is the image centre")
+        else:
+            kw["fx"] = _finite("fx", d["fx"], 1.0, 1e6)
+            for k in ("fy", "cx", "cy"):
+                if d.get(k) is not None:
+                    kw[k] = _finite(k, d[k], -1e6, 1e6)
+            if kw.get("fy") is not None and kw["fy"] <= 0:
+                raise ValueError(f"camera.fy must be positive, got {kw['fy']}")
+        if d.get("name") is not None:
+            kw["name"] = str(d["name"])[:64]
+        if d.get("robot") is not None:
+            robot = " ".join(str(d["robot"]).split())
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 \-]{0,39}", robot):
+                raise ValueError(f"camera.robot must be a short plain noun phrase, got {d['robot']!r}")
+            kw["robot"] = robot
+        if d.get("prompt") is not None:
+            if not isinstance(d["prompt"], bool):
+                raise ValueError(f"camera.prompt must be true/false, got {d['prompt']!r}")
+            kw["prompt"] = d["prompt"]
+        if d.get("min_visible_m") is not None:
+            kw["min_visible_m"] = _finite("min_visible_m", d["min_visible_m"], 0.0, 100.0)
+        if d.get("arcs") is not None:
+            have = tuple(float(k) for k in (DEFAULT_CURVATURES if curvatures is None else curvatures))
+            req = d["arcs"]
+            if not isinstance(req, (list, tuple)) or not req:
+                raise ValueError(f"camera.arcs must be a non-empty list of curvatures, got {req!r}")
+            want = set()
+            for k in req:
+                kf = _finite("arcs[]", k)
+                match = [h for h in have if abs(h - kf) < 1e-6]
+                if not match:
+                    # Membership, not "nearest": the plan is built from the chosen kappa, and
+                    # a curvature the server does not draw is one nobody has looked at.
+                    raise ValueError(f"camera.arcs: {kf} is not on this server's menu {list(have)}")
+                want.add(match[0])
+            kw["arcs"] = tuple(h for h in have if h in want)      # the server's order
+        return cls(**kw)
+
+    def for_image(self, w: int, h: int) -> tuple[float, float, float, float]:
+        """(fx, fy, cx, cy) in the pixels of a `w` x `h` frame."""
+        rw = self.width if self.width is not None else w
+        rh = self.height if self.height is not None else h
+        if self.fx is not None:
+            fx = self.fx
+            fy = self.fy if self.fy is not None else fx
+            cx = self.cx if self.cx is not None else rw / 2.0
+            cy = self.cy if self.cy is not None else rh / 2.0
+        else:
+            fx = fy = (rw / 2.0) / math.tan(math.radians(self.hfov_deg) / 2.0)
+            cx, cy = rw / 2.0, rh / 2.0
+        sx, sy = w / float(rw), h / float(rh)
+        return fx * sx, fy * sy, cx * sx, cy * sy
+
+    def axes(self) -> np.ndarray:
+        """(3, 3): columns are the camera's forward, left and up axes in the heading frame."""
+        p, r, y = (math.radians(self.pitch_deg), math.radians(self.roll_deg),
+                   math.radians(self.yaw_deg))
+        cz, sz, cyy, syy, cr, sr = (math.cos(y), math.sin(y), math.cos(p), math.sin(p),
+                                    math.cos(r), math.sin(r))
+        rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+        ry = np.array([[cyy, 0.0, syy], [0.0, 1.0, 0.0], [-syy, 0.0, cyy]])
+        rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+        return rz @ ry @ rx
+
+    def projector(self, w: int, h: int):
+        """A `project`-shaped function (x_forward, y_left) -> (u, v) | None for a w x h frame.
+
+        Same depth cut as `project()` -- None at or behind 5 cm in front of the lens -- and
+        the same habit of returning off-frame pixels for the caller to clip."""
+        fx, fy, cx, cy = self.for_image(w, h)
+        B = self.axes()
+        f, l, u = B[:, 0], B[:, 1], B[:, 2]
+        cam = np.array([self.cam_x, self.cam_y, 0.0])
+        hz = self.cam_h
+
+        def proj(x_forward: float, y_left: float) -> tuple[float, float] | None:
+            d = (x_forward - cam[0], y_left - cam[1], -hz)
+            depth = f[0] * d[0] + f[1] * d[1] + f[2] * d[2]
+            if depth <= 0.05:
+                return None
+            return (float(cx - fx * (l[0] * d[0] + l[1] * d[1] + l[2] * d[2]) / depth),
+                    float(cy - fy * (u[0] * d[0] + u[1] * d[1] + u[2] * d[2]) / depth))
+        return proj
+
+    def project(self, x_forward: float, y_left: float, w: int, h: int
+                ) -> tuple[float, float] | None:
+        """One floor point -> pixel. Build a `projector` once instead for many points."""
+        return self.projector(w, h)(x_forward, y_left)
+
+    def visible_m(self, arcs: list[Arc], w: int, h: int, n: int = 301) -> list[float]:
+        """Metres of each arc that land inside a w x h frame, sampled every length/(n-1)."""
+        proj = self.projector(w, h)
+        out = []
+        for arc in arcs:
+            length = float(np.sum(np.hypot(*np.diff(arc.points, axis=0).T)))
+            pts = make_arcs((arc.kappa,), length_m=length, n_points=n)[0].points
+            inside = 0
+            for x, y in pts:
+                p = proj(float(x), float(y))
+                if p is not None and 0.0 <= p[0] < w and 0.0 <= p[1] < h:
+                    inside += 1
+            out.append(round(length * inside / n, 3))
+        return out
+
+    def record(self, w: int | None = None, h: int | None = None) -> dict:
+        """The camera as a JSON-able dict, with the intrinsics resolved for the drawn frame."""
+        rec = {"source": "request", "model": "pinhole", "name": self.name,
+               **{k: round(float(getattr(self, k)), 5) for k in MENU_POSE_KEYS},
+               "width": self.width, "height": self.height, "fx": self.fx, "fy": self.fy,
+               "cx": self.cx, "cy": self.cy, "hfov_deg": self.hfov_deg,
+               "arcs": list(self.arcs) if self.arcs is not None else None,
+               "min_visible_m": self.min_visible_m, "prompt": self.prompt,
+               "robot": self.robot or None}
+        if w is not None and h is not None:
+            fx, fy, cx, cy = self.for_image(w, h)
+            rec["drawn_wh"] = [int(w), int(h)]
+            rec["drawn_intrinsics"] = [round(fx, 4), round(fy, 4), round(cx, 4), round(cy, 4)]
+        return rec
+
+    @classmethod
+    def from_record(cls, rec: dict) -> MenuCamera:
+        """Inverse of `record()` for replay tools (the video's chosen-arc highlight)."""
+        keys = set(MENU_CAMERA_KEYS)
+        d = {k: v for k, v in rec.items() if k in keys and v is not None}
+        if d.get("arcs") is not None:
+            d["arcs"] = list(d["arcs"])
+        return cls.from_request(d, curvatures=d.get("arcs") or DEFAULT_CURVATURES)
+
+
+def default_camera_record() -> dict:
+    """What a request WITHOUT a camera is drawn with, in the same shape as `MenuCamera.record`.
+
+    Recorded on every such decision so a row says which camera drew it without the reader
+    having to know what QVLA_MENU_GEOM meant on the day."""
+    return {"source": "server", "model": "level", "geom": MENU_GEOM,
+            "hfov_deg": CAM_FOV_DEG, "width": CAM_W, "height": CAM_H,
+            "cam_h": round(CAM_HEIGHT_M, 5), "cam_x": round(CAM_FORWARD_M, 5), "cam_y": 0.0,
+            "pitch_deg": 0.0, "roll_deg": 0.0, "yaw_deg": 0.0, "arcs": None}
+
+
+def camera_keep(arcs: list[Arc], camera: MenuCamera, w: int, h: int
+                ) -> tuple[list[int], list[float]]:
+    """Which of `arcs` a camera's menu offers, and how many metres of EVERY arc are in frame.
+
+    Returns (kept indices into `arcs`, visible metres per arc). The subset (`camera.arcs`)
+    goes first; `min_visible_m` then drops arcs this frame cannot show -- a badge clamped to
+    the border over 0.2 m of curve is a choice the model cannot see. As with `drivable`,
+    never empty: if nothing is visible enough, the most visible arc stays (ties to the
+    straightest). Indices, not labels, so the caller keeps the shuffle untouched.
+    """
+    idx = list(range(len(arcs))) if camera.arcs is None else [
+        i for i, a in enumerate(arcs) if any(abs(a.kappa - k) < 1e-9 for k in camera.arcs)]
+    visible = camera.visible_m(arcs, w, h)
+    if camera.min_visible_m is not None and idx:
+        seen = [i for i in idx if visible[i] >= camera.min_visible_m]
+        idx = seen or [max(idx, key=lambda i: (visible[i], -abs(arcs[i].kappa)))]
+    return idx, visible
 
 
 def badge_xy(px: list[tuple[float, float]], w: float, h: float,
@@ -367,7 +705,9 @@ def _rotation_glyph(draw, cx: float, cy: float, r: float, clockwise: bool,
 
 def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[int],
                 width: int = 13, font_size: int = 96,
-                pivot_labels: tuple[int, int] | None = None) -> str:
+                pivot_labels: tuple[int, int] | None = None,
+                camera: MenuCamera | None = None,
+                colours: list[int] | None = None) -> str:
     """Draw the arcs and their labels onto a copy of the frame. Returns `out_path`.
 
     Each arc gets a dark outline under its colour: hallway floors in these scenes are
@@ -378,11 +718,18 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
     The defaults are sized for that budget, not for this file's own preview: 1920x1080 into
     200704 pixels is a 0.31x scale, so a 96 px label arrives as ~30 px and a 13 px stroke as
     ~4 px. Judge any change to them on the downsampled image, never on the full-size one.
+
+    `camera` is the request's own camera (see `MenuCamera`); None draws with `project()`
+    exactly as before. `colours` gives each arc's palette index -- callers that draw a
+    SUBSET pass the arcs' indices in the full menu so an arc keeps its colour whatever else
+    was dropped; None numbers them by position, as before.
     """
     from PIL import Image, ImageDraw, ImageFont
 
     if len(labels) != len(arcs):
         raise ValueError(f"{len(labels)} labels for {len(arcs)} arcs")
+    if colours is not None and len(colours) != len(arcs):
+        raise ValueError(f"{len(colours)} colours for {len(arcs)} arcs")
     im = Image.open(image_path).convert("RGB")
     w, h = im.size
     draw = ImageDraw.Draw(im)
@@ -391,12 +738,20 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
     except OSError:
         font = ImageFont.load_default()
+    # Two separate branches rather than a camera object for the default case too: the
+    # no-camera path must stay the literal expression every recorded menu was drawn with,
+    # so a replay is byte-identical rather than identical-up-to-rounding.
+    cam_proj = camera.projector(w, h) if camera is not None else None
 
     for i, (arc, label) in enumerate(zip(arcs, labels)):
-        px = [p for p in (project(x, y, w, h) for x, y in arc.points) if p is not None]
+        if cam_proj is None:
+            px = [p for p in (project(x, y, w, h) for x, y in arc.points) if p is not None]
+        else:
+            px = [p for p in (cam_proj(float(x), float(y)) for x, y in arc.points)
+                  if p is not None]
         if len(px) < 2:
             continue
-        colour = _PALETTE[i % len(_PALETTE)]
+        colour = _PALETTE[(i if colours is None else colours[i]) % len(_PALETTE)]
         draw.line(px, fill=(20, 20, 20), width=width + 6, joint="curve")
         draw.line(px, fill=colour, width=width, joint="curve")
 
@@ -418,6 +773,11 @@ def render_menu(image_path: str, out_path: str, arcs: list[Arc], labels: list[in
         # the arrowhead needs room outside it. Still comfortably above the horizon --
         # `project` puts every floor point below h/2, and the glyph's furthest reach is
         # about 1.3r from a centre at 0.28h.
+        # With a request `camera` that guarantee is NOT geometric any more: a camera pitched
+        # down puts floor above h/2. For the G1 nav mount (12 deg + 0-5 deg of gait) the 3 m
+        # arcs still end well below the glyphs; for the real 47.6 deg mount they leave the
+        # top of the frame and the glyphs would sit on them. check_menu_camera.py measures
+        # both; keep pivots off for a camera that looks at the floor.
         r = font_size * 1.05
         for (fx, fy), label, cw in zip(_PIVOT_XY, pivot_labels, (False, True)):
             cx, cy = fx * w, fy * h
@@ -471,6 +831,17 @@ DESCRIBE_SIDED = (
     "object straight ahead of the robot within about 3 metres? Name it, or say the way "
     "ahead is open. Second: say which direction has the most open, walkable floor the "
     "robot could drive along -- far left, left, straight ahead, right, or far right.")
+
+# Appended to the describe question when QVLA_KERB_PROMPT=1 (server_qwen.py). The question
+# above asks for walls, doors and large objects, and a 13 cm kerb is none of those: on the
+# contact ladder (2026-10-11) the robot was held at island kerbs for 130-183 s on library and
+# ramp_fountain while the describe call, looking at the kerb filling the lower third of the
+# frame right after a reverse (library menu_00002430), answered "the way ahead is open" on 6
+# of 8 re-decisions. The wheels are 5 cm and the contact layer's step limit is 4.5 cm.
+DESCRIBE_KERB = (
+    " Count a kerb, a curb, a step, a raised edge or a low wall as a wall: this robot's "
+    "wheels are 5 cm tall and it cannot drive over anything higher than about 4 cm, so if "
+    "one crosses the way ahead, name it and do not call the way ahead open.")
 
 # --------------------------------------------------------------------------------------
 # WHY THE SUPERLATIVE ABOVE IS THE CEILING ON THIS WHOLE POLICY
@@ -622,6 +993,55 @@ DESCRIBE_MEMORY = (
     " Also: comparing the two frames, say in a few words whether the robot is approaching "
     "the place the instruction names, has already driven past it, or is not making "
     "progress at all.")
+
+# --------------------------------------------------------------------------------------
+# The camera sentence, when a request brings its own camera
+# --------------------------------------------------------------------------------------
+# Every system prompt above opens by telling the model what it is looking through: "a small
+# wheeled robot ... 0.35 m above the floor, level, 90 degree". That is true of camera_nav and
+# false of a G1's head camera (1.1 m, tilted ~15 deg down, 69 deg). It is changed ONLY when
+# the request's camera asks for it (`prompt: true`) -- the default keeps every model call
+# word for word what was measured, and drawing the menu correctly does not depend on it.
+# With `prompt` off, or no camera at all, these return the original strings exactly.
+_WHEELED = "small wheeled robot"
+
+
+def _camera_parts(camera: MenuCamera | None) -> tuple[str, str]:
+    """(robot noun phrase with its article, the "The camera is ..." sentence)."""
+    if camera is None or not camera.prompt:
+        return (f"a {_WHEELED}",
+                f"The camera is {CAM_HEIGHT_M:.2f} m above the floor, level, with a "
+                f"{CAM_FOV_DEG:.0f} degree horizontal field of view.")
+    robot = camera.robot or _WHEELED
+    article = "an" if robot[0].lower() in "aeiou" else "a"
+    tilt = int(round(camera.pitch_deg))
+    attitude = ("level" if tilt == 0 else
+                f"tilted {abs(tilt)} degrees {'down' if tilt > 0 else 'up'}")
+    if camera.hfov_deg is not None:
+        hfov = camera.hfov_deg
+    else:
+        ref_w = camera.width if camera.width is not None else (
+            2.0 * camera.cx if camera.cx is not None else None)
+        hfov = (math.degrees(2.0 * math.atan((ref_w / 2.0) / camera.fx))
+                if ref_w is not None else None)
+    fov = f", with a {hfov:.0f} degree horizontal field of view" if hfov is not None else ""
+    return (f"{article} {robot}",
+            f"The camera is {camera.cam_h:.2f} m above the floor, {attitude}{fov}.")
+
+
+def free_space_system(camera: MenuCamera | None = None, two_frames: bool = False) -> str:
+    """FREE_SPACE_SYSTEM / FREE_SPACE_SYSTEM_2, with the request camera's sentence if asked."""
+    if camera is None or not camera.prompt:
+        return FREE_SPACE_SYSTEM_2 if two_frames else FREE_SPACE_SYSTEM
+    robot, sentence = _camera_parts(camera)
+    if two_frames:
+        return (f"You are looking through the forward camera of {robot}. {sentence} You are "
+                f"given two frames from that camera: the FIRST is where the robot was a few "
+                f"seconds ago, the SECOND is where it is now. Describe the SECOND image. Use "
+                f"the first only to judge whether the robot is getting closer to things or "
+                f"has driven past them. Answer briefly and literally.")
+    return (f"You are looking through the forward camera of {robot}. {sentence} Answer "
+            f"briefly and literally, describing only what is visible in this image.")
 
 # The two sentences above are verbatim what was measured; this is appended, not merged, so
 # the validated part of the question is still being asked in the same words.
@@ -1031,8 +1451,12 @@ SELECT_PREFILL_SPEED = "The two numbers are "
 def select_system(stop_label: int, stop_allowed: bool = True,
                   speed_choice: bool = False,
                   pivot_labels: tuple[int, int] | None = None,
-                  goal_dir: bool = False) -> str:
+                  goal_dir: bool = False,
+                  camera: MenuCamera | None = None) -> str:
     """The arc-selection system prompt, with `stop_label` reserved for stopping.
+
+    `camera` changes only the opening camera sentence, and only when its `prompt` flag is
+    set (see `_camera_parts`); otherwise the text is exactly what it always was.
 
     `goal_dir=True` swaps `STAGE_RULE` for `STAGE_RULE_GOAL` and rewrites the path-judging
     sentence, and the two go together: the rule tells the model to rank open paths by the
@@ -1128,9 +1552,9 @@ speed deliberately: slow down to place the robot accurately, keep the speed up i
 still ground to cover. A low number never means stopping -- it means moving gently. \
 Write nothing but the two numbers.""" if speed_choice else
                    f"Answer with the number {what} and nothing else.")
-    return f"""You are the navigation system of a small wheeled robot, looking through its \
-forward camera. The camera is {CAM_HEIGHT_M:.2f} m above the floor, level, with a \
-{CAM_FOV_DEG:.0f} degree horizontal field of view.
+    robot, cam_sentence = _camera_parts(camera)
+    return f"""You are the navigation system of {robot}, looking through its \
+forward camera. {cam_sentence}
 
 Several candidate paths have been drawn onto the floor of the image. Each one is a real \
 route the robot can drive, starting at the robot and curving away from it, and each ends \

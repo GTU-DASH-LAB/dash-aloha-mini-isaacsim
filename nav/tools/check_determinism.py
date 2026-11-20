@@ -26,9 +26,10 @@ enough to get an explanation written for it:
   - `nav/results/<arm>/*_warehouse_*.json` also matches `warehouse_aisle6_braking.json`,
     so `warehouse` was compared against a different episode's frames -- 30 grey levels of
     difference, which reads exactly like a scene change.
-  - `/tmp/qvla-menus/` accumulates a directory per run for weeks, and different episodes
-    have different totals, so indexing from the end (`sorted(...)[-4:]`) lines up
-    different runs for different episodes.
+  - the menu directory (`nav/results/menus/`, formerly `/tmp/qvla-menus/`) accumulates
+    a directory per run for weeks, and different episodes have different totals, so
+    indexing from the end (`sorted(...)[-4:]`) lines up different runs for different
+    episodes.
 
 Hence exact equality on the episode name in both places, and the menu directory chosen
 by timestamp: a run's menu directory is stamped when it STARTS and its result file when
@@ -48,7 +49,7 @@ from PIL import Image
 
 REPO = Path(__file__).resolve().parents[2]
 STUDY = REPO / "nav/results/hard_study"
-MENUS = Path("/tmp/qvla-menus")
+MENUS = Path(os.environ.get("QVLA_MENU_DIR", REPO / "nav/results/menus"))
 
 # A menu directory is named "<15-char stamp>_<episode>": "20260902-110026_warehouse".
 _STAMP = len("20260902-110026")
@@ -115,7 +116,7 @@ def main() -> int:
     for ep in shared:
         da, db = menu_dir(ep, a_runs[ep]), menu_dir(ep, b_runs[ep])
         if not (da and db):
-            print(f"{ep:<30}  no menu directory on disk -- /tmp/qvla-menus was cleared")
+            print(f"{ep:<30}  no menu directory on disk under {MENUS}")
             continue
         mean, hi, vhi = frame_delta(da, db)
         ra, rb = decisions(da), decisions(db)

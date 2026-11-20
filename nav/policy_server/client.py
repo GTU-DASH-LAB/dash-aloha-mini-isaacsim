@@ -21,6 +21,53 @@ class PolicyServerError(RuntimeError):
     pass
 
 
+# The keys server_qwen's `camera` accepts (arc_menu.MENU_CAMERA_KEYS). Repeated here, not
+# imported, because this module stays stdlib-only for Isaac Sim's interpreter; the server
+# rejects any key it does not know with a 422, so a drift between the two copies is loud.
+CAMERA_KEYS = (
+    "name", "width", "height", "fx", "fy", "cx", "cy", "hfov_deg",
+    "cam_h", "cam_x", "cam_y", "pitch_deg", "roll_deg", "yaw_deg",
+    "arcs", "min_visible_m", "prompt", "robot",
+)
+POSE_KEYS = ("cam_h", "cam_x", "cam_y", "pitch_deg", "roll_deg", "yaw_deg")
+
+
+def camera_from_spec(cam_spec: dict[str, Any], menu_args: dict[str, Any], *,
+                     name: str | None = None, arcs: list[float] | None = None,
+                     min_visible_m: float | None = None, prompt: bool | None = None,
+                     robot: str | None = None) -> dict[str, Any]:
+    """The `camera` payload for one frame: fixed optics from a camera spec, LIVE pose.
+
+    `cam_spec` is an asset_spec-style camera entry (nav/results/g1/asset_spec.json's
+    `nav_camera` / `head_camera_real`): `resolution_wh` and `intrinsics_px` {fx, fy, cx, cy}.
+    `menu_args` is the pose AT FRAME TIME in nav/sim/g1/camera_geometry.py's convention --
+    G1Locomotion.camera_pose(cam_spec)["menu_args"] read in the same update the frame was
+    grabbed in. All six pose keys are required: a missing one raises here rather than
+    letting the server draw a level menu on a pitched camera.
+    """
+    missing = [k for k in POSE_KEYS if menu_args.get(k) is None]
+    if missing:
+        raise ValueError(f"menu_args is missing {missing}: send the live camera pose")
+    w, h = cam_spec["resolution_wh"]
+    intr = cam_spec["intrinsics_px"]
+    cam: dict[str, Any] = {
+        "name": name if name is not None else str(cam_spec.get("label", "")),
+        "width": int(w), "height": int(h),
+        "fx": float(intr["fx"]), "fy": float(intr["fy"]),
+        "cx": float(intr["cx"]), "cy": float(intr["cy"]),
+        **{k: float(menu_args[k]) for k in POSE_KEYS},
+    }
+    if arcs is not None:
+        cam["arcs"] = [float(k) for k in arcs]
+    if min_visible_m is not None:
+        cam["min_visible_m"] = float(min_visible_m)
+    if prompt is not None:
+        cam["prompt"] = bool(prompt)
+    if robot is not None:
+        cam["robot"] = str(robot)
+    return cam
+
+
 class PolicyClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 8765, timeout: float = 120.0):
         self.base = f"http://{host}:{port}"
@@ -138,6 +185,10 @@ class PolicyClient:
         wait_fresh: bool = False,
         wait_inflight: bool = False,
         scan_points: list[list[float]] | None = None,
+        yaw_delta_rad: float = 0.0,
+        pose_world: list[float] | None = None,
+        sim_time: float | None = None,
+        camera: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -189,6 +240,20 @@ class PolicyClient:
         since a 90 degree frame cannot measure the width of a gap it is looking at. Sent
         as points rather than ranges so the frame convention travels with the data.
 
+        `pose_world` (x, y, yaw) and `sim_time` are the robot's own pose and clock at this
+        call. With both, server_qwen reframes the plan it serves against THAT plan's own
+        generation start instead of the anchor implied by `time_delay` / dx,dy /
+        `yaw_delta_rad`, which in async mode is one generation too old on every call that
+        picks up a freshly finished plan. The response's `plan_age_s` is the staleness the
+        server actually applied.
+
+        `camera` is the camera THIS frame was taken with -- intrinsics, mount and the live
+        pitch/roll/yaw at frame time, plus optionally an arc subset (see
+        `camera_from_spec`). server_qwen draws the arc menu with it instead of its own level
+        camera_nav model, which is what lets one server drive a second body (the G1's head
+        D435). None -- the default -- leaves the request byte-identical to what it was
+        before the field existed, and the server draws exactly as it always has.
+
         All of them are ignored by `server.py`, so they are safe to send either way. That is
         not incidental: the runner talks to whichever server is listening, and a field that
         broke the TIC-VLA baseline would make the two policies un-comparable on the same
@@ -196,34 +261,50 @@ class PolicyClient:
         asynchronous by design, so sending it True does not make that baseline synchronous
         and a run must not be labelled as though it had.
         """
+        if camera is not None:
+            unknown = sorted(set(camera) - set(CAMERA_KEYS))
+            if unknown:
+                raise ValueError(f"camera has unknown keys {unknown}; allowed: {list(CAMERA_KEYS)}")
         if (image_paths is None) == (images is None):
             raise ValueError(
                 "pass exactly one of image_paths= (server reads them off its own disk) "
                 "or images= (raw encoded frames, for a robot that shares no filesystem "
                 "with the server)")
 
-        return self._post(
-            "/predict",
-            {
-                "image_paths": image_paths or [],
-                # Encoded here rather than by the caller so the wire format stays this
-                # module's business. `images` is a list of ENCODED frames -- the bytes of
-                # a JPEG or PNG, not a raw pixel buffer -- oldest first, same order and
-                # same meaning as image_paths.
-                "images_b64": ([base64.b64encode(b).decode("ascii") for b in images]
-                               if images is not None else None),
-                "instruction": instruction,
-                "robot_state": robot_state if robot_state is not None else [0.0] * 6,
-                "current_step": current_step,
-                "time_delay": time_delay,
-                "previous_waypoints_text": previous_waypoints_text,
-                "delayed_image_paths": delayed_image_paths,
-                "robot_type": robot_type,
-                "recovered": recovered,
-                "recovery_kind": recovery_kind,
-                "stalled_s": stalled_s,
-                "wait_fresh": wait_fresh,
-                "wait_inflight": wait_inflight,
-                "scan_points": scan_points,
-            },
-        )
+        payload = {
+            "image_paths": image_paths or [],
+            # Encoded here rather than by the caller so the wire format stays this
+            # module's business. `images` is a list of ENCODED frames -- the bytes of
+            # a JPEG or PNG, not a raw pixel buffer -- oldest first, same order and
+            # same meaning as image_paths.
+            "images_b64": ([base64.b64encode(b).decode("ascii") for b in images]
+                           if images is not None else None),
+            "instruction": instruction,
+            "robot_state": robot_state if robot_state is not None else [0.0] * 6,
+            "current_step": current_step,
+            "time_delay": time_delay,
+            "previous_waypoints_text": previous_waypoints_text,
+            "delayed_image_paths": delayed_image_paths,
+            "robot_type": robot_type,
+            "recovered": recovered,
+            "recovery_kind": recovery_kind,
+            "stalled_s": stalled_s,
+            "wait_fresh": wait_fresh,
+            "wait_inflight": wait_inflight,
+            "scan_points": scan_points,
+            # Heading change since the generation behind the plan, paired with the
+            # dx,dy tail of robot_state. server_qwen re-serves a CACHED plan and must
+            # rotate it as well as translate it into the current body frame; left
+            # at 0.0 it translated only, so a turn already under way was asked for
+            # again on every re-serve -- about 1.9x the chosen yaw on a repeated arc.
+            # server.py (TIC-VLA) ignores the field: its action expert re-runs on
+            # the current frame, so nothing it returns is stale in heading.
+            "yaw_delta_rad": yaw_delta_rad,
+            "pose_world": pose_world,
+            "sim_time": sim_time,
+        }
+        # Only when given, so a caller without a camera sends exactly the bytes it sent
+        # before this field existed.
+        if camera is not None:
+            payload["camera"] = camera
+        return self._post("/predict", payload)

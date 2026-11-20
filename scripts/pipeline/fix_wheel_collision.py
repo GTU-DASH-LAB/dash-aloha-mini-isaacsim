@@ -20,11 +20,12 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
-from alohamini1_specs import WHEEL_RADIUS_M  # noqa: E402
+from alohamini1_specs import KIT_GPU0, WHEEL_RADIUS_M  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/scene.usda")
@@ -32,7 +33,7 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import omni.usd  # noqa: E402
 from pxr import UsdPhysics, UsdGeom, UsdShade, Sdf  # noqa: E402
@@ -46,12 +47,35 @@ stage.Load()
 for _ in range(10):
     kit.update()
 
+
+def fail_if_missing(missing: list[str], step: str) -> None:
+    """End the step WITHOUT its sentinel (and without saving) if the robot was not all there.
+
+    These used to be warnings the step printed and walked past, and Kit then exited 0 like
+    it always does, so a build missing a joint drive or a wheel collider was published as
+    complete. None of them fire on a real build (every nav and scene build log on disk),
+    so any of them firing means the stage is not the robot this step was written for.
+    os._exit(1), not kit.close() + SystemExit: close() ends the process with status 0
+    before the raise is reached (measured 2026-10-05).
+    """
+    if not missing:
+        return
+    print(f"\nERROR: {step}: {len(missing)} expected robot prim(s) missing -- NOT saved:",
+          file=sys.stderr)
+    for what in missing:
+        print(f"  - {what}", file=sys.stderr)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1)
+
+
 # 1. Disable base_link's own shell collision (the culprit, confirmed via raycast).
 # The collision prim is an instance proxy (shares a prototype with other links) --
 # USD doesn't allow authoring overrides directly on instance proxies. Un-instance the
 # specific instance root first (verified via find_instance_root.py: it's one level up,
 # not the collision prim itself) so this one copy becomes independently editable
 # without affecting other instances of the same prototype elsewhere in the scene.
+missing: list[str] = []
 instance_root_path = "/World/Aloha/Geometry/base_link/base_link"
 instance_root_prim = stage.GetPrimAtPath(instance_root_path)
 if instance_root_prim.IsValid() and instance_root_prim.IsInstance():
@@ -59,6 +83,9 @@ if instance_root_prim.IsValid() and instance_root_prim.IsInstance():
     print(f"Un-instanced: {instance_root_path}")
 else:
     print(f"WARNING: expected instance root not found or not an instance: {instance_root_path}")
+    if not instance_root_prim.IsValid():
+        # Not an instance any more is a re-run on a fixed stage; ABSENT is a different robot.
+        missing.append(f"base_link instance root {instance_root_path}")
 
 shell_collision_path = "/World/Aloha/Geometry/base_link/base_link/base_link"
 shell_prim = stage.GetPrimAtPath(shell_collision_path)
@@ -67,6 +94,9 @@ if shell_prim.IsValid() and shell_prim.HasAPI(UsdPhysics.CollisionAPI):
     print(f"Disabled collision on: {shell_collision_path}")
 else:
     print(f"WARNING: expected shell collision prim not found or missing CollisionAPI: {shell_collision_path}")
+    # Left enabled, the shell's convex hull reaches below the tyres and the robot sits on
+    # its belly (the 09-01 stub stage drove exactly that robot).
+    missing.append(f"base_link shell collider {shell_collision_path}")
 
 # 2. Create a friction material and bind it to the ground + wheels.
 mat_path = "/World/Physics/WheelFrictionMaterial"
@@ -88,6 +118,7 @@ for wheel_name, link_path in WHEEL_LINK_PATHS.items():
     link_prim = stage.GetPrimAtPath(link_path)
     if not link_prim.IsValid():
         print(f"WARNING: wheel link not found: {link_path}")
+        missing.append(f"wheel link {link_path}")
         continue
 
     # Each wheel link is itself an instance root (verified via find_instance_root2.py)
@@ -127,7 +158,15 @@ if ground_prim.IsValid():
 else:
     print(f"WARNING: ground plane not found at {ground_path}")
 
+# The ground plane is the ENVIRONMENT's, not the robot's: outdoor_small has none, and that
+# warning is expected there. Everything above is the robot, and must be there.
+fail_if_missing(missing, "fix_wheel_collision")
 stage.Save()
 print(f"\nSaved: {args.scene}")
 
+# The pipeline's proof that this step got to the end. Kit's python.sh exits 0 on an
+# uncaught exception and after kit.close() whatever came first (measured 2026-10-05),
+# so the exit status cannot say whether a step worked; build_nav_scene.sh requires
+# this exact line instead. Printed last, just before close.
+print("PIPELINE_STEP_OK fix_wheel_collision", flush=True)
 kit.close()

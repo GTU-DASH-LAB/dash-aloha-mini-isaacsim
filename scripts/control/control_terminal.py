@@ -59,8 +59,10 @@ How this file is organized (top to bottom):
   4. sim_command_ready() / _require_sim()  -- the Stop/Play guard: everything that
                                               touches PhysX goes through this
   5. Kinematic base drive                  -- _apply_kinematic_base_step(), called
-                                              every frame by every loop (see comment
-                                              there for why it's kinematic)
+                                              every frame by every loop; a thin call
+                                              into nav/sim/base_drive.KinematicBase,
+                                              with nav/sim/kinematic_contact.py attached
+                                              (see the comment there for why)
   6. Command functions                     -- set_arm_joint / set_gripper / set_lift /
                                               set_base_velocity / status / screenshot
   7. Joystick machinery                    -- JOYSTICK_MAP, rates, apply_joystick_state()
@@ -90,12 +92,17 @@ except ImportError:
               "disabled. Run: ~/isaacsim/python.sh -m pip install gnureadline")
 
 sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
+# nav/sim, for the ONE kinematic base drive both this REPL and the navigation runner use.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "nav" / "sim"))
+from base_drive import KinematicBase  # noqa: E402
+from kinematic_contact import KinematicContact  # noqa: E402
 from alohamini1_specs import (  # noqa: E402
     ARM_JOINT_GAINS,
     ARM_JOINT_LIMITS_RAD,
     CAMERA_PRIM_PATHS,
     JAW_CLOSED_RAD,
     JAW_OPEN_RAD,
+    KIT_GPU0,
     LIFT_MAX_M,
     LIFT_MIN_M,
     WHEEL_NAMES,
@@ -241,6 +248,9 @@ parser.add_argument("--joystick-network", action="store_true",
                      help="Same as --joystick, but reads controller state from UDP packets sent by "
                           "scripts/control/joystick_bridge_local.py on another machine, instead of a local device")
 parser.add_argument("--port", type=int, default=9999, help="UDP port for --joystick-network")
+parser.add_argument("--no-contact", action="store_true",
+                    help="Drive the bare kinematic base (no contact response): it then passes "
+                         "through tables, walls and anything else, as it did before 2026-10-06")
 parser.add_argument("--joystick-debug", action="store_true",
                      help="Just print raw controller events (no simulation) -- use this to verify/calibrate "
                           "button and axis codes against JOYSTICK_MAP before trusting --joystick")
@@ -282,14 +292,12 @@ if args.joystick_debug:
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": not args.gui})
+kit = SimulationApp({"headless": not args.gui, **KIT_GPU0})
 
-import math  # noqa: E402
 import omni.usd  # noqa: E402
 import omni.timeline  # noqa: E402
 from isaacsim.core.prims import Articulation  # noqa: E402
 from pxr import UsdGeom  # noqa: E402
-import numpy as np  # noqa: E402
 
 usd_context = omni.usd.get_context()
 usd_context.open_stage(args.scene)
@@ -299,6 +307,15 @@ for _ in range(60):
 stage.Load()
 for _ in range(10):
     kit.update()
+
+# Before play, like every Kit entry point that drives this robot: PhysX sizes its GPU
+# pair buffers when it parses the scene, and the default 1024 found/lost aggregate pairs
+# overflowed on every outdoor nav stage ("will miss interactions"). Session layer only --
+# this tool can save the stage, and the setting must not end up baked into the file.
+from physics_setup import raise_gpu_capacities  # noqa: E402
+
+for _line in raise_gpu_capacities(stage):
+    print(f"[physics] {_line}")
 
 timeline = omni.timeline.get_timeline_interface()
 timeline.play()
@@ -392,7 +409,7 @@ def sim_command_ready() -> bool:
       called again), refreshes the cached target arrays (stale pre-stop targets must
       not fire on resume), and resets the kinematic base-pose cache.
     """
-    global _position_targets, _velocity_targets
+    global _position_targets
     if not timeline.is_playing():
         if not _sim_guard["suspended"]:
             _sim_guard["suspended"] = True
@@ -410,8 +427,12 @@ def sim_command_ready() -> bool:
         if not art.is_physics_handle_valid():
             return False
         _position_targets = art.get_joint_positions().copy()
-        _velocity_targets = art.get_joint_velocities().copy()
-        _base_pose["initialized"] = False
+        # In place, not rebound: the kinematic base writes its wheel speeds into this
+        # same array (KinematicBase(velocity_targets=...)).
+        _velocity_targets[:] = art.get_joint_velocities()
+        _base.sync_from_sim()
+        if _contact is not None:
+            _contact.reset_episode()   # link poses as Stop/Play left them
         _sim_guard["suspended"] = False
         print("Simulation resumed -- articulation re-initialized, commands active again.")
     return True
@@ -443,48 +464,49 @@ PHYSICS_DT = 1.0 / 60.0
 # syncs with PhysX's internal state -- raw USD transform edits do NOT, verified
 # directly), while wheel joints still spin at the visually-correct commanded rate.
 #
-# Tried setting root VELOCITY instead of teleporting POSITION, hoping it would be less
-# invasive to the concurrently-running arm joint drives. It wasn't better: contact
-# friction from the (still non-driving) wheel-ground contact damped out the injected
-# velocity almost immediately, and refreshing every step to compensate caused Z-height
-# drift (0.0078m -> 0.0611m over 3s -- some kind of energy injection from repeatedly
-# forcing vz=0 against the contact solver). Reverted to position teleport.
+# The drive itself is nav/sim/base_drive.py's KinematicBase -- the same class the
+# navigation runner uses, so the two cannot drift apart again. They had: this file kept
+# its own copy of the step after base_drive.py was fixed, and that copy (a) wrote only the
+# pose, never the root velocity, (b) returned early on a zero command, so a spin the body
+# picked up was never stopped, and (c) re-read x/y from the sim every step, which folds
+# wheel drag into the next step (1.11x the commanded speed, measured in nav). (a)+(b) is
+# the mechanism behind every outdoor blow-up (base_drive.py's module docstring): with the
+# orientation forced level and a spin left alive, the body pumps energy into itself. The
+# trigger there was a 1-2 m spawn drop this scene does not have, but contact with a table
+# or a wall can seed it the same way (indoor replays: 2.08 m of z on a flat floor).
 #
-# KNOWN LIMITATION: teleporting the root pose every step does measurably degrade
-# concurrent ARM joint convergence (verified: commanding left_joint1 to 0.4 rad while
-# also actively driving the base only reached ~0.05 rad). Recommended usage: drive the
-# base, `stop` it, THEN command arm/lift moves -- not simultaneously. Sequential
-# control was not degraded (arm/lift alone, or base alone, both converge correctly).
-_base_pose = {"yaw": 0.0, "initialized": False}
+# An earlier version here tried writing root VELOCITY instead of teleporting and
+# reverted: forcing vz = 0 every step against the contact solver drifted z (0.0078 ->
+# 0.0611 m over 3 s). KinematicBase writes the sim's own vz, clamped, so it does not
+# fight the contacts that way (measured on every nav stage, 2026-10-05).
+#
+# KNOWN LIMITATION, unchanged: teleporting the root pose every step measurably degrades
+# concurrent ARM joint convergence (left_joint1 commanded to 0.4 rad reached ~0.05 rad
+# while the base was driven). So this tool runs the drive in RELEASED mode
+# (hold_when_stopped=False): while the base is commanded to move it is pinned and driven;
+# on `stop` it gets one zero-velocity write and is then left to the physics, so arm and
+# lift commands with the base stopped converge as before. Recommended usage stays: drive
+# the base, `stop` it, THEN command arm/lift moves -- not simultaneously.
+_base = KinematicBase(art, list(dof_names), hold_when_stopped=False,
+                      velocity_targets=_velocity_targets)
 
-
-def _init_base_pose():
-    _, orientations = art.get_world_poses()
-    w, x, y, z = orientations[0]
-    _base_pose["yaw"] = 2.0 * math.atan2(z, w)
-    _base_pose["initialized"] = True
-
+# CONTACT. A teleported root has no contact response of its own, so before each step the
+# robot's real envelope (deck, column, lift carriage, both arms, at the current joint state)
+# is swept along the step and the motion slides along whatever it would hit -- the same
+# nav/sim/kinematic_contact.py layer the navigation runner attaches. Without it nothing stops
+# the base at the packing tables: the root is pinned to the integrated pose whatever the arm
+# colliders touch, so they end up inside the table. Caveat for THIS scene: every collider is static to
+# that layer, so the dynamic blocks on the tables are stopped at like a wall, never pushed.
+# The arm/lift moves this tool makes are picked up on the layer's own refresh (every 30
+# steps). --no-contact restores the bare base.
+_contact = None if args.no_contact else KinematicContact.from_stage(stage).attach(_base)
+print(f"[contact] {'OFF (--no-contact)' if _contact is None else 'ON: base slides along what its envelope would hit'}")
 
 _base_vel = {"vx": 0.0, "vy": 0.0, "omega": 0.0}
 
 
 def _apply_kinematic_base_step(dt: float):
-    vx, vy, omega = _base_vel["vx"], _base_vel["vy"], _base_vel["omega"]
-    if vx == 0.0 and vy == 0.0 and omega == 0.0:
-        return
-    if not _base_pose["initialized"]:
-        _init_base_pose()
-    positions, _ = art.get_world_poses()
-    t = positions[0]
-    yaw = _base_pose["yaw"]
-    dx = (vx * math.cos(yaw) - vy * math.sin(yaw)) * dt
-    dy = (vx * math.sin(yaw) + vy * math.cos(yaw)) * dt
-    new_yaw = yaw + omega * dt
-    _base_pose["yaw"] = new_yaw
-    new_positions = np.array([[t[0] + dx, t[1] + dy, t[2]]], dtype=np.float32)
-    half = new_yaw / 2.0
-    new_orientations = np.array([[math.cos(half), 0.0, 0.0, math.sin(half)]], dtype=np.float32)
-    art.set_world_poses(positions=new_positions, orientations=new_orientations)
+    _base.apply(_base_vel["vx"], _base_vel["vy"], _base_vel["omega"], dt)
 
 
 def step_seconds(seconds: float):
@@ -573,6 +595,10 @@ def print_pose():
     m = xform_cache.GetLocalToWorldTransform(base_prim)
     t = m.ExtractTranslation()
     print(f"  base_link world position: x={t[0]:.4f} y={t[1]:.4f} z={t[2]:.4f}")
+    if _contact is not None:
+        c = _contact.summary()
+        first = (c.get("first_contact") or {}).get("prim") or "-"
+        print(f"  contact: {c.get('contact_steps', 0)} steps clipped/refused (first: {first})")
 
 
 def take_screenshot(path: str):

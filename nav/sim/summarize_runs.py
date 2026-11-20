@@ -29,17 +29,66 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from episode import CONFIG_PATH, all_episode_specs, env_name  # noqa: E402  (pure data, no Isaac)
+
 REPO = Path(__file__).resolve().parent.parent.parent
 RESULTS = REPO / "nav/results"
-CONFIG = REPO / "nav/config/episodes.yaml"
+# The selected table (episode.CONFIG_PATH: episodes.yaml, or NAV_EPISODES_CONFIG). Rows are
+# scored against EVERY table, though -- see load_config().
+CONFIG = CONFIG_PATH
+
+# The most the base's z can legitimately span in one episode, in metres. A ground robot's
+# height changes only with the floor under it, so the bound is the floor's relief plus
+# what the start used to add, with margin -- measured, not guessed (2026-10-05):
+#
+#   * floor relief: along the six outdoor episodes' straight start->goal lines, 0.11-0.34 m
+#     (scratch terrain_lines.json); under the 53 recorded outdoor traces, floor tracked by
+#     raycast at every trace sample, at most 1.26 m (outdoor_library reaches a lower plaza).
+#     Indoor floors are flat: 199 of 237 indoor runs span < 0.1 m.
+#   * the start drop: before 2026-10 the robot spawned at DynaNav's z, up to 2.21 m above
+#     the terrain (pillars), and part of that fall landed inside the recorded span.
+#
+# So a clean pre-fix outdoor run can reach ~3.5 m, a post-fix one ~1.3 m. 5.0 m clears
+# the first by 1.4x, and the smallest real event on record is 8.0 m: the nine
+# warehouse_aisle6 runs at 8.0-8.4 m, on a flat floor where 8 sibling runs span 3-17 mm,
+# with single steps of 0.20-0.49 m (12-29 m/s -- more than a free fall from 8.4 m can
+# reach). Every aisle6 trace, clean or not, crosses the footprints of 9 m SM_PillarA_9M
+# columns the kinematic base drives through (samples ~20 and ~52); some crossings throw
+# it. Four of those nine latched success; that stays on the row, but the row is flagged,
+# because the run spent part of its time not on the floor.
+Z_SPAN_BOUND_M = 5.0
+# The same bound for the FLAT indoor floors (hospital, office, warehouse), where there is no
+# relief to allow for. 5 m let the indoor pump through: 15 indoor rows span 2.08-2.94 m, a
+# cluster no flat floor can produce, and replaying the fixed office_hallway_turn path
+# through the old base reproduces it (2.08 m, |v| 11.6 m/s, started by backing out of a
+# barrier). Measured over the 245 indoor rows that record z (2026-10-05): every row whose
+# trace is clean spans <= 0.29 m (199 under 0.1 m); the next is 0.62 m, a row whose trace
+# also steps 1.29 m in one 0.5 s sample. 0.5 m sits in that gap.
+Z_SPAN_BOUND_INDOOR_M = 0.5
+# Trace samples are 30 physics steps = 0.5 s apart (run_navigation.py), and the drive
+# integrates x/y at no more than the speed cap, so one sample can legitimately move at
+# most cap x 0.5 s -- 0.75 m at 1.5 m/s. The bound allows 1.5x that, 1.125 m (the replays'
+# onset rule, scratch oreplay/derive2.py). The z and path tests above missed real throws
+# that this one sees: 20260901-052020_outdoor_library (13 samples over the bound, up to
+# 3.16 m), 20260905-034509_outdoor_umbrellas (3.12 m), 20260905-105942_outdoor_pillars
+# (2.59 m), 20260905-115418_outdoor_upsway (4.03 m), and indoor rows up to 7.53 m.
+TRACE_SAMPLE_S = 0.5
+TRACE_STEP_SLACK = 1.5
 
 
 def load_config() -> dict:
-    return yaml.safe_load(CONFIG.read_text()).get("episodes", {})
+    """Every episode of every table in nav/config/, each spec with its own table's
+    defaults underneath (episode.all_episode_specs). A row is scored by its own episode's
+    radius, cap and environment whichever table it was run from -- read from episodes.yaml
+    alone, the 85 episodes_full.yaml names had no spec, and outdoor_e5x rows were held to
+    the indoor z-span bound and the default arrival radius."""
+    return all_episode_specs()
 
 
 def load_defaults() -> dict:
@@ -103,13 +152,6 @@ def score(path: Path, cfg: dict) -> dict | None:
     initial = d.get("initial_distance_m") or float("nan")
     path_len = d.get("path_length_m") or 0.0
     threshold = success_threshold(spec)
-    success = bool(d.get("success")) or (closest == closest and closest <= threshold)
-
-    # SPL as the benchmark defines it: success weighted by how much the robot
-    # overdrove the shortest path. Zero for a failure, by construction.
-    spl = 0.0
-    if success and path_len > 1e-6:
-        spl = initial / max(path_len, initial)
 
     # How much of the gap the robot actually closed. This is the number that
     # separates "went nowhere" from "went almost all the way", and neither final
@@ -136,11 +178,42 @@ def score(path: Path, cfg: dict) -> dict | None:
     # duration, with 2x of slack so no legitimate run can trip it. The margin here is
     # 32x, so there is no borderline case to tune.
     elapsed = d.get("elapsed_s") or 0.0
-    cap = float(load_defaults().get("max_speed_mps", 1.5))
+    cap = float((spec or {}).get("max_speed_mps", load_defaults().get("max_speed_mps", 1.5)))
     reach_bound = 2.0 * cap * elapsed
-    blown_up = bool(elapsed > 0 and path_len > reach_bound > 0)
+    # The path test alone missed one: 20260905-013046_outdoor_upsway drove 209 m in 250 s,
+    # inside the bound, while its base went 414 m up. A ground robot's height can only
+    # change with the floor under it, so z span is the second, independent test, and runs
+    # written since 2026-10 carry the runner's own fault record as a third.
+    z_span = d.get("base_z_span_m") or 0.0
+    faults = d.get("physics_faults") or 0
     max_step = max((math.dist(a[:2], b[:2]) for a, b in zip(trace, trace[1:])),
                    default=float("nan"))
+    # The environment from the episode's scene; for a row whose episode is in no table any
+    # more, from its name -- every outdoor episode is named outdoor_*.
+    outdoor = (env_name(spec["scene"]).startswith("outdoor") if spec and spec.get("scene")
+               else str(d.get("episode", "")).startswith("outdoor"))
+    z_bound = Z_SPAN_BOUND_M if outdoor else Z_SPAN_BOUND_INDOOR_M
+    step_bound = TRACE_STEP_SLACK * cap * TRACE_SAMPLE_S
+    blown_why = [why for why, hit in (
+        ("path", elapsed > 0 and path_len > reach_bound > 0),
+        ("z_span", z_span > z_bound),
+        ("trace_step", max_step == max_step and max_step > step_bound),
+        ("fault", faults > 0),
+    ) if hit]
+    blown_up = bool(blown_why)
+
+    # The runner's own verdict, or -- for rows written before it latched arrival every
+    # step -- the trace's closest approach. Not the trace on a blown-up row: that closest
+    # is a point on the solver's throw, and crediting it would score a flight past the
+    # goal as an arrival (0 rows on disk do that today; the guard is for the next one).
+    success = bool(d.get("success")) or (
+        not blown_up and closest == closest and closest <= threshold)
+
+    # SPL as the benchmark defines it: success weighted by how much the robot
+    # overdrove the shortest path. Zero for a failure, by construction.
+    spl = 0.0
+    if success and path_len > 1e-6:
+        spl = initial / max(path_len, initial)
 
     plans = d.get("plans") or []
     asked = [p[1] for p in plans]
@@ -152,6 +225,10 @@ def score(path: Path, cfg: dict) -> dict | None:
     # by plans that have nearly expired, which is a real regression even if the
     # success flag has not moved yet.
     stale = [p[6] for p in plans if len(p) > 6 and p[6] is not None]
+    # The contact layer's record (EpisodeResult.contact). None on the bare base and on
+    # every row before 2026-10-06 -- "not modelled", which is reported as such and never
+    # as zero: those runs drove through whatever was in the way with no record of it.
+    contact = d.get("contact")
 
     return {
         "file": path.name,
@@ -172,11 +249,25 @@ def score(path: Path, cfg: dict) -> dict | None:
         # True when the trace is a flight rather than a drive. Every distance-derived
         # field on this row is void when it is set -- see the comment above.
         "blown_up": blown_up,
+        # Which tests fired: "path", "z_span", "trace_step", "fault".
+        "blown_why": blown_why,
         "max_step_m": max_step,
+        "z_span_m": z_span,
+        "physics_faults": faults,
+        "fault_kinds": list((d.get("physics_fault") or {}).get("kinds") or []),
+        "abort_reason": d.get("abort_reason", ""),
         "spl": spl,
         "closed_frac": closed,
         "calls": d.get("policy_calls", 0),
         "guard": d.get("guard_interventions", 0),
+        # Contact columns: steps the command pushed into something (clipped or refused, or
+        # the envelope overlapping), DynaNav's physical_collision (a contact held >= 3.33 s,
+        # benchmark.py:1276-1295), and the first prim met. None/"" when not modelled.
+        "contact_steps": (contact or {}).get("contact_steps") if contact else None,
+        "physical_collision": bool(contact.get("physical_collision")) if contact else None,
+        "contact_max_run_s": (contact or {}).get("max_run_s") if contact else None,
+        "first_contact_prim": (((contact or {}).get("first_contact") or {}).get("prim", "")
+                               if contact else ""),
         # "" on every run recorded before the sensor existed. Those were all the
         # 7-ray fan, but the field says so nowhere, so it stays "" rather than being
         # backfilled -- a filter must not silently claim provenance it does not have.
@@ -232,13 +323,27 @@ def main() -> None:
             f"{r['initial_m']:.1f} -> closest {fmt(r['closest_m'], '.2f')} m "
             f"(final {fmt(r['final_m'], '.1f')}), closed {r['closed_frac'] * 100:.0f}%, "
             f"spl {r['spl']:.2f}, path {r['path_m']:.1f} m, guard {r['guard']}"
+            + (f", contact {r['contact_steps']} steps"
+               + (f" (first {r['first_contact_prim'].split('/')[-1]})"
+                  if r["first_contact_prim"] else "")
+               + (" PHYSICAL COLLISION" if r["physical_collision"] else "")
+               if r["contact_steps"] is not None else ", contact n/a")
+            # The verdict stays the runner's (a physics fault ends a run as a FAIL, and
+            # bench.sh counts it as one; an older row that latched success and was thrown
+            # LATER keeps its SUCCESS), and the bracket says the distances on this row
+            # are void and why, because a throw is not a navigation result.
+            + ("  [PHYSICS: "
+               + (f"fault {'+'.join(r['fault_kinds']) or '?'}" if r["physics_faults"]
+                  else f"blown up ({'+'.join(r['blown_why'])})")
+               + f", z span {r['z_span_m']:.2f} m, max step {fmt(r['max_step_m'], '.2f')} m]"
+               if r["blown_up"] else "")
         )
         return
 
     hdr = (
         f"{'episode':<24}{'ctrl':<10}{'ok':<4}{'init':>7}{'closest':>8}{'final':>7}"
-        f"{'closed':>8}{'spl':>6}{'path':>7}{'guard':>6}{'asked':>7}{'guide':>7}"
-        f"{'stale':>7}{'  DynaNav':<18}"
+        f"{'closed':>8}{'spl':>6}{'path':>7}{'guard':>6}{'cont':>6}{'coll':>5}"
+        f"{'asked':>7}{'guide':>7}{'stale':>7}{'  DynaNav':<18}"
     )
     print(hdr)
     print("-" * len(hdr))
@@ -254,6 +359,8 @@ def main() -> None:
             f"{fmt(r['initial_m'], '7.1f')}{fmt(r['closest_m'], '8.2f')}"
             f"{fmt(r['final_m'], '7.1f')}{r['closed_frac'] * 100:7.0f}%"
             f"{r['spl']:6.2f}{r['path_m']:7.1f}{r['guard']:6d}"
+            f"{'     -' if r['contact_steps'] is None else format(r['contact_steps'], '6d')}"
+            f"{'    -' if r['physical_collision'] is None else ('  YES' if r['physical_collision'] else '   no')}"
             f"{fmt(r['asked_mean'], '7.1f')}{fmt(r['guide_mean'], '7.1f')}"
             f"{fmt(r['stale_mean'], '7.2f')}{ref:<18}"
         )
@@ -271,6 +378,9 @@ def main() -> None:
         f"  |  mean spl {sum(r['spl'] for r in rows) / len(rows):.2f}"
     )
     print(
+        "cont = contact steps (the envelope pushed into something and was clipped, "
+        "'-' = not modelled: bare base or a run before 2026-10-06); coll = DynaNav's "
+        "physical_collision (a contact held >= 3.33 s). "
         "asked = mean heading the ACTION head requested (deg, + is left); "
         "guide = same from the 9s TEXT head; stale = mean age of the KV cache each "
         "plan was built on (s; the action head only plans 3.0 s ahead, and '-' means "

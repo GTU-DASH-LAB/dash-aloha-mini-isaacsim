@@ -27,13 +27,14 @@ like. Hence the correlation and the near/far split are the verdict, not the mean
 
 Usage:
     python3 nav/tools/score_distance_channel.py --latest-ladder
-    python3 nav/tools/score_distance_channel.py /tmp/qvla-menus/20260831-1658_office*
+    python3 nav/tools/score_distance_channel.py nav/results/menus/20260831-1658_office*
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import math
 import sys
 from datetime import datetime
@@ -155,7 +156,8 @@ def _pearson(a: list[float], b: list[float]) -> float | None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dirs", nargs="*", type=Path)
-    ap.add_argument("--menu-root", type=Path, default=Path("/tmp/qvla-menus"))
+    ap.add_argument("--menu-root", type=Path, default=Path(os.environ.get(
+        "QVLA_MENU_DIR", Path(__file__).resolve().parents[2] / "nav/results/menus")))
     ap.add_argument("--latest-ladder", action="store_true",
                     help="every recorded run under --menu-root")
     ap.add_argument("--controller", default="braking")

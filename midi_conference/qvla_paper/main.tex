@@ -71,7 +71,9 @@ We contribute (i)~a training-free policy around a frozen 27B VLM: an arc menu wi
 labels, a describe-then-select chain, a speed channel and recovery, executed asynchronously
 by a conventional controller; (ii)~a closed-loop DynaNav evaluation on a mobile manipulator
 against TIC-VLA on identical infrastructure, with its biases stated; and (iii)~probes that
-separate instruction following from free-space perception with label-free mirror controls.
+separate instruction following from free-space perception with label-free mirror
+controls.\footnote{Code, configurations and per-run logs:
+\url{https://github.com/GTU-DASH-LAB/dash-aloha-mini-isaacsim/tree/midi2026}}
 
 \section{Related Work}
 \label{sec:related}
@@ -85,9 +87,15 @@ pretrained models, as in LM-Nav~\cite{shah2022lm}, and by fine-tuning VLMs to em
 action tokens~\cite{brohan2023rt2,huang2026ticvla,kim2024openvla,zhang2024navid}. Closest to QVLA is
 visual prompting: Set-of-Mark~\cite{yang2023som} labels image regions for a VLM to refer to,
 PIVOT~\cite{nasiriany2024pivot} iteratively samples arrows drawn on the image, and
-VLMnav~\cite{goetting2024vlmnav} draws discrete navigation actions using depth. In QVLA the
-drawn arcs are exactly the controller's plans, labels are reshuffled at every decision, and
-perception and choice are split into two calls.
+VLMnav~\cite{goetting2024vlmnav} draws discrete navigation actions using depth. QVLA is
+built from these known parts, and its contribution is in how they are joined and in what we
+measure. The drawn arcs are exactly the plans the controller executes, so what the model
+picks is what the robot does. Labels are reshuffled at every decision, so a positional habit
+scores at chance. Perception and choice are split into two calls, the first of which names
+the open side; together these raise wall avoidance on blocked frames from 22\% to 100\%
+(Sect.~\ref{sec:freespace}).
+We also separate instruction following from scene following with matched controls, for
+QVLA and for a fine-tuned navigation VLA.
 
 \section{Method}
 \label{sec:method}
@@ -175,10 +183,12 @@ $v=\min(0.45,\max(0.20,\,0.45\,d/4))$\,m/s, or 0.45\,m/s if the target is not vi
 $v=\min(0.45,\max(0.20,\,0.045\,\ell))$.
 
 A braking pure-pursuit controller~\cite{coulter1992pure} never exceeds the plan's speed. The
-simulated wheels lack traction, so the base is driven kinematically with no contact response;
-a guard casts 7 rays over $\pm35^\circ$ around the direction of travel and removes the
-velocity component pointing into any obstacle within 0.6\,m, so the robot slides along walls
-rather than freezing. A \emph{wedge} (under 0.1\,m of progress in 3\,s, obstacle ahead)
+simulated wheels lack traction, so the base is driven kinematically. A contact layer sweeps
+the robot's collision envelope (base, lift and arms) along every step and stops it 2\,cm short
+of anything it would hit, keeping the motion along the surface, so no policy can drive through
+an obstacle; steps up to 4.5\,cm are climbed. A guard casts 7 rays over $\pm35^\circ$ around the
+direction of travel and removes the velocity component pointing into any obstacle within
+0.6\,m, so the robot slides along walls rather than freezing. A \emph{wedge} (under 0.1\,m of progress in 3\,s, obstacle ahead)
 reverses up to 0.8\,m; a \emph{balk} (stationary for 5\,s, front clear) reverses 0.5\,m.
 Recovery also discards the cached plan, removes STOP from the next decision and tells both
 prompts that the robot has just reversed.
@@ -193,19 +203,26 @@ DynaNav~\cite{huang2026ticvla} defines 85 episodes in hospital, office, warehous
 scenes; its published reference run of TIC-VLA on its own robot covers 49 and completes 29.
 Our indoor set takes the 11 of those 29 easiest for our robot by turn size, detour and length,
 so the reference run succeeds on all 11 (mean SPL 0.98) and the selection favours the
-baseline. We add two unscored warehouse episodes (13 indoor) and 6 outdoor episodes with
-their own success radii (1.0--4.0\,m); every start heading is within about 30$^\circ$ of the
-goal bearing.
+baseline. We add two unscored warehouse episodes, for 13; every start heading is within
+about 30$^\circ$ of the goal bearing. We leave out DynaNav's outdoor scene: our early runs
+there were affected by simulation defects that we have since fixed, and after the fixes its
+failures are dominated by kerbs higher than our robot can climb, which measures the robot
+rather than the policy.
 
-TIC-VLA (InternVL3-1B plus action expert, official checkpoint) runs on the same robot,
-camera, controller and guard, with DynaNav's four-frame history and waypoint-history text. Its
-ladder predates two later changes to the shared stack (asynchronous inference, a controller
-fix) and recovery; the simulator paused during its inference, so its plans were never stale.
-We also run QVLA with a simulated 2D lidar (500 points/rev) that densifies the guard and
-filters arcs by clearance, and with Qwen3-VL-4B. Success means coming within the success
-radius (1.5\,m indoors), which latches. We report success rate (SR),
-SPL~\cite{anderson2018evaluation}, mean closest approach, and guard interventions (control
-steps in which the guard altered the command).
+Three policies run on the same code, robot, camera, controller, guard, contact layer and
+recovery reverse. TIC-VLA (InternVL3-1B plus action expert, official checkpoint) runs
+asynchronously as in DynaNav, with its four-frame history and waypoint-history text. QVLA's
+recovery also discards its plan and notes the reverse in its prompts; this part does not
+apply to TIC-VLA. A no-model baseline takes the straight arc at cruise speed at every
+decision and shows how much of the task needs no decision at all. Each policy runs the 13
+episodes three times, in interleaved rounds (each round runs all three in turn), so that any
+slow drift in the machine affects every policy alike. Success means coming within 1.5\,m of
+the goal, which latches. We report success rate (SR) per round,
+SPL~\cite{anderson2018evaluation}, mean closest approach, guard interventions (control steps
+in which the guard altered the command) and DynaNav's physical-collision flag (contact held
+for 3.3\,s). Policies are compared per episode: each episode's success rate over the three
+rounds, paired across policies, with an exact sign-flip test and a bootstrap interval over
+episodes.
 
 \section{Results}
 \label{sec:results}
@@ -315,9 +332,10 @@ Table~\ref{tab:probe}) had predicted.
 \paragraph{Negative ablations and variance.} Against same-study references, thinking budgets
 of 180--420 tokens in the select call scored 2/13 and 2/13 against 7/13, eleven finer arcs
 with in-place turns 2/18 against 9/18, and the previous menu frame as memory 3/19 against
-10/19: the simplest menu was the best we found. Despite greedy decoding, a repeated seed
-reproduced the outcome on only 4 of 6 hard episodes, because which plan is ready at which
-control step depends on wall-clock timing.
+10/19: the simplest menu was the best we found. Despite greedy decoding and identical
+labels, a repeated run reproduced the outcome on only 4 of 6 hard episodes: the first
+rendered frame already differs by about one grey level, the description diverges first,
+and the choice follows 5--20 decisions later.
 
 \subsection{Qualitative Behaviour and Failure Analysis}
 \label{sec:qual}

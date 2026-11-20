@@ -1350,6 +1350,26 @@ def menu_plan(image_paths: list[str], instruction: str,
             _state["camera_menus"] += 1
             _state["last_camera"] = cam_rec
 
+    if SELECTOR == "straight":
+        # The no-model baseline. It answers BEFORE the menu is rendered: nothing here looks
+        # at the image, and the runner sends a blank placeholder for exactly that reason
+        # (run_navigation.py, `blind`). It takes the straightest arc still on the menu
+        # after the lidar filter or a request camera, and no other arc. Cruise speed,
+        # because the speed ramp needs the TARGET line, which only the describe call writes.
+        kappa_of = {int(lab): arcs[i].kappa for i, lab in enumerate(drawn)}
+        choice = min(kappa_of, key=lambda lab: abs(kappa_of[lab]))
+        kappa, speed = kappa_of[choice], MENU_SPEED_MPS
+        with _lock:
+            _state["recent"].append(direction_word(kappa))
+        _record(step, "", instruction, labels, choice, kappa, "", "[straight selector]",
+                None, speed, recovered, kind=kind, speed_source="fixed",
+                stalled_s=stalled_s, pivot_labels=pivot_labels,
+                drawn=drawn if (clearance or camera is not None) else None,
+                clearance=clearance, camera=cam_rec, visible=visible)
+        return (plan_from_kappa(kappa, speed, N_WAYPOINTS, DT),
+                f"[straight baseline, no model] [menu] {drawn} -> {choice} "
+                f"-> kappa {kappa:+.2f} @{speed:.2f}m/s", 0.0)
+
     menu = str(out_dir / f"menu_{step if step is not None else 0:08d}.jpg")
     if camera is None:
         render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels)
@@ -1361,23 +1381,6 @@ def menu_plan(image_paths: list[str], instruction: str,
     # curvatures, so the runner can hand it straight to the base as a yaw rate.
     by_pivot = ({int(pivot_labels[0]): PIVOT_RAD, int(pivot_labels[1]): -PIVOT_RAD}
                 if pivot_labels else {})
-
-    if SELECTOR == "straight":
-        # The no-model baseline. It uses the same menu, so it also takes the straightest arc
-        # the lidar filter or a request camera left drawn, and no other arc. Cruise speed,
-        # because the speed ramp needs the TARGET line, which only the describe call writes.
-        choice = min(by_label, key=lambda lab: abs(by_label[lab]))
-        kappa, speed = by_label[choice], MENU_SPEED_MPS
-        with _lock:
-            _state["recent"].append(direction_word(kappa))
-        _record(step, menu, instruction, labels, choice, kappa, "", "[straight selector]",
-                None, speed, recovered, kind=kind, speed_source="fixed",
-                stalled_s=stalled_s, pivot_labels=pivot_labels,
-                drawn=drawn if (clearance or camera is not None) else None,
-                clearance=clearance, camera=cam_rec, visible=visible)
-        return (plan_from_kappa(kappa, speed, N_WAYPOINTS, DT),
-                f"[straight baseline, no model] [menu] {drawn} -> {choice} "
-                f"-> kappa {kappa:+.2f} @{speed:.2f}m/s", 0.0)
 
     # Call 1 is the whole reason this variant works. Asked to choose in one call, the model
     # drove into the wall 78% of the time; asked to describe first, 28%; asked to describe

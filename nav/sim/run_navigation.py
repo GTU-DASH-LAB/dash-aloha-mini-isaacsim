@@ -518,6 +518,10 @@ class NavigationRunner:
         self.kit = None
         self.art = None
         self.camera = None
+        # True when the policy server loads no model (`selector` != "vlm" on /health), e.g. the
+        # straight baseline. Nothing reads the image then, so nothing is rendered: see setup().
+        self.blind = False
+        self._blank_frame: Path | None = None
         self.guard = None
         self.recovery = None
         self.base = None
@@ -626,6 +630,11 @@ class NavigationRunner:
             colliders = {k: v for k, v in self.scene_colliders.items() if k != "map"}
         return {"server": info, "env": env, "git": sha + ("+dirty" if dirty else ""),
                 "fault_rules": rules,
+                # What was rendered: nothing for a no-model server, camera_nav only before
+                # decisions in test mode, everything on every update otherwise.
+                "rendering": ("off (no-model server)" if self.blind
+                              else "on demand (test mode)" if RENDER_ON_DEMAND
+                              else "every update"),
                 # What setup() added to the stage for collider-less scenery, or None when
                 # NAV_SCENE_COLLIDERS=0. A row's guard/lidar/contact numbers outdoors mean
                 # nothing without it: before 2026-10-06 the buildings there had no collider.
@@ -944,6 +953,26 @@ class NavigationRunner:
         # Kept, not just printed: it is the only place the run learns which brain it is
         # about to drive, and `EpisodeResult.policy` records it alongside the result.
         self._policy_info = info
+        # A server that loads no model never looks at the image. Rendering for it is pure
+        # cost, so camera_nav and the headless viewport are switched off and every decision
+        # is sent one blank placeholder frame instead of a grab. A grab is not merely wasted
+        # here, it is wrong: with the camera off it returns a stale frame, and an empty one
+        # would make the loop hold the robot waiting for a camera nobody needs. Only servers
+        # that say so on /health go this way (TIC-VLA's has no `selector`; QVLA says "vlm"),
+        # so every policy that does read the image keeps the default path.
+        self.blind = str(info.get("selector", "vlm")) != "vlm"
+        if self.blind:
+            from PIL import Image
+            from omni.kit.viewport.utility import get_active_viewport
+
+            self.camera.set_rendering(False)
+            vp = get_active_viewport()
+            if vp is not None:
+                vp.updates_enabled = False
+            self._blank_frame = self.scratch_dir / "blank_no_model.jpg"
+            Image.new("RGB", (64, 36)).save(self._blank_frame)
+            print(f"[nav] no-model server (selector={info.get('selector')}): camera_nav and "
+                  "viewport rendering OFF, decisions get a blank frame", flush=True)
         self._set(state="idle", message=ready_message(info))
 
     # --------------------------------------------------------------- execution
@@ -1311,7 +1340,8 @@ class NavigationRunner:
                 # The third-person twin of this decision was grabbed at the top of the
                 # loop, a few lines and no simulation steps ago, so `chase_<step>.jpg` and
                 # `menu_<step>.jpg` are still the same instant seen two ways.
-                frame_path = self.camera.grab_to_file()
+                frame_path = (self._blank_frame if self.blind
+                              else self.camera.grab_to_file())
                 if frame_path is None:
                     # An empty render means the sensor pipeline is not up. Driving on
                     # a stale plan here would look fine and mean nothing, so HOLD and
@@ -1324,7 +1354,7 @@ class NavigationRunner:
                     command = Command(0.0, 0.0, 0.0)
                     next_decision_step = step + CAMERA_RETRY_STEPS
             if frame_path is not None:
-                if RENDER_ON_DEMAND:
+                if RENDER_ON_DEMAND and not self.blind:
                     # Test mode: nothing reads camera_nav again until the next decision.
                     self.camera.set_rendering(False)
                 frames.add(sim_time, frame_path)
@@ -1626,7 +1656,8 @@ class NavigationRunner:
                 drive.omega,
                 PHYSICS_DT,
             )
-            if RENDER_ON_DEMAND and 0 < next_decision_step - step <= RENDER_LEAD_STEPS:
+            if (RENDER_ON_DEMAND and not self.blind
+                    and 0 < next_decision_step - step <= RENDER_LEAD_STEPS):
                 # Test mode: back on in time for the renderer's latency, see RENDER_LEAD_STEPS.
                 self.camera.set_rendering(True)
             self.kit.update()
@@ -1730,7 +1761,7 @@ class NavigationRunner:
                     ),
                 )
 
-        if RENDER_ON_DEMAND:
+        if RENDER_ON_DEMAND and not self.blind:
             # Test mode: leave the camera live for the idle UI and the next episode's first
             # decision, which is taken at step 0 with no lead.
             self.camera.set_rendering(True)

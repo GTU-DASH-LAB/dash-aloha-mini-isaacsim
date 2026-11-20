@@ -54,8 +54,10 @@ def collect(prefix: str) -> dict[str, dict[int, dict[str, dict]]]:
         row = score(path, cfg)
         if row is None:
             continue
-        row["sha"] = ((d.get("config") or {}).get("git") or {}).get("sha", "?")
+        row["sha"] = (d.get("config") or {}).get("git") or "?"   # "sha" or "sha+dirty"
         arm, r, ep = m["arm"], int(m["r"]), row["episode"]
+        if ep.startswith("outdoor"):
+            continue                      # indoor only, see main()
         if ep in out[arm][r]:
             print(f"   note: {arm} r{r} {ep} has two results; keeping {path.name}",
                   file=sys.stderr)
@@ -98,7 +100,9 @@ def main() -> None:
     if not data:
         sys.exit(f"no results tagged {a.prefix}_<arm>_r<n>")
     cfg = load_config()
-    indoor = [e for e, s in cfg.items() if e in
+    # Indoor only: the paper drops the outdoor scene. An outdoor row that slipped into a
+    # campaign (the first launch ran into outdoor_umbrellas) is left out here.
+    indoor = [e for e, s in cfg.items() if not e.startswith("outdoor") and e in
               {ep for arm in data.values() for rnd in arm.values() for ep in rnd}]
     dn11 = sorted(e for e in indoor if (cfg.get(e) or {}).get("dynanav_spl") is not None)
 

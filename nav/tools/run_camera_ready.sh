@@ -28,6 +28,9 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO" || exit 1
 
 ROUNDS="${ROUNDS:-3}"
+# Resume support: rounds FIRST_ROUND..ROUNDS are run. A round already complete for every
+# arm is skipped this way; a partly complete round is finished with ARMS.
+FIRST_ROUND="${FIRST_ROUND:-1}"
 ARMS="${ARMS:-qvla ticvla straight}"
 TAG_PREFIX="${TAG_PREFIX:-cr}"
 ONLY=""
@@ -38,6 +41,18 @@ while [ $# -gt 0 ]; do
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
+
+# The 13 indoor episodes by default. episodes.yaml also holds the six outdoor ones, and
+# bench.sh runs every episode it is given: the first launch of this campaign went on into
+# outdoor_umbrellas after TIC-VLA's 13 indoor episodes. The paper reports indoor only.
+if [ -z "$ONLY" ]; then
+  ONLY="$(python3 - <<'PY2'
+import yaml
+eps = yaml.safe_load(open("nav/config/episodes.yaml"))["episodes"]
+print(",".join(n for n in eps if not n.startswith("outdoor")))
+PY2
+)" || { echo "could not read the indoor episode list" >&2; exit 1; }
+fi
 
 LOGDIR="$REPO/nav/results/logs"
 mkdir -p "$LOGDIR"
@@ -105,20 +120,61 @@ run_ticvla_arm() {   # $1 = tag
       nav/bench.sh ${ONLY:+--only "$ONLY"} --on-episode "$HOOK"
 }
 
-say "== camera-ready campaign: rounds=$ROUNDS arms='$ARMS' prefix=$TAG_PREFIX" \
+# Episodes of one ladder whose NEWEST result is not a measurement: the runner refused to
+# drive (no floor under the start), or the environment came up empty (0 environment gprims;
+# the CDN asset did not stream in). The first launch scored hospital_down_hallway2 as a
+# TIC-VLA failure off exactly that: a hospital with 0 gprims and an abort at t = 0.
+invalid_episodes() {   # $1 = the QVLA_RUN_TAG the ladder wrote
+  python3 - "$1" "$ONLY" <<'PY2'
+import glob, json, os, sys
+tag, only = sys.argv[1], [e for e in sys.argv[2].split(",") if e]
+newest = {}
+for f in sorted(glob.glob("nav/results/*_braking.json")):
+    try:
+        d = json.load(open(f))
+    except Exception:
+        continue
+    if ((d.get("config") or {}).get("env") or {}).get("QVLA_RUN_TAG") != tag:
+        continue
+    newest[d.get("episode")] = d                      # sorted by name = by time
+bad = []
+for ep, d in newest.items():
+    det = ((d.get("config") or {}).get("scene_colliders") or {}).get("detect") or {}
+    if d.get("abort_reason") == "no_floor" or det.get("gprims") == 0:
+        bad.append(ep)
+print(",".join(e for e in only if e in bad) if only else ",".join(bad))
+PY2
+}
+# Re-run those once, on the server the ladder just used (still up). Once only: a second
+# failure is reported, not looped on, so a stage that is really broken cannot eat the night.
+repair() {   # $1 = tag the ladder wrote, $2 = policy port
+  local bad
+  bad="$(invalid_episodes "$1")"
+  [ -z "$bad" ] && return 0
+  say "!! not measured (no floor / empty scene) in $1: $bad -- re-running once"
+  QVLA_RUN_TAG="$1" NAV_POLICY_PORT="$2" nav/bench.sh --only "$bad" --on-episode "$HOOK"
+  bad="$(invalid_episodes "$1")"
+  [ -n "$bad" ] && say "!! STILL not measured in $1 after one re-run: $bad"
+  return 0
+}
+
+say "== camera-ready campaign: rounds=$FIRST_ROUND..$ROUNDS arms='$ARMS' prefix=$TAG_PREFIX" \
     "commit=$(git rev-parse --short HEAD)$(git diff --quiet || echo +dirty)" \
     "${ONLY:+only=$ONLY}"
-for R in $(seq 1 "$ROUNDS"); do
+for R in $(seq "$FIRST_ROUND" "$ROUNDS"); do
   for ARM in $ARMS; do
     TAG="${ARM}_r${R}"
     say "== round $R arm $ARM (tag ${TAG_PREFIX}_${TAG})"
     case "$ARM" in
-      qvla)     run_qwen_arm vlm "${TAG_PREFIX}_${TAG}" ;;
-      straight) run_qwen_arm straight "${TAG_PREFIX}_${TAG}" ;;
-      ticvla)   run_ticvla_arm "$TAG" ;;
+      qvla)     run_qwen_arm vlm "${TAG_PREFIX}_${TAG}";      RC=$?
+                repair "medium_${TAG_PREFIX}_${TAG}" 8766 ;;
+      straight) run_qwen_arm straight "${TAG_PREFIX}_${TAG}"; RC=$?
+                repair "medium_${TAG_PREFIX}_${TAG}" 8766 ;;
+      ticvla)   run_ticvla_arm "$TAG";                         RC=$?
+                repair "${TAG_PREFIX}_${TAG}" 8765 ;;
       *) say "!! unknown arm $ARM"; continue ;;
     esac
-    say "== done round $R arm $ARM (rc=$?)"
+    say "== done round $R arm $ARM (rc=$RC)"
   done
 done
 stop_servers

@@ -71,6 +71,9 @@ eval "$(python3 nav/tools/profile.py env --sim)" || { echo "profile env failed" 
 export NAV_CHASE=0
 # And never the render-on-demand test mode, for the same reason.
 export NAV_RENDER_ON_DEMAND=0
+# 45 min per episode. The longest indoor episode takes ~15 min of wall time; anything past
+# this is a hung Kit, and the campaign runs unattended overnight.
+export NAV_RUN_TIMEOUT_S="${NAV_RUN_TIMEOUT_S:-2700}"
 
 # Matched on interpreter AND script via awk, never `pgrep -f`, which matches its own shell.
 qwen_pids() { ps -eo pid,args | awk '$2 ~ /qvla\/bin\/python$/ && $3 == "server_qwen.py" {print $1}'; }

@@ -156,7 +156,13 @@ for EP in "${EPISODES[@]}"; do
   # `hospital_down_hallway2`.
   BEFORE=$(ls -1 nav/results/*_"${EP}_${CONTROLLER}".json 2>/dev/null | wc -l)
 
-  nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
+  # NAV_RUN_TIMEOUT_S (unset = no limit): a cap on one episode's wall time. Kit can hang
+  # (in SimulationApp start-up, and once in close() after the result was already saved), and
+  # bench.sh waits on it forever. `timeout` signals the whole process group, Kit included;
+  # a run cut off this way is reported as a crash (rc 124/137), never as a result.
+  RUN_CAP=()
+  [ -n "${NAV_RUN_TIMEOUT_S:-}" ] && RUN_CAP=(timeout --kill-after=60 "$NAV_RUN_TIMEOUT_S")
+  "${RUN_CAP[@]}" nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
       > "$LOGDIR/run_${EP}_${CONTROLLER}.log" 2>&1
   RC=$?
 

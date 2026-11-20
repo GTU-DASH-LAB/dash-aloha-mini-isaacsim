@@ -1938,6 +1938,23 @@ class NavigationRunner:
 
     def close(self) -> None:
         if self.kit is not None:
+            if self.blind and self.camera is not None:
+                # With every render product switched off (no-model server), Kit's shutdown
+                # never returned: the first such run of the camera-ready campaign saved its
+                # result and then hung in close() for 35 min. Switch rendering back on and
+                # let a few frames through first.
+                self.camera.set_rendering(True)
+                try:
+                    from omni.kit.viewport.utility import get_active_viewport
+
+                    vp = get_active_viewport()
+                    if vp is not None:
+                        vp.updates_enabled = True
+                except Exception as exc:
+                    print(f"[nav] could not re-enable the viewport before close: {exc}",
+                          flush=True)
+                for _ in range(3):
+                    self.kit.update()
             self.kit.close()
 
 

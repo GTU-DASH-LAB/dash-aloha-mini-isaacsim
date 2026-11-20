@@ -130,6 +130,9 @@ def health() -> dict[str, Any]:
     model = _state["model"]
     return {
         "ok": model is not None,
+        # The runner labels every result with `model` (policy_label). Without it a TIC-VLA
+        # result read "? @8765", indistinguishable from any other server lacking the key.
+        "model": "TIC-VLA (" + Path(BASE_MODEL_PATH).name + " + action expert)",
         "device": str(DEVICE),
         "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>"),
         "base_model": BASE_MODEL_PATH,

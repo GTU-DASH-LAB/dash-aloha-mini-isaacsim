@@ -3,8 +3,8 @@
 QVLA: Training-Free Language-Driven Robot Navigation by Choosing Among Arcs Drawn on the
 Camera Image. F. Aladhami, O. B. Kaya, S. Sarp.
 
-The camera-ready version is 9 pages (the reviews allowed up to 3 extra pages). Below, each
-review point is followed by what changed in the paper.
+The camera-ready version is 8 pages including references, the proceedings limit. Below,
+each review point is followed by what changed in the paper.
 
 ## Reviewer 1
 
@@ -63,7 +63,8 @@ We re-ran the whole closed-loop comparison on one code version (Sect. 4, 5.3, Ta
 - It states what is new: the drawn arcs are the controller's actual plans, labels are
   shuffled at every decision, and perception and choice are split into two calls (wall
   avoidance 22% → 100%).
-- It also names the matched-control measurement of instruction following.
+- The matched-control measurement of instruction following is stated as a contribution in
+  the introduction.
 
 **The comparison is not fully fair (model size, controller, recovery).**
 - Controller, guard and recovery reverse are now identical. QVLA's prompt-side recovery

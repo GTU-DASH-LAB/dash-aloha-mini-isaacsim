@@ -9,9 +9,9 @@ Camera Image* — F. Aladhami, O. B. Kaya, S. Sarp (Gebze Technical University).
 |---|---|
 | Conference | 14th MIDI (Machine Intelligence and Digital Interaction), 10 Dec 2026, Warsaw (OPI PIB), hybrid |
 | Proceedings | Springer LNNS, LNCS layout (`llncs.cls` v2.25 + `splncs04.bst`, from the template ZIP) |
-| Length | full paper 6–8 pages including references; the camera-ready may add up to 3 pages in response to the reviews. This build is **9** |
+| Length | **at most 8 pages including references**: the MIDI site says papers over eight pages will not be published in the proceedings. This build is **8** (it was 9 after the review response; Fig. 4 went to one row of three frames and the text was tightened) |
 | Submission | EasyChair (`conf=midi2026`). **Accepted** (submission 3628). Camera-ready and the 5–10 min video are due **29 Nov 2026**; the video link goes to midi@opi.org.pl |
-| Required | abstract 150–250 words (this: 212); keywords; *Disclosure of Interests* (LNCS: mandatory); LLM use disclosed in the acknowledgments (Springer AI policy); no AI-generated figures. The Disclosure of Interests is included. **The LLM statement was removed at the authors' request; see item 2 below.** |
+| Required | abstract 150–250 words (this: 182); keywords; *Disclosure of Interests* (LNCS: mandatory); LLM use disclosed in the acknowledgments (Springer AI policy); no AI-generated figures. The Disclosure of Interests is included. **The LLM statement was removed at the authors' request; see item 2 below.** |
 | LNCS details followed | table captions above, figure captions below; figure text ≥ 6 pt; two numbered heading levels; no `\vspace`/`subfigure`/`wrapfigure`; DOIs in references; `\Description{}` alt text on every figure |
 
 ## Before you submit the camera-ready
@@ -21,7 +21,8 @@ Camera Image* — F. Aladhami, O. B. Kaya, S. Sarp (Gebze Technical University).
    that tag at the final commit, or the link returns 404.
 3. Decide on an LLM-use statement in the acknowledgments. Springer's AI policy asks for one,
    and it is not in the paper.
-4. After any edit, recompile and keep the paper at **11 pages or fewer**.
+4. After any edit, recompile and keep the paper at **8 pages or fewer, references included**.
+   It is full: page 8 has only a few lines to spare, so any addition needs a matching cut.
 5. Upload the final PDF and sources as the organizers instruct, by 29 Nov. Send the video
    link to midi@opi.org.pl the same day. Slides are in `../presentation/`.
 

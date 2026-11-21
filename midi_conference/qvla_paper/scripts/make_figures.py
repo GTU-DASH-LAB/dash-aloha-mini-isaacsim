@@ -275,11 +275,10 @@ def fig_menu_geometry() -> None:
 # the model's text below. The header and text are cropped (they would print below 6 pt)
 # and quoted in the LaTeX caption instead. Times were found by indexing one frame per
 # decision; the header strip changes whenever a new decision lands.
-QUAL = [
-    ("20260831-231900_office_hallway_turn__medium.mp4", 13.5, "a"),
-    ("20260831-231900_office_hallway_turn__medium.mp4", 34.0, "b"),
-    ("20260831-231900_office_hallway_turn__medium.mp4", 43.0, "c"),
-    ("20260831-225617_office_nearest_elevator__medium.mp4", 38.5, "d"),
+QUAL = [   # one row of three, so the camera-ready fits 8 pages
+    ("20260831-231900_office_hallway_turn__medium.mp4", 34.0, "a"),
+    ("20260831-231900_office_hallway_turn__medium.mp4", 43.0, "b"),
+    ("20260831-225617_office_nearest_elevator__medium.mp4", 38.5, "c"),
 ]
 
 
@@ -296,14 +295,14 @@ def fig_qualitative() -> None:
     with tempfile.TemporaryDirectory() as td:
         ims = [grab(v, t, Path(td)) for v, t, _ in QUAL]
     gap = 3.0
-    Wf = 0.75 * TEXTWIDTH_PT              # centred in LaTeX; frames stay legible at 45 mm
-    w = (Wf - gap) / 2
+    n = len(ims)
+    Wf = TEXTWIDTH_PT                     # one full-width row; each frame ~40 mm wide
+    w = (Wf - (n - 1) * gap) / n
     h = w * ims[0].shape[0] / ims[0].shape[1]
-    Hf = 2 * h + gap
+    Hf = h
     fig = new_fig(Wf, Hf)
     for k, (im, (_, _, tag)) in enumerate(zip(ims, QUAL)):
-        col, row = k % 2, k // 2
-        ax = fig.add_axes([col * (w + gap) / Wf, (1 - row) * (h + gap) / Hf, w / Wf, h / Hf])
+        ax = fig.add_axes([k * (w + gap) / Wf, 0.0, w / Wf, 1.0])
         ax.imshow(im, interpolation="lanczos")
         ax.set_xticks([])
         ax.set_yticks([])
@@ -355,10 +354,10 @@ def campaign() -> dict:
 
 def fig_results() -> None:
     data = campaign()
-    W, H = TEXTWIDTH_PT, 136.0
+    W, H = TEXTWIDTH_PT, 122.0
     fig = new_fig(W, H)
 
-    ax = fig.add_axes([96 / W, 38 / H, 72 / W, 74 / H])
+    ax = fig.add_axes([96 / W, 38 / H, 72 / W, 60 / H])
     ys = np.arange(len(AUTH))[::-1]
     for y, (lab, val) in zip(ys, AUTH):
         ours = lab.startswith("QVLA")
@@ -378,7 +377,7 @@ def fig_results() -> None:
 
     # (b) successes per episode over the campaign's rounds, one marker per policy,
     # offset sideways so ties stay visible.
-    ax = fig.add_axes([206 / W, 38 / H, 136 / W, 74 / H])
+    ax = fig.add_axes([206 / W, 38 / H, 136 / W, 60 / H])
     x = np.arange(len(INDOOR))
     n_rounds = max((len(r) for r in data.values()), default=0)
     for k, (arm, name, mk, fc, ec, size) in enumerate(ARMS):

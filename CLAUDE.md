@@ -2120,6 +2120,39 @@ yaml (scratch `fix3/feas_episodes.yaml`).
 - A start snapped 1–2 m to a point already ON the kerb proves nothing. Check `start_nav`'s
   z against the street before reading OK.
 
+### Camera-ready campaign for the MIDI 2026 paper (2026-11-21): the submitted claims did not hold
+
+Run with `nav/tools/run_camera_ready.sh`, scored with `nav/tools/camera_ready_table.py`;
+summary in `nav/results/camera_ready/`. Three interleaved rounds × {TIC-VLA, QVLA, straight
+arc with no model} × the 13 indoor episodes, on one stack with the contact layer and
+`NAV_CHASE=0`.
+
+**Success per round (of 13):**
+
+| Policy | Mean | Rounds |
+|---|---|---|
+| QVLA | 7.67 | 7, 7, 9 |
+| TIC-VLA | 6.33 | 6, 6, 7 |
+| no model | 1 | 1, 1, 1 |
+
+- QVLA vs TIC-VLA per episode: p = 0.69, so the difference is not significant.
+- **The submitted paper's "halves the closest approach, 61% fewer guard interventions"
+  reversed** on repeats:
+  - Closest approach, mean: QVLA 4.92 m vs TIC-VLA 2.80 m. The medians are equal (1.50 vs
+    1.54 m).
+  - Guard interventions per round: QVLA 1562 vs TIC-VLA 852.
+- The submitted 9/13 was the best of seven ladders. Its mean, 7.7, is what replicates.
+- The two policies fail differently:
+  - QVLA fails far away (9.8 m mean): staircase, exit room and aisle 6, where it must turn
+    toward a goal that is not yet in view.
+  - TIC-VLA fails near the goal (4.1 m), but cannot follow the sentence: elevator 0/3,
+    vending2 0/3.
+- Two infrastructure traps on the way:
+  - The hospital stage can stream in EMPTY (0 gprims). The runner correctly aborts with
+    `no_floor`, and bench used to score that as a policy FAIL. The driver now re-runs such
+    episodes.
+  - `bench.sh` runs every episode in the table, including outdoor, unless `--only` is given.
+
 ### Simulator speed is part of the experiment (2026-11-20)
 
 - **A recording server used to slow the simulator for its own arm only.**

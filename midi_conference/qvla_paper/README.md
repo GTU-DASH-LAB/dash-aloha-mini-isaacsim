@@ -1,7 +1,7 @@
 # QVLA — MIDI 2026 paper
 
 *QVLA: Training-Free Language-Driven Robot Navigation by Choosing Among Arcs Drawn on the
-Camera Image* — F. Aladhami, O. B. Kaya, A. Odabaş, H. Yıldız, S. Sarp (Gebze Technical University).
+Camera Image* — F. Aladhami, O. B. Kaya, S. Sarp (Gebze Technical University).
 
 ## Venue rules this paper is built to
 
@@ -9,21 +9,25 @@ Camera Image* — F. Aladhami, O. B. Kaya, A. Odabaş, H. Yıldız, S. Sarp (Geb
 |---|---|
 | Conference | 14th MIDI (Machine Intelligence and Digital Interaction), 10 Dec 2026, Warsaw (OPI PIB), hybrid |
 | Proceedings | Springer LNNS, LNCS layout (`llncs.cls` v2.25 + `splncs04.bst`, from the template ZIP) |
-| Length | full paper **6–8 pages including references**; this build is **8** |
-| Submission | EasyChair (`conf=midi2026`), PDF, **deadline 8 Oct 2026**; decision 20 Oct; camera-ready 10 Nov |
+| Length | full paper 6–8 pages including references; the camera-ready may add up to 3 pages in response to the reviews. This build is **9** |
+| Submission | EasyChair (`conf=midi2026`). **Accepted** (submission 3628). Camera-ready and the 5–10 min video are due **29 Nov 2026**; the video link goes to midi@opi.org.pl |
 | Required | abstract 150–250 words (this: 212); keywords; *Disclosure of Interests* (LNCS: mandatory); LLM use disclosed in the acknowledgments (Springer AI policy); no AI-generated figures. The Disclosure of Interests is included. **The LLM statement was removed at the authors' request; see item 2 below.** |
 | LNCS details followed | table captions above, figure captions below; figure text ≥ 6 pt; two numbered heading levels; no `\vspace`/`subfigure`/`wrapfigure`; DOIs in references; `\Description{}` alt text on every figure |
 
-## Before you submit
+## Before you submit the camera-ready
 
-1. `main.tex`, acknowledgments: replace `Project Number: ---` with the real project number (there is a `TODO(authors)` comment).
-2. Decide on the LLM statement, which was removed from the acknowledgments. Springer's
-   manuscript guidelines ask for LLM use to be documented in the acknowledgments of each
-   chapter, and EasyChair has no separate field for it. (The mandatory *Disclosure of
-   Interests* is in place.)
-3. Optional: ORCID iDs. The syntax is in the comment above `\author`.
-4. After any edit, recompile and check that the page count is still **≤ 8**. Page 8 has roughly ten lines of slack.
-5. Upload `main.pdf` to EasyChair. The sources (this directory, or the Overleaf zip) are for camera-ready.
+1. Read `REVIEW_RESPONSE.md`: every review point and what changed.
+2. The repository link in the introduction points to the tag `midi2026`. Create and push
+   that tag at the final commit, or the link returns 404.
+3. Decide on an LLM-use statement in the acknowledgments. Springer's AI policy asks for one,
+   and it is not in the paper.
+4. After any edit, recompile and keep the paper at **11 pages or fewer**.
+5. Upload the final PDF and sources as the organizers instruct, by 29 Nov. Send the video
+   link to midi@opi.org.pl the same day. Slides are in `../presentation/`.
+
+The closed-loop numbers (Table 2, Fig. 3b) come from the camera-ready campaign:
+`nav/tools/run_camera_ready.sh`, scored by `nav/tools/camera_ready_table.py`. The summary is in
+`nav/results/camera_ready/campaign_cr_2026-11-21.txt`.
 
 ## Compile
 
@@ -56,7 +60,7 @@ python3 scripts/make_figures.py qual       # or: overview | menu | qual | result
 |---|---|---|
 | `figures/fig1_overview.pdf` | Fig. 1 | drawn (system diagram) |
 | `figures/fig2_menu.pdf` | Fig. 2 | `nav/arc_menu.py` geometry and speed law |
-| `figures/fig3_results.pdf` | Fig. 3 | ladder result JSONs in `nav/results/` (recorded windows in the script) |
+| `figures/fig3_results.pdf` | Fig. 3 | (a) recorded probes; (b) the camera-ready campaign, selected by run tag `cr` |
 | `figures/fig4_qualitative.pdf` | Fig. 4 | frames decoded with `ffmpeg` from `nav/results/videos/*.mp4` |
 
 Every number in the text, tables and captions was taken from the recorded runs and probes

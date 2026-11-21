@@ -2,7 +2,7 @@
 
 Run from the repository root:
 
-    python3 midi_conference/qvla_paper/scripts/make_figures.py [overview|menu|qual|results]
+    python3 midi_conference/qvla_paper/scripts/make_figures.py [overview|menu|timeline|results|qual]
 
 Every figure is drawn at its printed size -- at most the 122 mm LNCS text width -- and is
 included in LaTeX at scale 1, so a label drawn at 6.5 pt is printed at 6.5 pt (Springer's
@@ -315,6 +315,92 @@ def fig_qualitative() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# Timeline -- one run, five moments: third-person view, the model's menu with the chosen
+# arc outlined, and the describe call's own words. The run's decisions.jsonl lived in
+# /tmp/qvla-menus and is gone; the quotes are read off the text panel that
+# make_run_video.py burnt into the same video from that log, and abridged with "...".
+# Times are sim seconds (= decision step / 60); success latched at 56.85 s, 1.496 m.
+# --------------------------------------------------------------------------------------
+TIMELINE_VIDEO = "20260831-225617_office_nearest_elevator__medium.mp4"
+TIMELINE = [   # (video t, label, quoted description, choice, choice colour)
+    (2.0, "1.5 s", "“The way ahead is open … TARGET: not visible”",
+     "→ straight, 0.45 m/s", DARK),
+    (25.0, "25 s", "“a wall and two elevator doors straight ahead … TARGET: 3 m”",
+     "→ straight, 0.20 m/s", DARK),
+    (38.5, "38.5 s", "“a wall and a dark doorframe straight ahead … far left … "
+     "TARGET: not visible”", "→ STOP (= blocked)", "#b3261e"),
+    (43.0, "43 s", "+ note “has not moved for about 5 seconds”; “… far left”",
+     "→ hard left, κ = +0.60", "#b35900"),
+    (50.5, "50 s", "“a dark elevator door straight ahead … TARGET: 2 m”",
+     "→ straight, 0.20 m/s\ngoal reached at 56.9 s", "#1e6b2f"),
+]
+
+
+def grab_full(video: str, t: float, tmp: Path) -> np.ndarray:
+    out = tmp / f"{Path(video).stem}_{t:.1f}_full.png"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}",
+                    "-i", str(REPO / "nav/results/videos" / video),
+                    "-frames:v", "1", str(out)], check=True)
+    return plt.imread(out)[54:686, :, :3]   # both views; header and text panel removed
+
+
+def wrap_to(fig, text: str, width_pt: float, **kw) -> str:
+    """Greedy word wrap measured with the real font, so no line exceeds width_pt."""
+    r = fig.canvas.get_renderer()
+    lines, cur = [], ""
+    for word in text.split():
+        trial = f"{cur} {word}".strip()
+        t = fig.text(0, 0, trial, **kw)
+        wide = t.get_window_extent(renderer=r).width * 72.0 / fig.dpi > width_pt
+        t.remove()
+        if wide and cur:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    return "\n".join(lines + [cur])
+
+
+def fig_timeline() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        ims = [grab_full(TIMELINE_VIDEO, t, Path(td)) for t, *_ in TIMELINE]
+    n, gap, fs = len(ims), 3.0, 6.0
+    W = TEXTWIDTH_PT
+    w = (W - (n - 1) * gap) / n
+    crop_chase = (60, 612)                   # rows of the 632-row view; ceiling/edge trimmed
+    hc = w * (crop_chase[1] - crop_chase[0]) / 1280
+    hm = w * 632 / 1280
+    lead, label_h, text_lines = 1.2 * fs, 8.0, 5
+    H = label_h + hc + 1.5 + hm + 2.0 + text_lines * lead
+    fig = new_fig(W, H)
+    for k, (im, (_, tl, quote, choice, col)) in enumerate(zip(ims, TIMELINE)):
+        x = k * (w + gap)
+        y_top = H - label_h
+        fig.text((x + 1.0) / W, (H - 1.0) / H, tl, ha="left", va="top", fontsize=6.5,
+                 fontweight="bold", color=DARK)
+        for y0, h, view in ((y_top - hc, hc, im[crop_chase[0]:crop_chase[1], 1280:2560]),
+                            (y_top - hc - 1.5 - hm, hm, im[:, 0:1280])):
+            ax = fig.add_axes([x / W, y0 / H, w / W, h / H])
+            ax.imshow(view, interpolation="lanczos")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_linewidth(0.4)
+        y_text = y_top - hc - 1.5 - hm - 2.0
+        body = wrap_to(fig, quote, w - 1.0, fontsize=fs, style="italic")
+        fig.text(x / W, y_text / H, body, ha="left", va="top", fontsize=fs, style="italic",
+                 color="0.25", linespacing=1.12)
+        nl = body.count("\n") + 1
+        r = fig.canvas.get_renderer()
+        for i, line in enumerate(choice.split("\n")):
+            assert nl + i + 1 <= text_lines, (tl, nl)
+            t = fig.text(x / W, (y_text - (nl + i) * lead) / H, line, ha="left", va="top",
+                         fontsize=fs, fontweight="bold", color=col)
+            assert t.get_window_extent(renderer=r).width * 72.0 / fig.dpi <= w + 0.5, line
+    save(fig, "fig_timeline", dpi=300)
+
+
+# --------------------------------------------------------------------------------------
 # Fig. 3 -- (a) instruction authority, (b) per-episode closest approach
 # --------------------------------------------------------------------------------------
 # (a) Heading separation between "turn left" and "turn right" on the same observation.
@@ -407,12 +493,14 @@ def fig_results() -> None:
 
 
 if __name__ == "__main__":
-    which = sys.argv[1:] or ["overview", "menu", "qual", "results"]
+    which = sys.argv[1:] or ["overview", "menu", "timeline", "results"]
     if "overview" in which:
         fig_overview()
     if "menu" in which:
         fig_menu_geometry()
     if "qual" in which:
         fig_qualitative()
+    if "timeline" in which:
+        fig_timeline()
     if "results" in which:
         fig_results()

@@ -65,13 +65,31 @@ unrelated scenes, even after its own reasoning had concluded that it should move
 and left''.
 
 QVLA keeps the VLM for reading an image and a sentence and takes the geometry out of its
-answer: candidate paths are drawn on the image and the model names one. We contribute
+answer: candidate paths are drawn on the image and the model names one
+(Fig.~\ref{fig:timeline}). We contribute
 (i)~a training-free policy around a frozen 27B VLM: an arc menu with shuffled labels, a
 describe-then-select chain and recovery, executed asynchronously by a conventional
 controller; (ii)~a closed-loop DynaNav evaluation on a mobile manipulator against TIC-VLA and
 a baseline without a model, three interleaved runs each on identical infrastructure; and
 (iii)~probes that separate instruction following from free-space perception with label-free
 mirror controls. Code and logs are public.\footnote{\url{https://github.com/GTU-DASH-LAB/dash-aloha-mini-isaacsim/tree/midi2026}}
+
+\begin{figure}[t]
+\includegraphics{figures/fig_timeline.pdf}
+\Description{Five moments of one run, left to right at 1.5, 25, 38.5, 43 and 50 seconds. Each
+column shows a third-person view of the robot above the robot's own camera image with seven
+numbered arcs, the chosen one outlined, and below them the model's description and choice. At
+1.5 s, in an open lobby, it reports the way open and drives straight at 0.45 m/s. At 25 s it
+sees a wall and two elevator doors 3 m ahead and slows to 0.20 m/s. At 38.5 s it sees a wall
+and a dark doorframe ahead, open floor to the far left, and answers STOP. At 43 s, told that
+the robot has not moved for 5 seconds, it takes the hard-left arc. At 50 s it sees a dark
+elevator door 2 m ahead and drives straight; the goal is reached at 56.9 s.}
+\caption{One development run of ``Go straight ahead and stop at the nearest elevator.'' Top:
+third-person view (not shown to the model); middle: the menu, chosen arc outlined; bottom: the
+describe call's own words, abridged, and the choice. The STOP at 38.5\,s means
+\emph{blocked}; after 5\,s without motion the prompt says so, and the model turns.}
+\label{fig:timeline}
+\end{figure}
 
 \begin{figure}[t]
 \includegraphics{figures/fig1_overview.pdf}
@@ -134,7 +152,7 @@ trained with ($\phi=90.1^\circ$, $h=0.346$\,m, $1920\times1080$), downscaled to
 $448\times448$. Each arc ends in a
 numbered circle; labels 1--7 are a fresh random permutation at every decision, so any
 positional habit scores at chance. Label 8 (STOP) is not drawn
-(Figs.~\ref{fig:menu}a and~\ref{fig:qual}).
+(Figs.~\ref{fig:timeline} and~\ref{fig:menu}a).
 
 \begin{figure}[t]
 \includegraphics{figures/fig2_menu.pdf}
@@ -335,25 +353,9 @@ by about one grey level.
 \subsection{Qualitative Behaviour and Failure Analysis}
 \label{sec:qual}
 
-\begin{figure}[t]
-\centering
-\includegraphics{figures/fig4_qualitative.pdf}
-\Description{Three camera frames with seven coloured arcs and shuffled number labels drawn on
-the floor. (a) A wall and a metal pole close ahead, with open floor to the far left. (b) A red
-emergency exit door straight ahead. (c) An elevator lobby with a wall and dark doorframe ahead
-and carpet in the foreground.}
-\caption{Logged decisions of two successful runs. (a,\,b)~``\ldots then turn left at the end
-to approach the red emergency exit door.'' (a)~``A wall straight ahead\ldots most open floor
-is to the far left'' $\rightarrow$ $\kappa=+0.60$. (b)~``A red double door\ldots TARGET:
-3\,m'' $\rightarrow$ straight at a model-chosen 0.20\,m/s. (c)~``\ldots stop at the nearest
-elevator'': ``a wall and a dark doorframe ahead\ldots TARGET: not visible'' $\rightarrow$
-STOP, meaning \emph{blocked}.}
-\label{fig:qual}
-\end{figure}
-
-In Fig.~\ref{fig:qual}a,\,b the select call follows the description's direction word and the
-TARGET line sets the speed. Panel (c) is the most frequent failure in our development runs,
-\emph{STOP-means-blocked}: in one elevator run the model answered STOP on 42 of 65 decisions
+In Fig.~\ref{fig:timeline} the select call follows the description's direction word and
+the TARGET line sets the speed. The STOP at 38.5\,s is the most frequent failure in our
+development runs, \emph{STOP-means-blocked}: in another elevator run the model answered STOP on 42 of 65 decisions
 from 5.5\,m out while its description named an open side; STOP should be gated on a visible,
 near target. Runs also \emph{arrive and leave}, passing within 2.2\,m of the goal and driving
 on. Underneath, the select call is close to a lookup

@@ -20,7 +20,7 @@ We re-ran the whole closed-loop comparison on one code version (Sect. 4, 5.3, Ta
 **Few scenarios, high variance, TIC-VLA run only once.**
 - Every policy now runs the 13 indoor episodes three times.
 - Table 2 reports mean ± s.d. and the range over rounds.
-- Fig. 3b shows successes per episode.
+- Fig. 4b shows successes per episode.
 - The comparison is paired by episode, with an exact sign-flip test and a bootstrap
   interval.
 - The outdoor column was removed. Its numbers were affected by simulation defects found

@@ -9,7 +9,7 @@ Camera Image* — F. Aladhami, O. B. Kaya, S. Sarp (Gebze Technical University).
 |---|---|
 | Conference | 14th MIDI (Machine Intelligence and Digital Interaction), 10 Dec 2026, Warsaw (OPI PIB), hybrid |
 | Proceedings | Springer LNNS, LNCS layout (`llncs.cls` v2.25 + `splncs04.bst`, from the template ZIP) |
-| Length | **at most 8 pages including references**: the MIDI site says papers over eight pages will not be published in the proceedings. This build is **8** (it was 9 after the review response; Fig. 4 went to one row of three frames and the text was tightened) |
+| Length | **at most 8 pages including references**: the MIDI site says papers over eight pages will not be published in the proceedings. This build is **8** (it was 9 after the review response; the text was tightened, and the old qualitative figure was replaced by the run timeline, now Fig. 1 on page 2) |
 | Submission | EasyChair (`conf=midi2026`). **Accepted** (submission 3628). Camera-ready and the 5–10 min video are due **29 Nov 2026**; the video link goes to midi@opi.org.pl |
 | Required | abstract 150–250 words (this: 182); keywords; *Disclosure of Interests* (LNCS: mandatory); LLM use disclosed in the acknowledgments (Springer AI policy); no AI-generated figures. The Disclosure of Interests is included. **The LLM statement was removed at the authors' request; see item 2 below.** |
 | LNCS details followed | table captions above, figure captions below; figure text ≥ 6 pt; two numbered heading levels; no `\vspace`/`subfigure`/`wrapfigure`; DOIs in references; `\Description{}` alt text on every figure |
@@ -26,7 +26,7 @@ Camera Image* — F. Aladhami, O. B. Kaya, S. Sarp (Gebze Technical University).
 5. Upload the final PDF and sources as the organizers instruct, by 29 Nov. Send the video
    link to midi@opi.org.pl the same day. Slides are in `../presentation/`.
 
-The closed-loop numbers (Table 2, Fig. 3b) come from the camera-ready campaign:
+The closed-loop numbers (Table 2, Fig. 4b) come from the camera-ready campaign:
 `nav/tools/run_camera_ready.sh`, scored by `nav/tools/camera_ready_table.py`. The summary is in
 `nav/results/camera_ready/campaign_cr_2026-11-21.txt`.
 
@@ -59,10 +59,10 @@ python3 scripts/make_figures.py qual       # or: overview | menu | qual | result
 
 | File | Printed as | Source |
 |---|---|---|
-| `figures/fig1_overview.pdf` | Fig. 1 | drawn (system diagram) |
-| `figures/fig2_menu.pdf` | Fig. 2 | `nav/arc_menu.py` geometry and speed law |
-| `figures/fig3_results.pdf` | Fig. 3 | (a) recorded probes; (b) the camera-ready campaign, selected by run tag `cr` |
-| `figures/fig4_qualitative.pdf` | Fig. 4 | frames decoded with `ffmpeg` from `nav/results/videos/*.mp4` |
+| `figures/fig_timeline.pdf` | Fig. 1 | one development run (`nav/results/videos/20260831-225617_office_nearest_elevator__medium.mp4`): frames decoded with `ffmpeg`; quotes read off the text panel burnt into that video, since the run's `decisions.jsonl` is gone |
+| `figures/fig1_overview.pdf` | Fig. 2 | drawn (system diagram) |
+| `figures/fig2_menu.pdf` | Fig. 3 | `nav/arc_menu.py` geometry and speed law |
+| `figures/fig3_results.pdf` | Fig. 4 | (a) recorded probes; (b) the camera-ready campaign, selected by run tag `cr` |
 
 Every number in the text, tables and captions was taken from the recorded runs and probes
 documented in the repository's `CLAUDE.md` and `nav/`. Follow the same rule when editing:

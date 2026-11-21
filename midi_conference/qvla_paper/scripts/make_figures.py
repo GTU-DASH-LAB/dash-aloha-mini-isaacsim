@@ -340,10 +340,22 @@ SHORT = {"office_nearest_elevator": "elevator", "hospital_down_hallway": "hallwa
          "warehouse_aisle6": "aisle 6"}
 
 
+CAMPAIGN = "cr"   # nav/tools/run_camera_ready.sh, tags [medium_]cr_<arm>_r<round>
+ARMS = [("ticvla", "TIC-VLA", "^", "white", "#2f5f9e", 14),
+        ("qvla", "QVLA", "o", "#d9731f", DARK, 11),
+        ("straight", "no model", "s", "0.55", "0.25", 9)]
+
+
+def campaign() -> dict:
+    """arm -> round -> episode -> scored row, by run tag (see camera_ready_table.py)."""
+    sys.path.insert(0, str(REPO / "nav" / "tools"))
+    import camera_ready_table as CRT
+    return CRT.collect(CAMPAIGN)
+
+
 def fig_results() -> None:
-    q = ladder(QVLA_WINDOW, "Qwen3.8-27B-FP8")
-    t = ladder(TICVLA_WINDOW, "")
-    W, H = TEXTWIDTH_PT, 124.0
+    data = campaign()
+    W, H = TEXTWIDTH_PT, 136.0
     fig = new_fig(W, H)
 
     ax = fig.add_axes([96 / W, 38 / H, 72 / W, 74 / H])
@@ -364,33 +376,34 @@ def fig_results() -> None:
     ax.set_xlabel("left vs. right heading (deg)")
     ax.set_title("(a) authority of the instruction", loc="right", fontsize=FS)
 
+    # (b) successes per episode over the campaign's rounds, one marker per policy,
+    # offset sideways so ties stay visible.
     ax = fig.add_axes([206 / W, 38 / H, 136 / W, 74 / H])
     x = np.arange(len(INDOOR))
-    qc = np.array([q[e]["closest_m"] for e in INDOOR])
-    tc = np.array([t[e]["closest_m"] for e in INDOOR])
-    ax.axhline(1.5, color="0.35", lw=0.5, ls=(0, (2, 2)), zorder=0)
-    ax.text(len(INDOOR) - 0.45, 1.36, "success radius 1.5 m", ha="right", va="top",
-            fontsize=FS - 0.5)
-    for i in x:
-        ax.plot([i, i], [qc[i], tc[i]], color="0.75", lw=0.6, zorder=1)
-    ax.scatter(x, tc, marker="^", s=14, facecolor="white", edgecolor="#2f5f9e", lw=0.8,
-               label=f"TIC-VLA, {sum(t[e]['success'] for e in INDOOR)}/13", zorder=3)
-    ax.scatter(x, qc, marker="o", s=11, facecolor="#d9731f", edgecolor=DARK, lw=0.4,
-               label=f"QVLA, {sum(q[e]['success'] for e in INDOOR)}/13", zorder=4)
-    ax.set_yscale("log")
-    ax.set_ylim(1.12, 22)
-    ax.set_yticks([1.5, 2, 5, 10, 20])
-    ax.set_yticklabels(["1.5", "2", "5", "10", "20"])
-    ax.minorticks_off()
+    n_rounds = max((len(r) for r in data.values()), default=0)
+    for k, (arm, name, mk, fc, ec, size) in enumerate(ARMS):
+        rounds = data.get(arm, {})
+        if not rounds:
+            continue
+        succ = np.array([sum(bool(rounds[r].get(e, {}).get("success")) for r in rounds)
+                         for e in INDOOR])
+        mean = np.mean([sum(bool(row["success"]) for row in rounds[r].values())
+                        for r in rounds])
+        ax.scatter(x + (k - 1) * 0.24, succ, marker=mk, s=size, facecolor=fc, edgecolor=ec,
+                   lw=0.6, zorder=3 + k, label=f"{name} {mean:.1f}")
+    ax.set_ylim(-0.4, n_rounds + 0.4)
+    ax.set_yticks(range(n_rounds + 1))
+    for yy in range(n_rounds + 1):
+        ax.axhline(yy, color="0.9", lw=0.4, zorder=0)
     ax.set_xticks(x)
     ax.set_xticklabels([SHORT[e] for e in INDOOR], rotation=60, ha="right",
                        rotation_mode="anchor")
     ax.tick_params(axis="x", pad=1.0)
     ax.set_xlim(-0.6, len(INDOOR) - 0.4)
-    ax.set_ylabel("closest approach (m)")
-    ax.legend(loc="upper left", frameon=False, handletextpad=0.1, borderaxespad=0.1,
-              labelspacing=0.2)
-    ax.set_title("(b) closest approach per indoor episode", loc="left", fontsize=FS)
+    ax.set_ylabel(f"successes in {n_rounds} rounds")
+    ax.legend(loc="lower center", frameon=False, handletextpad=0.05, borderaxespad=0.0,
+              bbox_to_anchor=(0.5, 1.0), ncol=3, columnspacing=0.8, handlelength=1.0)
+    ax.set_title("(b) successes per indoor episode", loc="left", fontsize=FS, pad=11)
     save(fig, "fig3_results")
 
 

@@ -82,6 +82,7 @@ from arc_menu import (  # noqa: E402
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
     allocate_labels, arc_clearance, drivable, make_arcs, parse_choice_speed,
     parse_target_distance, pivot_word, plan_from_kappa, render_menu, select_system,
+    select_system_text, text_options,
     speed_for, speed_from_level, stop_label,
     MENU_CAMERA_KEYS, MenuCamera, camera_keep, default_camera_record, free_space_system,
 )
@@ -1215,11 +1216,22 @@ MENU_MIN_SCAN_POINTS = int(os.environ.get("QVLA_MENU_MIN_POINTS", "50"))
 # ladder needs no decision at all. It never answers STOP; like every policy here, it ends
 # on the runner's arrival latch or the timeout. `/health` reports it in `selector`, and
 # `model` names it, so a result file can never be read as a QVLA run.
+#
+# `text` is the TEXT-ONLY ablation of the menu (see `select_system_text` in arc_menu.py):
+# the same model and the same describe call, but the select call sees the camera image
+# with NOTHING drawn on it and the same seven paths listed as words. It answers "is it the
+# drawing that works, or just choosing among a few fixed curvatures?". The model is loaded;
+# only the menu image is not rendered.
 SELECTOR = os.environ.get("QVLA_SELECTOR", "vlm").strip().lower()
-if SELECTOR not in ("vlm", "straight"):
-    raise SystemExit(f"QVLA_SELECTOR must be 'vlm' or 'straight', got {SELECTOR!r}")
+if SELECTOR not in ("vlm", "straight", "text"):
+    raise SystemExit(f"QVLA_SELECTOR must be 'vlm', 'straight' or 'text', got {SELECTOR!r}")
 if SELECTOR != "vlm" and _ARC_FORMAT != "menu":
     raise SystemExit(f"QVLA_SELECTOR={SELECTOR} needs QVLA_FORMAT=menu")
+if SELECTOR == "text" and (MENU_PIVOTS or MENU_GOAL_DIR):
+    # The text prompt exists only for the shipping profile; a pivot or heading arm would
+    # silently run under words that never mention the pivots or the HEADING.
+    raise SystemExit("QVLA_SELECTOR=text supports neither QVLA_MENU_PIVOTS nor QVLA_GOAL_DIR")
+LOADS_MODEL = SELECTOR in ("vlm", "text")
 
 _STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
 
@@ -1245,6 +1257,13 @@ def _menu_system(stop_allowed: bool, speed_choice: bool,
     return select_system(_STOP_LABEL, stop_allowed=stop_allowed,
                          speed_choice=speed_choice, pivot_labels=pivot_labels,
                          goal_dir=goal_dir, camera=camera)
+
+
+@lru_cache(maxsize=1024)
+def _text_system(stop_allowed: bool, speed_choice: bool, options: str) -> str:
+    """`_menu_system` for QVLA_SELECTOR=text: the paths listed as `options`."""
+    return select_system_text(_STOP_LABEL, options, stop_allowed=stop_allowed,
+                              speed_choice=speed_choice)
 
 # Shuffled per call rather than fixed, because a stable numbering is the one confound that
 # makes this whole approach look like it works when it does not: number the arcs left to
@@ -1371,7 +1390,11 @@ def menu_plan(image_paths: list[str], instruction: str,
                 f"-> kappa {kappa:+.2f} @{speed:.2f}m/s", 0.0)
 
     menu = str(out_dir / f"menu_{step if step is not None else 0:08d}.jpg")
-    if camera is None:
+    if SELECTOR == "text":
+        # Nothing is drawn: the select call is shown the frame as it came off the camera,
+        # and the record names that frame.
+        menu = newest
+    elif camera is None:
         render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels)
     else:
         render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels,
@@ -1502,8 +1525,12 @@ def menu_plan(image_paths: list[str], instruction: str,
         # A balk takes STOP away for the same reason a wedge does, and with a stronger
         # case: the front was measured CLEAR, so "every drawn path runs into something"
         # is not merely unlikely here, it is known false.
-        [menu], _menu_system(not kind, ask_speed, pivot_labels, MENU_GOAL_DIR,
-                             camera if camera is not None and camera.prompt else None),
+        [menu],
+        (_text_system(not kind, ask_speed,
+                      text_options([a.kappa for a in arcs], [int(x) for x in drawn]))
+         if SELECTOR == "text" else
+         _menu_system(not kind, ask_speed, pivot_labels, MENU_GOAL_DIR,
+                      camera if camera is not None and camera.prompt else None)),
         user,
         int(LEVEL["select_think"]), int(LEVEL["answer"]), prefill=prefill)
 
@@ -1774,9 +1801,11 @@ def health() -> dict:
     with _lock:
         return {
             "ok": _state["model"] is not None,
-            "model": MODEL_PATH if SELECTOR == "vlm" else f"{SELECTOR}-baseline (no model)",
+            "model": MODEL_PATH if LOADS_MODEL else f"{SELECTOR}-baseline (no model)",
             "selector": SELECTOR,
-            "mode": ("qvla-arc-menu (selects a drawn path)" if _ARC_FORMAT == "menu"
+            "mode": ("qvla-text-menu (selects a path listed in text, nothing drawn)"
+                     if SELECTOR == "text" else
+                     "qvla-arc-menu (selects a drawn path)" if _ARC_FORMAT == "menu"
                      else "qvla-direct (no action expert)"),
             # Reported so a probe can never misattribute a result to the wrong format.
             # The three are not comparable: `arc` cannot express an S-curve at all, and
@@ -2232,7 +2261,7 @@ def predict(req: PredictRequest) -> PredictResponse:
 
 @app.on_event("startup")
 def _startup() -> None:
-    if SELECTOR != "vlm":
+    if not LOADS_MODEL:
         # Nothing to load. The sentinel only satisfies the "model loaded" checks in
         # /health and /predict; the baseline branch of menu_plan never reaches the model.
         _state["model"] = f"{SELECTOR}-baseline"

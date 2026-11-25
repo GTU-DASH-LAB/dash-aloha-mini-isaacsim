@@ -13,6 +13,9 @@
 #   ticvla    TIC-VLA, official checkpoint, asynchronous as DynaNav runs it (GPU1)
 #   straight  no model: the straightest drawn arc at cruise speed, every decision
 #             (QVLA_SELECTOR=straight in server_qwen.py)
+#   text      QVLA's text-only ablation: same model, describe call and seven paths, but
+#             the select call sees the plain image with the paths listed as words
+#             (QVLA_SELECTOR=text). Not part of the default ARMS; run it with ARMS=text.
 #
 # The rounds are INTERLEAVED (qvla, ticvla, straight, then again), not blocked. Anything
 # that drifts over a 12-hour campaign, such as GPU clocks or another user's job on the
@@ -172,6 +175,8 @@ for R in $(seq "$FIRST_ROUND" "$ROUNDS"); do
       qvla)     run_qwen_arm vlm "${TAG_PREFIX}_${TAG}";      RC=$?
                 repair "medium_${TAG_PREFIX}_${TAG}" 8766 ;;
       straight) run_qwen_arm straight "${TAG_PREFIX}_${TAG}"; RC=$?
+                repair "medium_${TAG_PREFIX}_${TAG}" 8766 ;;
+      text)     run_qwen_arm text "${TAG_PREFIX}_${TAG}";     RC=$?
                 repair "medium_${TAG_PREFIX}_${TAG}" 8766 ;;
       ticvla)   run_ticvla_arm "$TAG";                         RC=$?
                 repair "${TAG_PREFIX}_${TAG}" 8765 ;;

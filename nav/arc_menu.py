@@ -1576,6 +1576,82 @@ frame or an object."}
 {answer_rule}"""
 
 
+# --------------------------------------------------------------------------------------
+# The TEXT-ONLY ablation of the menu (QVLA_SELECTOR=text)
+# --------------------------------------------------------------------------------------
+# What it tests: is it the DRAWING that makes the menu work, or merely the fact that the
+# model chooses among a few fixed curvatures? Everything else is held fixed -- the describe
+# call, the same seven curvatures, the same shuffled numbers per decision (same random
+# stream), STOP, the speed question, the history and recovery notes, the plan builder and
+# the controller. The select call still sees the camera image, but as it came off the
+# camera, with nothing drawn on it; the paths are given as words instead. The words carry
+# the same geometry the drawing does (direction, how far it turns, where it ends), so the
+# one thing taken away is where each path lies relative to what is in the picture.
+def option_text(kappa: float, arc_len_m: float = DEFAULT_LENGTH_M) -> str:
+    """One menu arc as words: direction, total turn and end point over its length."""
+    if abs(kappa) < 1e-9:
+        return f"straight -- goes straight ahead for {arc_len_m:.0f} metres"
+    side = "left" if kappa > 0 else "right"
+    k = abs(kappa)
+    x = math.sin(k * arc_len_m) / k
+    y = (1.0 - math.cos(k * arc_len_m)) / k
+    return (f"{direction_word(kappa)} -- curves to the {side}, turning "
+            f"{math.degrees(k * arc_len_m):.0f} degrees over {arc_len_m:.0f} metres and "
+            f"ending {x:.1f} m ahead and {y:.1f} m to the {side}")
+
+
+def text_options(kappas: list[float], labels: list[int]) -> str:
+    """The menu as a list, in label order. The labels are shuffled per decision, so label
+    order is a random order of directions -- the text counterpart of numbers that 'do not
+    run left to right' on the drawn menu."""
+    return "\n".join(f"{lab}: {option_text(k)}"
+                     for lab, k in sorted(zip(labels, kappas), key=lambda r: r[0]))
+
+
+def select_system_text(stop_label: int, options: str, stop_allowed: bool = True,
+                       speed_choice: bool = False) -> str:
+    """`select_system` for the text-only ablation: same rules, same answer contract, the
+    paths listed in `options` instead of drawn. Only the no-pivot, no-heading, default-
+    camera case exists, which is the shipping profile; the server refuses the others."""
+    if stop_allowed:
+        stop_rule = f"""There is one extra choice, {stop_label}, which is not a path. \
+Answer {stop_label} to stop and stay still, and only for one of two reasons: the robot has \
+arrived at the place the instruction names, or every path runs into something. Stopping at \
+the right place is part of the task. Do not answer {stop_label} merely because the way \
+ahead is tight."""
+    else:
+        stop_rule = """Stopping is not one of your choices here. The robot has not arrived \
+anywhere, and it has just reversed a little after failing to make any progress, so \
+standing still is the one thing already known not to work. Pick the path with the most \
+open floor along it, even if none of them is good."""
+    answer_rule = (f"""Answer with TWO whole numbers separated by a space: first the \
+number of the chosen path, then how fast to drive it, from 0 (barely creeping) to \
+{SPEED_LEVELS} (full speed). You are close to what the instruction names, so choose the \
+speed deliberately: slow down to place the robot accurately, keep the speed up if there is \
+still ground to cover. A low number never means stopping -- it means moving gently. \
+Write nothing but the two numbers.""" if speed_choice else
+                   "Answer with the number of the chosen path and nothing else.")
+    robot, cam_sentence = _camera_parts(None)
+    return f"""You are the navigation system of {robot}, looking through its \
+forward camera. {cam_sentence}
+
+The robot can drive one of the candidate paths listed below. Each one is a real route the \
+robot can drive, starting at the robot and curving away from it over the floor you see in \
+the image; nothing is drawn on the image. The numbers are arbitrary tags, not an order: \
+they do not run left to right and carry no meaning beyond identifying a path.
+
+{options}
+
+Your job is to choose the one option that best carries out the navigation instruction. \
+{STAGE_RULE} Judge each path by where it would take the robot on the floor in the image. \
+Prefer a path that stays on open, walkable floor and does not run into a wall, a door \
+frame or an object.
+
+{stop_rule}
+
+{answer_rule}"""
+
+
 def plan_from_kappa(kappa: float, speed_mps: float, n_waypoints: int, dt: float,
                     arc_len_m: float = DEFAULT_LENGTH_M) -> np.ndarray:
     """A chosen curvature -> an (N, 2) FLU plan of cumulative positions at `dt` spacing.

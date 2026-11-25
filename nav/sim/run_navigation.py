@@ -291,6 +291,9 @@ CHASE_EVERY = max(1, int(os.environ.get("NAV_CHASE_EVERY", "2")))
 # this to 0 for every arm (nav/tools/run_camera_ready.sh does).
 NAV_CHASE = os.environ.get("NAV_CHASE", "1").lower() not in ("0", "false", "no")
 
+# Policy-server selectors that load no model and never read the camera (see setup()).
+NO_MODEL_SELECTORS = ("straight",)
+
 # TEST MODE (NAV_RENDER_ON_DEMAND=1, default off): render only the frames something reads.
 # For development and smoke runs. Never use it for a number that is compared with runs
 # made without it. Kit by default renders, on every 60 Hz update, the headless viewport
@@ -518,8 +521,8 @@ class NavigationRunner:
         self.kit = None
         self.art = None
         self.camera = None
-        # True when the policy server loads no model (`selector` != "vlm" on /health), e.g. the
-        # straight baseline. Nothing reads the image then, so nothing is rendered: see setup().
+        # True when the policy server loads no model (`selector` "straight" on /health), the
+        # no-model baseline. Nothing reads the image then, so nothing is rendered: see setup().
         self.blind = False
         self._blank_frame: Path | None = None
         self.guard = None
@@ -958,9 +961,12 @@ class NavigationRunner:
         # is sent one blank placeholder frame instead of a grab. A grab is not merely wasted
         # here, it is wrong: with the camera off it returns a stale frame, and an empty one
         # would make the loop hold the robot waiting for a camera nobody needs. Only servers
-        # that say so on /health go this way (TIC-VLA's has no `selector`; QVLA says "vlm"),
-        # so every policy that does read the image keeps the default path.
-        self.blind = str(info.get("selector", "vlm")) != "vlm"
+        # that say so on /health go this way (TIC-VLA's has no `selector`; QVLA says "vlm",
+        # its text-only ablation "text", and both read the image), so every policy that
+        # does read the image keeps the default path. A list of the selectors that do NOT
+        # read it, not of those that do: a new selector that reads the image must never
+        # end up driving blind because nobody added it here.
+        self.blind = str(info.get("selector", "vlm")) in NO_MODEL_SELECTORS
         if self.blind:
             from PIL import Image
             from omni.kit.viewport.utility import get_active_viewport

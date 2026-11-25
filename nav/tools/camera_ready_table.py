@@ -33,8 +33,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "nav" / "sim"))
 from summarize_runs import load_config, score  # noqa: E402
 
-TAG_RE = re.compile(r"(?:^|_)(?P<prefix>[a-z0-9]+)_(?P<arm>qvla|ticvla|straight)_r(?P<r>\d+)$")
-ARM_ORDER = ["ticvla", "qvla", "straight"]
+TAG_RE = re.compile(r"(?:^|_)(?P<prefix>[a-z0-9]+)_(?P<arm>qvla|ticvla|straight|text)_r(?P<r>\d+)$")
+ARM_ORDER = ["ticvla", "qvla", "text", "straight"]
 
 
 def collect(prefix: str) -> dict[str, dict[int, dict[str, dict]]]:
@@ -147,7 +147,8 @@ def main() -> None:
         print(f"   {e:28} " + " ".join(f"{per_ep[x].get(e, float('nan')):8.2f}" for x in arms))
     print()
 
-    for x, y in [("qvla", "ticvla"), ("qvla", "straight"), ("ticvla", "straight")]:
+    for x, y in [("qvla", "ticvla"), ("qvla", "straight"), ("ticvla", "straight"),
+                 ("qvla", "text"), ("text", "ticvla"), ("text", "straight")]:
         if x in per_ep and y in per_ep:
             both = [e for e in indoor if per_ep[x][e] == per_ep[x][e]
                     and per_ep[y][e] == per_ep[y][e]]       # an episode missing in either arm is left out

@@ -1,0 +1,49 @@
+# Text-only vs visual prompting (seminar ablation), 2026-11-25
+# text arm: QVLA_SELECTOR=text, commit 1d53a83, tags medium_cr_text_r1..r3, run 2026-11-25 19:48-22:48
+# visual (qvla), ticvla and straight rows: the camera-ready campaign of 2026-11-20/21, same nav code
+# produced by: python3 nav/tools/camera_ready_table.py --prefix cr
+
+== camera-ready campaign `cr`
+   commits: ['1d53a83', '6eab02d', '78ea8ab', 'c217a36', 'c217a36+dirty', 'f6e26e4+dirty']   episodes seen: 13   DN-11 subset: 11
+
+arm       rounds        SR/ep   range          SPL    closest m          guard     DN-11 SR   DN-11 SPL phys.coll blown
+ticvla         3 6.33 ± 0.58/13 6-7      0.47 ± 0.03  2.80 ± 0.43 852.00 ± 236.33  6.00 ± 0.00 0.53 ± 0.00 0.67 ± 0.58     0
+qvla           3 7.67 ± 1.15/13 7-9      0.57 ± 0.08  4.92 ± 0.79 1562.33 ± 366.41  7.33 ± 0.58 0.64 ± 0.05 1.67 ± 0.58     0
+text           3 2.33 ± 1.53/13 1-4      0.17 ± 0.11  5.42 ± 0.31 1545.00 ± 427.88  2.33 ± 1.53 0.21 ± 0.13 3.00 ± 1.00     0
+straight       3 1.00 ± 0.00/13 1-1      0.08 ± 0.00  7.33 ± 0.00 10511.00 ± 1.00  1.00 ± 0.00 0.09 ± 0.00 4.00 ± 0.00     0
+
+per-episode success rate over rounds:
+   episode                        ticvla     qvla     text straight
+   office_nearest_elevator          0.00     1.00     1.00     1.00
+   hospital_down_hallway            0.33     1.00     0.67     0.00
+   hospital_down_hallway2           1.00     1.00     0.33     0.00
+   office_passing_hallway           0.00     0.33     0.00     0.00
+   hospital_vending_machine         0.33     1.00     0.00     0.00
+   hospital_vending_machine2        0.00     1.00     0.00     0.00
+   office_hallway_turn              1.00     1.00     0.33     0.00
+   office_hallway_turn2             0.33     0.67     0.00     0.00
+   hospital_past_wheelchairs        1.00     0.00     0.00     0.00
+   hospital_forward_staircase       1.00     0.00     0.00     0.00
+   hospital_exit_room               1.00     0.33     0.00     0.00
+   warehouse                        0.00     0.33     0.00     0.00
+   warehouse_aisle6                 0.33     0.00     0.00     0.00
+
+qvla - ticvla: mean per-episode success difference +0.103 over 13 episodes, 95% bootstrap CI [-0.256, +0.462], exact sign-flip p = 0.6865, episodes better/worse/tied 7/4/2
+qvla - straight: mean per-episode success difference +0.513 over 13 episodes, 95% bootstrap CI [+0.282, +0.744], exact sign-flip p = 0.0039, episodes better/worse/tied 9/0/4
+ticvla - straight: mean per-episode success difference +0.410 over 13 episodes, 95% bootstrap CI [+0.077, +0.718], exact sign-flip p = 0.0410, episodes better/worse/tied 9/1/3
+qvla - text: mean per-episode success difference +0.410 over 13 episodes, 95% bootstrap CI [+0.231, +0.615], exact sign-flip p = 0.0039, episodes better/worse/tied 9/0/4
+text - ticvla: mean per-episode success difference -0.308 over 13 episodes, 95% bootstrap CI [-0.590, +0.026], exact sign-flip p = 0.1152, episodes better/worse/tied 2/8/3
+text - straight: mean per-episode success difference +0.103 over 13 episodes, 95% bootstrap CI [+0.000, +0.231], exact sign-flip p = 0.2500, episodes better/worse/tied 3/0/10
+
+Decision statistics (decisions.jsonl of the 39 runs of each arm):
+                          visual (qvla)   text-only
+  decisions                     2443        2865
+  STOP                          6.7%       15.9%
+  unparsed answers               0.0%        0.0%
+  hard left/right (|k|=0.60)    13.8%        2.0%
+  left/right (|k|=0.35)          6.3%        4.1%
+  slight left/right (|k|=0.15)   4.1%       11.2%
+  straight                      69.1%       66.8%
+  turned toward the side the description called open (L/R named): 83.3% vs 70.4%
+  STOP share in hospital_vending_machine / _2: 0% / 0% (visual) vs 41% / 34% (text);
+  the text-arm STOPs report "TARGET: not visible" on 87% of them.

@@ -11,22 +11,22 @@
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
     --ink: #1b2230; --navy: #0f2550; --blue: #1f4e9e; --red: #c8102e;
     --muted: #5f6878; --rule: #d5dae3; --panel: #f2f4f8; --pink: #eba3ad;
     --lightblue: #a9bee3; --grey: #9aa3b2; --bg: #ffffff;
     --serif: "Source Serif 4", Cambria, Georgia, serif;
-    --sans: Inter, Calibri, "Segoe UI", system-ui, sans-serif;
+    --sans: "IBM Plex Sans", Calibri, "Segoe UI", system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 400 17px/1.6 var(--sans); }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-weight: 400; font-size: 16px; line-height: 1.6; }
   a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
   a:hover { color: var(--red); }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
-  @media (max-width: 600px) { .wrap { padding: 0 16px; } body { font-size: 16px; } }
+  @media (max-width: 600px) { .wrap { padding: 0 16px; } }
 
   /* top bar */
   .bar { position: sticky; top: 0; z-index: 10; background: rgba(15,37,80,.96);
@@ -43,24 +43,24 @@
   .hero { background: var(--navy); color: #fff; padding: 56px 0 64px; }
   .kicker { font: 600 12px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--red); margin: 0 0 12px; }
   .hero .kicker { color: var(--pink); }
-  h1 { font: 700 clamp(28px, 4.2vw, 46px)/1.15 var(--serif); margin: 0 0 18px; max-width: 24ch; }
-  .hero p.lede { font-size: 19px; color: #dbe3f1; max-width: 62ch; margin: 0 0 26px; }
+  h1 { font-family: var(--serif); font-weight: 700; font-size: clamp(30px, 4.2vw, 46px); line-height: 1.15; margin: 0 0 18px; max-width: 24ch; }
+  .hero p.lede { font-size: 18px; color: #dbe3f1; max-width: 62ch; margin: 0 0 26px; }
   .btns { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 38px; }
   .btn { display: inline-block; padding: 10px 18px; border-radius: 6px; font: 600 15px var(--sans);
          text-decoration: none; border: 1px solid rgba(255,255,255,.35); color: #fff; }
   .btn.primary { background: var(--red); border-color: var(--red); }
   .btn:hover { color: #fff; filter: brightness(1.12); }
   .hero figure { margin: 0; }
-  .hero video { width: 100%; border-radius: 8px; display: block; background: #000;
-                box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+  .hero video { width: 100%; border-radius: 8px; display: block; background: #000; border: 0;
+                outline: 1px solid rgba(255,255,255,.12); }
   .hero figcaption { color: #aab8d3; font-size: 14px; margin-top: 12px; max-width: 80ch; }
   .hero figcaption a { color: #fff; }
 
   /* sections */
   section { padding: 72px 0; border-top: 1px solid var(--rule); scroll-margin-top: 54px; }
   section.alt { background: var(--panel); }
-  h2 { font: 700 clamp(24px, 3vw, 34px)/1.2 var(--serif); margin: 0 0 14px; color: var(--navy); }
-  h3 { font: 600 18px var(--sans); margin: 0 0 6px; color: var(--ink); }
+  h2 { font-family: var(--serif); font-weight: 700; font-size: clamp(26px, 3vw, 34px); line-height: 1.2; margin: 0 0 14px; color: var(--navy); }
+  h3 { font-family: var(--sans); font-weight: 600; font-size: 20px; line-height: 1.3; margin: 0 0 6px; color: var(--ink); }
   p { margin: 0 0 14px; max-width: 72ch; }
   .muted { color: var(--muted); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
@@ -78,7 +78,7 @@
   .steps { counter-reset: s; display: grid; gap: 16px; margin-top: 8px; }
   .step { display: grid; grid-template-columns: 44px 1fr; gap: 10px; }
   .step::before { counter-increment: s; content: counter(s); font: 700 30px/1 var(--serif); color: var(--blue); }
-  .note { border-left: 3px solid var(--red); padding: 4px 0 4px 14px; margin: 22px 0 0; color: var(--muted); }
+  .note { border-top: 1px solid var(--rule); padding: 14px 0 0; margin: 22px 0 0; color: var(--muted); font-size: 14px; }
 
   /* results */
   .bars { display: grid; gap: 14px; margin: 26px 0 8px; }
@@ -135,7 +135,7 @@
 
 <div class="hero" id="top">
   <div class="wrap">
-    <p class="kicker">Accepted at MIDI 2026 · GTU DASH Lab</p>
+    <p class="kicker">MIDI 2026 · accepted</p>
     <h1>QVLA: training-free language-driven robot navigation</h1>
     <p class="lede">A frozen vision-language model drives a simulated AlohaMini robot from a typed sentence.
       It is never asked for coordinates: seven candidate paths are drawn on its own camera image, and it
@@ -179,9 +179,9 @@
 
 <section id="scenes" class="alt">
   <div class="wrap">
-    <p class="kicker">One method, four scenes · real time</p>
+    <p class="kicker">Four scenes</p>
     <h2>Same prompt, same model, same menu</h2>
-    <p class="muted">Each video is a full run. Left: what the model sees, with the chosen path outlined. Right: a camera behind the robot.
+    <p class="muted">Each video is a full run in real time. Left: what the model sees, with the chosen path outlined. Right: a camera behind the robot.
       Underneath: the model's own description and its choice. Nothing was changed between scenes.</p>
     <div class="grid2" style="margin-top:26px">
       <figure>
@@ -210,7 +210,7 @@
 
 <section id="results">
   <div class="wrap">
-    <p class="kicker">Results · 13 indoor episodes × 3 rounds</p>
+    <p class="kicker">Results</p>
     <h2>As many goals as a fine-tuned model, without training</h2>
     <p class="muted">Every policy ran the thirteen indoor DynaNav episodes three times, on the same simulated AlohaMini
       with the same controller and safety layers. Goals reached per round, out of 13.</p>
@@ -234,8 +234,9 @@
 
 <section id="visual" class="alt">
   <div class="wrap">
-    <p class="kicker">Visual vs text prompting · same model, same paths</p>
+    <p class="kicker">Visual vs text</p>
     <h2>Drawing the options on the image is what makes it work</h2>
+    <p class="muted">Same model, same description step, same seven paths and the same shuffled numbers; only the way the paths are shown changes.</p>
     <div class="grid2" style="margin-top:22px">
       <figure>
         <img src="img/prompt_visual.jpg" alt="Warehouse camera frame with a traffic cone ahead and seven numbered arcs drawn on the floor">
@@ -257,9 +258,9 @@
 <section id="tour">
   <div class="wrap split">
     <div>
-      <p class="kicker">Long-horizon task · human in the loop</p>
+      <p class="kicker">Long-horizon task</p>
       <h2>Five instructions in a row</h2>
-      <p>Each instruction is typed only after the robot arrives, and the next one starts wherever it stopped.
+      <p>A human in the loop: each instruction is typed only after the robot arrives, and the next one starts wherever it stopped.
         The person can step in with a new sentence at any time.</p>
       <ol class="tour-list">
         <li><i>“Go past the reception desk and stop next to the blue wheelchair.”</i></li>
@@ -284,7 +285,7 @@
 
 <section id="attention" class="alt">
   <div class="wrap">
-    <p class="kicker">Inside the model · attention</p>
+    <p class="kicker">Attention</p>
     <h2>Where does the model look?</h2>
     <div class="split" style="margin-top:18px">
       <figure>
@@ -330,7 +331,7 @@
       <figcaption>Unitree G1 walking past the wheelchairs to the water dispenser. Video 2×, chosen path outlined.</figcaption>
     </figure>
     <div>
-      <p class="kicker">Different embodiment</p>
+      <p class="kicker">Humanoid</p>
       <h2>Same policy, a humanoid body</h2>
       <h3>No retraining</h3><p class="muted">Only the camera changes: the paths are drawn with the live pose of the head camera, which moves while it walks.</p>
       <h3>Walking</h3><p class="muted">A learned walking controller follows the speed and turn that QVLA commands.</p>
@@ -341,7 +342,7 @@
 
 <section id="limits" class="alt">
   <div class="wrap">
-    <p class="kicker">Advantages and limitations</p>
+    <p class="kicker">Trade-offs</p>
     <h2>What QVLA gives, and what it still lacks</h2>
     <div class="pc" style="margin-top:20px">
       <ul class="plus">

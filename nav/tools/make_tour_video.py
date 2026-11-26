@@ -86,6 +86,9 @@ def frames(tour):
 
 
 if __name__ == "__main__":
+    if "--attention" in sys.argv:          # menus overlaid by tools/attention_for_run.py
+        sys.argv.remove("--attention")
+        R.OVERLAY = "attention"
     tour = json.loads(Path(sys.argv[1]).read_text())
     ok = M._encode(frames(tour), (CW, CH), 30.0 * SPEED, Path(sys.argv[2]))
     print("ok" if ok else "FAILED", sys.argv[2])

@@ -2172,6 +2172,39 @@ arc with no model} × the 13 indoor episodes, on one stack with the contact laye
     unrelated image from step 0. The straight selector reached the goal anyway, so only a
     frame check catches a broken camera. Check frames whenever rendering is touched.
 
+### Turn odometry in the select prompt, `QVLA_ODOMETRY=1` (2026-11-26, off by default)
+
+- **The selector cannot tell when a commanded turn is finished.** Hospital tour
+  (`nav/config/episodes_tour.yaml`, `nav/tools/run_tour.py`), step 3, "Turn left and drive to
+  the foot of the staircase.": hard left on 52 of 52 decisions, 1001° in 73 s, three circles
+  over one patch of floor. On a third of those decisions its own description said the floor
+  straight ahead was open.
+  - `history_note` gives only the choice WORDS ("hard left, hard left, …"), which never make
+    a turn "done" under `STAGE_RULE`.
+  - The staircase was 2° off the nose at the start ("TARGET: 12 m"). The word "left" still
+    won.
+- **Fix:**
+  - `sim/turn_odometer.py`: signed turn since the instruction, net and driven distance, and
+    turn over the last 30 s. The runner sends it as `/predict` `odometry`.
+  - `arc_menu.odometry_note` turns it into select-prompt sentences:
+    - turn progress;
+    - a turn counts as done at ≥ 75°;
+    - with the target in view, a turn only has to reach a path toward it;
+    - where the target was last seen (server `target_seen`, wrapped the short way round);
+    - ≥ 270° one way in the window → `spin_filter` drops arcs with |κ| ≥ 0.3 that way
+      (labels kept, like `drivable`).
+  - Decisions record `odometry`, `odometry_note`, `spin_guard`; `/health.odometry_note`.
+- **Open loop** (`nav/tools/probe_turn_odometry.py`, through `/raw`):
+  - the plain prompt reproduced all 52 recorded choices;
+  - with the sentence, the choice flips to straight at 93°, and with the last-seen memory to
+    hard right (back toward the stairs) from 71°;
+  - it still answers hard left at 0–25° with the target ahead. "Left" outweighs the
+    target-in-view sentence 2 of 3 times.
+- **Closed loop, the same five instructions:** 5/5 with **0 human corrections**, where the
+  run without it was 5/5 only after 2. Step 3 turned 82° and drove straight to the stairs in
+  22.8 s; the guard never fired. n = 1, and step 3's start pose differs between the two runs.
+  It has not been run on the benchmark ladder.
+
 ## Next step
 
 Nothing blocking. Optional future work: root-cause the wheel traction issue properly

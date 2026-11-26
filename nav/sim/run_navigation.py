@@ -99,6 +99,7 @@ from episode import (  # noqa: E402
     load_episodes,
 )
 from frame_history import FrameHistory  # noqa: E402
+from turn_odometer import TurnOdometer  # noqa: E402
 from guidance import guidance_heading, parse_guidance  # noqa: E402
 from stuck_recovery import StuckRecovery  # noqa: E402
 from waypoint_history import WaypointHistory  # noqa: E402
@@ -1283,6 +1284,11 @@ class NavigationRunner:
         history = WaypointHistory(PHYSICS_DT)
         history.observe(0, start_pos, self.base.yaw)
         frames = FrameHistory()
+        # How far the robot has turned and driven since THIS instruction (a continued tour
+        # step starts its own count). Sent on every /predict; server_qwen reads it only
+        # under QVLA_ODOMETRY=1 -- see arc_menu.odometry_note for the 1001-degree loop.
+        odometer = TurnOdometer()
+        odometer.reset(0.0, start_pos[0], start_pos[1], self.base.yaw)
 
         # Where the robot was each time the server started a new background VLM
         # generation: (step, x, y, yaw). The plan we get back is built on a KV cache
@@ -1491,6 +1497,9 @@ class NavigationRunner:
                         # here the model cannot know that the last four decisions
                         # achieved nothing. Measured where the position is known.
                         stalled_s=self.recovery.stalled_s(sim_time, position),
+                        # Turn and distance since the instruction, from odometry. The
+                        # only motion fact the select call gets besides its own words.
+                        odometry=odometer.payload(),
                         # Do not hand back the cached plan: block until one exists for
                         # the frame grabbed a few lines above. The robot is already
                         # stopped -- this call is what stops it -- so the wait buys the
@@ -1709,6 +1718,7 @@ class NavigationRunner:
             prev_pos = new_pos
             step += 1
             history.observe(step, new_pos, self.base.yaw)
+            odometer.update(step * PHYSICS_DT, new_pos[0], new_pos[1], self.base.yaw)
 
             # Close the loop on an in-place turn, using the yaw the base actually
             # reached. Wrapped to (-pi, pi] before it is accumulated, because yaw is

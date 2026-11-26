@@ -189,6 +189,7 @@ class PolicyClient:
         pose_world: list[float] | None = None,
         sim_time: float | None = None,
         camera: dict[str, Any] | None = None,
+        odometry: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Returns {waypoints, reasoning, num_waypoints, latency_s, kv_cache_available,
         vlm_generation_start_step}.
@@ -307,4 +308,8 @@ class PolicyClient:
         # before this field existed.
         if camera is not None:
             payload["camera"] = camera
+        # Same rule: `odometry` (sim/turn_odometer.py's payload) only when given. server_qwen
+        # reads it under QVLA_ODOMETRY=1; server.py's pydantic model ignores it.
+        if odometry is not None:
+            payload["odometry"] = odometry
         return self._post("/predict", payload)

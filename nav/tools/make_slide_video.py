@@ -18,6 +18,10 @@ from arc_menu import _PALETTE, make_arcs, direction_word   # noqa: E402
 from PIL import Image, ImageDraw      # noqa: E402
 
 CW, CH = 1280, 720
+# Subfolder of a run dir holding alternative menu images with the same names (e.g.
+# "attention", written by tools/attention_for_run.py); None = the menus as recorded.
+OVERLAY: str | None = None
+OVERLAY_LABEL = "where the model looked (attention, 16 attention layers)"
 PW, PH = 640, 360
 FONT, FONT_B = M.FONT, M.FONT_B
 
@@ -75,6 +79,8 @@ def frames(run_dir: Path):
             continue
         if i != cached:
             menu = run_dir / recs[i]["menu"]
+            if OVERLAY and (run_dir / OVERLAY / recs[i]["menu"]).is_file():
+                menu = run_dir / OVERLAY / recs[i]["menu"]
             if not menu.is_file():
                 continue
             top_menu = M.decision_panel(recs[i], menu, arcs, i, len(recs)).resize((PW, PH), Image.LANCZOS)
@@ -88,7 +94,7 @@ def frames(run_dir: Path):
         d = ImageDraw.Draw(canvas)
         d.rectangle([PW - 2, 0, PW + 1, PH], fill=(15, 17, 24))
         f = M._font(FONT_B, 17)
-        for x, t, c in ((10, "what the model sees", (150, 200, 255)),
+        for x, t, c in ((10, OVERLAY_LABEL if OVERLAY else "what the model sees", (150, 200, 255)),
                         (PW + 10, "camera behind the robot (not shown to the model)", (255, 190, 120))):
             d.rectangle([x - 4, PH - 30, x + f.getlength(t) + 6, PH - 6], fill=(15, 17, 24))
             d.text((x, PH - 10), t, fill=c, font=f, anchor="ls")

@@ -1180,6 +1180,118 @@ def history_note(recent: list[str], stalled_s: float) -> str:
     return " ".join(parts)
 
 
+# THE ODOMETRY NOTE AND THE SPIN GUARD (QVLA_ODOMETRY=1; off by default, so every number
+# recorded before 2026-11-26 is unchanged).
+#
+# What it fixes, measured: hospital tour step 3, "Turn left and drive to the foot of the
+# staircase." -- 52 of 52 decisions hard left, 1001 degrees turned in 73 s, three circles
+# over the same patch of floor. `history_note` showed the model "hard left, hard left, ..."
+# and nothing in that line says whether the robot has turned 20 degrees or 700, so under
+# `STAGE_RULE` ("do only the earliest move not yet done") the turn could never be done.
+#
+# Two layers, for the reason this repo keeps re-learning (STOP-means-blocked, the kerb
+# sentence): a rule in the prompt is honoured most of the time and a structural gate all of
+# the time. The sentence gives the model the number a real robot has from its wheels and
+# says when a turn counts as finished; the guard is the backstop for when it does not hold
+# -- once the robot has swept a full circle one way within `window` seconds, the sharp arcs
+# that way are taken off the menu, exactly as the lidar filter takes off arcs into a wall,
+# without renumbering anything (`drivable` has why).
+TURN_DONE_DEG = 75.0     # past this, a commanded turn that way is called done
+SPIN_DEG = 270.0         # swept one way within the window -> the guard fires
+SPIN_MIN_KAPPA = 0.30    # the guard drops arcs at least this sharp toward the spin
+
+
+def odometry_note(odo: dict | None, target_m: float | None = None,
+                  last_seen: dict | None = None) -> tuple[str, int]:
+    """(sentence for the select prompt, spin side: +1 left, -1 right, 0 none).
+
+    `odo` is `TurnOdometer.payload()` as the runner sent it; None or empty -> ("", 0), so a
+    caller that sends nothing gets exactly the old prompt. `target_m` is the describe call's
+    TARGET distance (None = not visible). While a turn is not yet done and the target is in
+    view, the note says a turn word means "turn toward it", not "take the sharpest arc":
+    the same tour step opened with the staircase 2 degrees off the nose, 12 m away, the
+    description calling the floor straight ahead open -- and answered hard left, because
+    the instruction said "left".
+
+    `last_seen` is the server's memory of the last decision whose description saw the
+    target: {"turned_deg", "since_s", "target_m"} from the odometry of THAT decision. When
+    the target is out of view now, the note says how far the robot has turned since, i.e.
+    which way to look for it. On the same step the staircase left the frame at 25 degrees
+    of turn and the robot kept turning left to 1001: from 93 degrees on it was behind the
+    robot's right shoulder, and nothing in the prompt said so.
+    """
+    if not odo:
+        return "", 0
+    turned = float(odo.get("turned_deg", 0.0))
+    net = float(odo.get("net_m", 0.0))
+    since = float(odo.get("since_s", 0.0))
+    recent = float(odo.get("recent_turn_deg", 0.0))
+    recent_s = float(odo.get("recent_s", 0.0))
+    side = "left" if turned > 0 else "right"
+    parts = []
+    if abs(turned) < 20.0 and since < 3.0:
+        pass                                           # nothing has happened yet
+    elif abs(turned) < 20.0:
+        parts.append(f"Since this instruction was given {since:.0f} s ago the robot has kept "
+                     f"roughly the same heading and is {net:.1f} m from where it started.")
+    else:
+        parts.append(f"Since this instruction was given {since:.0f} s ago the robot has "
+                     f"turned {abs(turned):.0f} degrees to its {side} in total and is "
+                     f"{net:.1f} m from where it started.")
+    if target_m is not None and abs(turned) < TURN_DONE_DEG:
+        parts.append(f"The place the instruction names is in view, about {target_m:.0f} m "
+                     f"away. A turn the instruction asks for only has to bring the robot "
+                     f"onto a path that leads there: if a drawn path already leads toward "
+                     f"it on open floor, take that path rather than the sharpest turn.")
+    spin = (1 if recent > 0 else -1) if abs(recent) >= SPIN_DEG else 0
+    if target_m is None and last_seen:
+        # + = it was to the LEFT. Wrapped: after 276 degrees of left turn a target seen at
+        # 25 is 109 degrees to the LEFT, not 251 to the right -- the short way round.
+        delta = (float(last_seen.get("turned_deg", 0.0)) - turned + 180.0) % 360.0 - 180.0
+        ago = since - float(last_seen.get("since_s", since))
+        # Not when it points the way the robot is circling: the guard below has just said
+        # that way only repeats the circle, and two sentences pulling opposite ways is a
+        # prompt arguing with itself.
+        if abs(delta) >= 30.0 and not (spin and (delta > 0) == (spin > 0)):
+            w = "left" if delta > 0 else "right"
+            parts.append(f"The place the instruction names was last in view {ago:.0f} s ago, "
+                         f"about {float(last_seen.get('target_m', 0)):.0f} m away, when the "
+                         f"robot was facing about {abs(delta):.0f} degrees further to its {w} "
+                         f"than now: it is that way, so head back toward the {w} rather than "
+                         f"away from it.")
+    if spin:
+        s = "left" if spin > 0 else "right"
+        parts.append(f"In the last {recent_s:.0f} s it has turned {abs(recent):.0f} degrees "
+                     f"to its {s} -- a full circle -- without getting anywhere, so turning "
+                     f"{s} again would only repeat the circle. The sharp {s} paths are off "
+                     f"the menu for now: take the path toward the open floor or the target "
+                     f"the description names, usually the straight one.")
+    elif abs(turned) >= TURN_DONE_DEG:
+        parts.append(f"A turn of about 90 degrees is a complete turn, so any turn to the "
+                     f"{side} the instruction asked for is already done (unless it asked to "
+                     f"turn around): do the NEXT part of the instruction now, and do not "
+                     f"keep turning {side} just because the instruction says so.")
+    return " ".join(parts), spin
+
+
+def spin_filter(arcs: list[Arc], labels: list[int], spin: int,
+                min_kappa: float = SPIN_MIN_KAPPA
+                ) -> tuple[list[Arc], list[int], list[int]]:
+    """Drop arcs turning toward `spin` at |kappa| >= min_kappa. (arcs, labels, dropped).
+
+    Same contract as `drivable`: labels are never renumbered and the menu is never left
+    empty -- with nothing else left, the straightest remaining arc stays.
+    """
+    if not spin:
+        return list(arcs), list(labels), []
+    keep = [i for i, a in enumerate(arcs) if not (a.kappa * spin >= min_kappa)]
+    if not keep:
+        keep = [min(range(len(arcs)), key=lambda i: abs(arcs[i].kappa))]
+    kept = set(keep)
+    return ([arcs[i] for i in keep], [labels[i] for i in keep],
+            [labels[i] for i in range(len(arcs)) if i not in kept])
+
+
 def direction_word(kappa: float) -> str:
     """A curvature as words, for the history line. Negative kappa turns right."""
     for edge, word in ((-0.5, "hard right"), (-0.25, "right"), (-0.05, "slight right"),

@@ -60,7 +60,60 @@ def _decision_text(rec: dict) -> str:
     return what
 
 
-def build(result_path: Path, out: Path | None, crf: int = 20) -> Path:
+def _highlight(img: Image.Image, rec: dict | None) -> Image.Image:
+    """Draw the CHOSEN arc back over a menu frame: a white stroke under the arc's own colour,
+    and its number badge on top, as make_run_video.py does for AlohaMini runs.
+
+    The menu frames are what the model was shown, which is BEFORE it chose, so as rendered
+    nothing on the picture says which path was taken -- only the text strip does. On the
+    G1's pitched, rolling head camera the paths also run off the frame edges, so finding
+    the named label by eye is slow. Projected with the camera the server recorded for that
+    very menu (its live head pose), in the pixels the menu was drawn in.
+    """
+    if rec is None or rec.get("stop") or rec.get("kappa") is None:
+        return img
+    cam = rec.get("camera") or {}
+    if cam.get("source") != "request":
+        return img
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from arc_menu import _PALETTE, MenuCamera, badge_xy, make_arcs
+
+    arcs = make_arcs()
+    i = min(range(len(arcs)), key=lambda j: abs(arcs[j].kappa - float(rec["kappa"])))
+    dw, dh = cam.get("drawn_wh") or img.size
+    proj = MenuCamera.from_record(cam).projector(int(dw), int(dh))
+    w, h = img.size
+    px = [(u * w / float(dw), v * h / float(dh))
+          for u, v in (p for p in (proj(float(x), float(y)) for x, y in arcs[i].points)
+                       if p is not None)]
+    if len(px) < 2:
+        return img
+    d = ImageDraw.Draw(img)
+    colour = _PALETTE[i % len(_PALETTE)]
+    # Thicker than make_run_video's 18/8 px at 720p: this panel is shown at half size next
+    # to the chase view, and at the old width the white edge read as a hairline.
+    # Dark, then white, then the arc's colour: white alone vanishes on the sunlit floor.
+    d.line(px, fill=(15, 15, 15), width=max(3, round(74 * h / 1080)), joint="curve")
+    d.line(px, fill=(255, 255, 255), width=max(2, round(50 * h / 1080)), joint="curve")
+    d.line(px, fill=colour, width=max(1, round(24 * h / 1080)), joint="curve")
+    r = 96 * 0.9 * h / 1080.0
+    bx, by = badge_xy(px, w, h, r)
+    ring = max(2, round(10 * h / 1080))
+    d.ellipse([bx - r - 2 * ring, by - r - 2 * ring, bx + r + 2 * ring, by + r + 2 * ring],
+              fill=(15, 15, 15))
+    d.ellipse([bx - r - ring, by - r - ring, bx + r + ring, by + r + ring], fill=(255, 255, 255))
+    d.ellipse([bx - r, by - r, bx + r, by + r], fill=(20, 20, 20), outline=colour,
+              width=max(1, round(8 * h / 1080)))
+    try:
+        fb = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                                int(110 * h / 1080.0))
+    except OSError:
+        fb = ImageFont.load_default()
+    d.text((bx, by), str(rec.get("choice")), fill=colour, font=fb, anchor="mm")
+    return img
+
+
+def build(result_path: Path, out: Path | None, crf: int = 20, highlight: bool = False) -> Path:
     d = json.loads(result_path.read_text())
     g = d.get("g1") or {}
     run_dir = Path(g.get("record_dir") or "")
@@ -109,7 +162,10 @@ def build(result_path: Path, out: Path | None, crf: int = 20) -> Path:
             if rec is not None and rec.get("menu") and menu_for != rec.get("menu"):
                 mp = run_dir / rec["menu"]
                 if mp.is_file():
-                    menu_img = Image.open(mp).convert("RGB").resize(PANEL, Image.LANCZOS)
+                    im = Image.open(mp).convert("RGB")
+                    if highlight:
+                        im = _highlight(im, rec)
+                    menu_img = im.resize(PANEL, Image.LANCZOS)
                     menu_for = rec["menu"]
             canvas = Image.new("RGB", (2 * PANEL[0], PANEL[1] + STRIP_H), (0, 0, 0))
             canvas.paste(Image.open(cp).convert("RGB").resize(PANEL, Image.LANCZOS), (0, 0))
@@ -136,7 +192,8 @@ def build(result_path: Path, out: Path | None, crf: int = 20) -> Path:
             if fs:
                 dr.text((16, y0 + 158), str(fs)[:170], fill=(200, 255, 200), font=f_small)
             dr.text((16, PANEL[1] - 36), "chase view (not seen by the policy)", fill=(255, 255, 255), font=f_small)
-            dr.text((PANEL[0] + 16, PANEL[1] - 36), "G1 head camera (what the policy sees) + menu",
+            dr.text((PANEL[0] + 16, PANEL[1] - 36), "G1 head camera (what the policy sees) + menu"
+                    + (", chosen path outlined" if highlight else ""),
                     fill=(255, 255, 255), font=f_small)
             canvas.save(tmp / f"{n:06d}.jpg", quality=92)
             n += 1
@@ -154,8 +211,11 @@ def main() -> int:
     ap.add_argument("--result", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--crf", type=int, default=20)
+    ap.add_argument("--highlight", action="store_true",
+                    help="outline the chosen path on the menu (as make_run_video.py does); "
+                         "off by default, so the panel stays exactly what the policy saw")
     a = ap.parse_args()
-    build(a.result, a.out, a.crf)
+    build(a.result, a.out, a.crf, a.highlight)
     return 0
 
 

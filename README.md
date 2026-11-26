@@ -4,6 +4,8 @@
 NVIDIA Isaac Sim 6.0.1 with full rigid-body physics, and driven from a typed sentence.
 The policy is never given a goal coordinate. It gets its own camera and the words.
 
+**Project page, with all the videos: https://gtu-dash-lab.github.io/dash-aloha-mini-isaacsim/**
+
 ![A warehouse run: the robot's camera with seven coloured candidate paths drawn on the floor, next to a third-person view of the robot driving toward the aisle](docs/media/nav_warehouse_aisle05.gif)
 
 > **“Proceed to the traffic cones at the entrance of Aisle 05 (the second aisle from the

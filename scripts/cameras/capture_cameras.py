@@ -25,7 +25,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/ root, for alohamini1_specs
-from alohamini1_specs import CAMERA_FPS, CAMERA_PRIM_PATHS, CAMERA_RESOLUTION  # noqa: E402
+from alohamini1_specs import (  # noqa: E402
+    CAMERA_FPS,
+    CAMERA_PRIM_PATHS,
+    CAMERA_RESOLUTION,
+    KIT_GPU0,
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--scene", default="/home/gtu_dsa/dash-aloha-mini-isaacsim/assets/usd/scene.usda")
@@ -36,7 +41,10 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+# GPU0 only, multi-GPU off: Kit's default multi_gpu runs a CUDA P2P test across both cards
+# at startup, and with the policy server filling GPU1 it fails and BLOCKS on a zenity
+# dialog (alohamini1_specs.KIT_GPU0).
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import numpy as np  # noqa: E402
 import omni.timeline  # noqa: E402
@@ -52,6 +60,14 @@ for _ in range(60):
 stage.Load()
 for _ in range(10):
     kit.update()
+
+# Before play: the PhysX GPU capacities every entry point that drives AlohaMini raises
+# (nav/sim/physics_setup.py), in the session layer so the stage file is never touched.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "nav" / "sim"))
+from physics_setup import raise_gpu_capacities  # noqa: E402
+
+for _line in raise_gpu_capacities(stage):
+    print(f"[physics] {_line}")
 
 timeline = omni.timeline.get_timeline_interface()
 timeline.play()

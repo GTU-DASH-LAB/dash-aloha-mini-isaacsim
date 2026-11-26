@@ -93,6 +93,9 @@ if "arc_set" in h:
     want["arc_set"]     = os.environ.get("QVLA_MENU_ARCS", "coarse").strip().lower()
     want["menu_frames"] = max(1, int(os.environ.get("QVLA_MENU_FRAMES", "1")))
     want["menu_seed"]   = int(os.environ.get("QVLA_MENU_SEED", "0"))
+    # Which floor projection draws the arcs: `legacy` puts the lens at the rotation centre,
+    # `mounted` at the real 0.25 m forward mount of camera_nav. Same arcs, other pixels.
+    want["menu_geom"]   = os.environ.get("QVLA_MENU_GEOM", "legacy").strip().lower()
     want["menu_pivots"] = os.environ.get("QVLA_MENU_PIVOTS", "0").lower() in (
         "1", "true", "yes")
     if want["menu_pivots"]:
@@ -117,7 +120,9 @@ case "$CHECK" in
 esac
 echo
 
-nav/bench.sh ${ONLY:+--only "$ONLY"} --on-episode nav/tools/on_episode.sh
+# The per-episode hook is overridable for unattended ladders whose owner does not want a
+# mail and a video per episode; the default is unchanged.
+nav/bench.sh ${ONLY:+--only "$ONLY"} --on-episode "${LADDER_ON_EPISODE:-nav/tools/on_episode.sh}"
 RC=$?
 echo "-- ladder ${QVLA_RUN_TAG} finished (rc=$RC)"
 exit $RC

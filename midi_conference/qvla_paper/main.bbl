@@ -1,0 +1,89 @@
+\begin{thebibliography}{10}
+\providecommand{\url}[1]{\texttt{#1}}
+\providecommand{\urlprefix}{URL }
+\providecommand{\doi}[1]{https://doi.org/#1}
+
+\bibitem{alohamini}
+{AlohaMini contributors}: {AlohaMini}: robot description and mesh assets
+  (2025), \url{https://github.com/liyiteng/alohamini}, last accessed 26 Sep
+  2026
+
+\bibitem{anderson2018evaluation}
+Anderson, P., Chang, A.X., Chaplot, D.S., et~al.: On evaluation of embodied
+  navigation agents (2018). \doi{10.48550/arXiv.1807.06757}
+
+\bibitem{anderson2018vision}
+Anderson, P., Wu, Q., Teney, D., et~al.: Vision-and-language navigation:
+  Interpreting visually-grounded navigation instructions in real environments.
+  In: Proc. IEEE/CVF CVPR (2018). \doi{10.1109/CVPR.2018.00387}
+
+\bibitem{brohan2023rt2}
+Brohan, A., Brown, N., Carbajal, J., et~al.: {RT-2}: Vision-language-action
+  models transfer web knowledge to robotic control (2023).
+  \doi{10.48550/arXiv.2307.15818}
+
+\bibitem{coulter1992pure}
+Coulter, R.C.: Implementation of the pure pursuit path tracking algorithm.
+  Tech. Rep. CMU-RI-TR-92-01, Robotics Institute, Carnegie Mellon University
+  (1992)
+
+\bibitem{gadre2023cows}
+Gadre, S.Y., Wortsman, M., Ilharco, G., Schmidt, L., Song, S.: {CoWs} on
+  pasture: Baselines and benchmarks for language-driven zero-shot object
+  navigation. In: Proc. IEEE/CVF CVPR (2023).
+  \doi{10.1109/CVPR52729.2023.02219}
+
+\bibitem{goetting2024vlmnav}
+Goetting, D., Singh, H.G., Loquercio, A.: End-to-end navigation with vision
+  language models: Transforming spatial reasoning into question-answering
+  (2024). \doi{10.48550/arXiv.2411.05755}
+
+\bibitem{huang2026ticvla}
+Huang, Z., Zhang, Y., Liu, J., Song, R., Tang, C., Ma, J.: {TIC-VLA}: A
+  think-in-control vision-language-action model for robot navigation in dynamic
+  environments. In: Proc. ICML (2026). \doi{10.48550/arXiv.2602.02459}
+
+\bibitem{kim2024openvla}
+Kim, M.J., Pertsch, K., Karamcheti, S., et~al.: {OpenVLA}: An open-source
+  vision-language-action model (2024). \doi{10.48550/arXiv.2406.09246}
+
+\bibitem{nasiriany2024pivot}
+Nasiriany, S., Xia, F., Yu, W., et~al.: {PIVOT}: Iterative visual prompting
+  elicits actionable knowledge for {VLMs}. In: Proc. ICML (2024).
+  \doi{10.48550/arXiv.2402.07872}
+
+\bibitem{nie2025wmnav}
+Nie, D., Guo, X., Duan, Y., Zhang, R., Chen, L.: {WMNav}: Integrating
+  vision-language models into world models for object goal navigation. In:
+  Proc. IEEE/RSJ IROS. pp. 2392--2399 (2025).
+  \doi{10.1109/IROS60139.2025.11246684}
+
+\bibitem{isaacsim}
+{NVIDIA}: Isaac {Sim}, version 6.0.1 (2026),
+  \url{https://developer.nvidia.com/isaac/sim}, last accessed 26 Sep 2026
+
+\bibitem{qwen38}
+{Qwen Team}: {Qwen3.8-Max}: A new bar for coding and cowork (2026),
+  \url{https://qwen.ai/blog?id=qwen3.8}, last accessed 26 Sep 2026
+
+\bibitem{shah2022lm}
+Shah, D., Osi{\'n}ski, B., Ichter, B., Levine, S.: {LM-Nav}: Robotic navigation
+  with large pre-trained models of language, vision, and action. In: Proc. CoRL
+  (2022). \doi{10.48550/arXiv.2207.04429}
+
+\bibitem{yang2023som}
+Yang, J., Zhang, H., Li, F., Zou, X., Li, C., Gao, J.: Set-of-mark prompting
+  unleashes extraordinary visual grounding in {GPT-4V} (2023).
+  \doi{10.48550/arXiv.2310.11441}
+
+\bibitem{yokoyama2024vlfm}
+Yokoyama, N., Ha, S., Batra, D., Wang, J., Bucher, B.: {VLFM}: Vision-language
+  frontier maps for zero-shot semantic navigation. In: Proc. IEEE ICRA. pp.
+  42--48 (2024). \doi{10.1109/ICRA57147.2024.10610712}
+
+\bibitem{zhang2024navid}
+Zhang, J., Wang, K., Xu, R., et~al.: {NaVid}: Video-based {VLM} plans the next
+  step for vision-and-language navigation (2024).
+  \doi{10.48550/arXiv.2402.15852}
+
+\end{thebibliography}

@@ -73,7 +73,7 @@ from arc_menu import (DESCRIBE_OPEN_SET, DESCRIBE_SIDED, DESCRIBE_TARGET,  # noq
 from summarize_runs import load_config, score  # noqa: E402
 
 STUDY = REPO / "nav/results/hard_study"
-MENUS = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
+MENUS = Path(os.environ.get("QVLA_MENU_DIR", REPO / "nav/results/menus"))
 PORT = os.environ.get("NAV_POLICY_PORT", "8766")
 _STAMP = len("20260902-110026")
 

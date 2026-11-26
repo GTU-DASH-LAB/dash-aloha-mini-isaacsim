@@ -1,0 +1,33 @@
+Where does the arc-menu model look? (2026-11-26, frozen Qwen3.8-27B-FP8, /explain in server_qwen.py)
+
+Model view: a 1920x1080 frame is fed at 576x320 = 18 x 10 = 180 image tokens (QVLA_MAX_PIXELS
+default), one token ~107 x 108 px. 16 of the 64 layers are full attention (3, 7, ..., 63);
+the other 48 are linear attention and have no attention map.
+
+exp1 (tools/explain_attention.py, hospital tour step 3, first frame, staircase ~2 deg off the
+nose 12 m away, drinks machine = black panel on the right seen side-on). Description held
+fixed ("most open floor is to the left. TARGET: 12 m"), instruction varied:
+  A "Turn left and drive to the foot of the staircase."        -> 3 hard left   p=0.62
+  B "Drive to the foot of the staircase."                      -> 1 left        p=0.24 (left / slight left / hard left 0.24 each)
+  C "Drive to the drinks machine."                             -> 3 hard left   p=0.66
+  D A + odometry_note's target-in-view sentence                -> 3 hard left   p=0.48 (left 0.22 -> 0.29)
+  - The ANSWER position's attention sits on the number badges (late layers: badges 3 and 1);
+    ~26% of it lands on image tokens at all, the rest on text. Barely moves with the prompt.
+  - Occlusion: in A only hiding badge 3 matters (the choice is made in text, the image is
+    used to find the number); in C hiding the black panel lowers p(hard left).
+  - "Turn left" turns an even split among the three left arcs into 62% hard left.
+
+exp2 (tools/probe_object_grounding.py, same frame):
+  - Attention FROM the instruction word " staircase" in middle (23-43) and late (47-63)
+    layers is one sharp spot on the stairs; early layers are diffuse. Asked to box the
+    staircase, the model returns [527, 281, 559, 531] on a 0-1000 grid = exactly the stairs.
+    So the object IS grounded -- in the word's tokens, not at the answer position, which
+    reads from text (the relay reported for multimodal LLMs, Zhang et al. 2024).
+  - " drinks machine" grounds on the medical cart at the far LEFT edge, and its box is
+    [0, 419, 62, 575] = that cart. Side-on, the machine is a plain black panel and is not
+    recognised; C's hard left is consistent with where the model thinks the machine is.
+
+tour (tools/attention_for_run.py, tours/20261126-191943, 94 decisions): reconstruction check
+92/94 top answer == recorded label (the 2 misses p=0.21 and 0.32). Image share of the answer's
+attention 0.21-0.26 per step; ~20% of that on the scene above the badges.
+Figures: exp1/sheet.png, exp1/sheet_layers.png, exp2/grounding.png.

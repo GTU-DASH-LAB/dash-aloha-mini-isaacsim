@@ -83,14 +83,33 @@ the field of view and puts a landmark that was cropped at the frame edge back in
 which is the one thing the robot can do to change the answer rather than to override it.
 Overriding it -- picking a direction ourselves -- would be inventing a heading that
 nothing in the stack has looked at.
+
+**THE CONTACT LAYER IS A THIRD WITNESS, and the only one for a robot held by its arms.**
+The guard and the lidar look along one plane at 0.30 m; a robot whose ARM is on a desk top,
+or under a stair soffit, has nothing in that plane, so `front_clearance_m()` says the way is
+clear and the stall used to be treated as a BALK after 5 s -- and the model was then told
+"nothing was in front of you", which is the opposite of the truth (kinematic_contact.py's
+integration note). With a contact layer attached, a stall during which the contact has been
+pressed for STALL_WINDOW_S without a break is a WEDGE on the contact's evidence: same 3 s
+window, same straight-back reverse, the same "something blocked you" memory. Its release
+cannot wait for the guard to report clearance (the guard never saw the obstacle), so it
+backs `back_limit_m`, as far as a guard wedge ever goes, or gives up behind.
 """
 
 from __future__ import annotations
 
 import math
+import os
 
 BACK_SPEED_MPS = 0.25     # slow: this is a blind-ish manoeuvre, not a getaway
-BACK_LIMIT_M = 0.8        # how far back it will ever go in one recovery
+# How far back it will ever go in one WEDGE recovery (a balk reverses BALK_BACK_M).
+# NAV_RECOVERY_BACK_M overrides it (default 0.8, every result before 2026-10-12). Longer was
+# tried because the re-decision after a kerb wedge named the kerb on only 2 of 8 recoveries
+# on the contact ladder (2026-10-11) -- on the guess that 0.8 m left it under the frame. The
+# frames say otherwise: after 0.8 m the kerb fills the lower third of the image
+# (library menu_00002430 / _3930) and the describe call still answers "the way ahead is
+# open", because it is asked for walls, doors and large objects (see QVLA_KERB_PROMPT).
+BACK_LIMIT_M = float(os.environ.get("NAV_RECOVERY_BACK_M", "0.8"))
 STALL_WINDOW_S = 3.0      # about one generation; shorter and a slow creep reads as stuck
 STALL_PROGRESS_M = 0.10   # moved less than this in the window = not making progress
 CLEAR_MARGIN_M = 0.4      # extra room past the guard's stop distance before releasing
@@ -120,8 +139,15 @@ class StuckRecovery:
     """
 
     def __init__(self, guard, back_speed_mps: float = BACK_SPEED_MPS,
-                 back_limit_m: float = BACK_LIMIT_M):
+                 back_limit_m: float = BACK_LIMIT_M, contact=None):
         self.guard = guard
+        # kinematic_contact.KinematicContact or None. Read-only here: its running count of
+        # consecutive contact steps (`stats.run`) at its own step (`dt`).
+        self.contact = contact
+        # Wedges engaged on the contact layer's evidence alone (the guard saw nothing): a
+        # subset of `engagements`, like `balks`.
+        self.contact_wedges = 0
+        self._by_contact = False
         self.back_speed_mps = back_speed_mps
         self.back_limit_m = back_limit_m
         self.engagements = 0          # how many times it fired, for the result record
@@ -168,6 +194,17 @@ class StuckRecovery:
         self.engagements = 0
         self.balks = 0
         self.blocked_behind = 0
+        self.contact_wedges = 0
+        self._by_contact = False
+
+    def pressed_s(self) -> float:
+        """How long the contact layer has held the robot against something without a break,
+        in seconds; 0.0 without a contact layer. A zero command never counts (it does not
+        push), so a policy that answered STOP is not "pressed"."""
+        c = self.contact
+        if c is None:
+            return 0.0
+        return float(c.stats.run) * float(c.dt)
 
     @property
     def mode(self) -> str:
@@ -299,7 +336,9 @@ class StuckRecovery:
             if math.dist(self._start, (position[0], position[1])) > self._escape_m:
                 self._consecutive = 0
             return command, False
-        if self.front_clearance_m(position, yaw) > self.guard.stop_distance_m:
+        pressed = self.pressed_s() >= STALL_WINDOW_S
+        room_ahead = self.front_clearance_m(position, yaw) > self.guard.stop_distance_m
+        if room_ahead and not pressed:
             # Standing still with room ahead: not a wedge. This used to return here, on
             # the grounds that it is the policy choosing to hold and overriding it would
             # drive through a deliberate stop. See the module docstring for why that was
@@ -313,7 +352,13 @@ class StuckRecovery:
             self.balks += 1
             return self._engage("balk", sim_time, position)
 
-        return self._engage("wedge", sim_time, position)
+        # A wedge: the guard sees something inside its stop distance, or the contact layer
+        # has been pressing for the whole stall window (an arm on a desk the guard's plane
+        # cannot see). Which of the two decides how the reverse may end (_continue).
+        by_contact = room_ahead
+        if by_contact:
+            self.contact_wedges += 1
+        return self._engage("wedge", sim_time, position, by_contact=by_contact)
 
     def _moved_over(self, window_s: float, sim_time: float, position) -> float | None:
         """Distance covered over the last `window_s`, or None if history is too short.
@@ -332,9 +377,10 @@ class StuckRecovery:
             return None
         return math.dist(ref, (position[0], position[1]))
 
-    def _engage(self, mode: str, sim_time: float, position):
+    def _engage(self, mode: str, sim_time: float, position, by_contact: bool = False):
         self._active = True
         self._mode = mode
+        self._by_contact = by_contact
         self._backed_m = 0.0
         self._start = (position[0], position[1])
         self._engage_t = sim_time
@@ -356,9 +402,11 @@ class StuckRecovery:
             # and let the run record that this happened rather than hiding it in a
             # flat trace.
             self.blocked_behind += 1
-        if (stuck_behind or self._backed_m >= limit
-                or (self._mode == "wedge"
-                    and clear > self.guard.stop_distance_m + CLEAR_MARGIN_M)):
+        # A wedge the guard saw ends once the guard sees room; one only the contact layer
+        # saw cannot (the guard reported room all along) and ends on distance.
+        guard_clear = (self._mode == "wedge" and not self._by_contact
+                       and clear > self.guard.stop_distance_m + CLEAR_MARGIN_M)
+        if stuck_behind or self._backed_m >= limit or guard_clear:
             self._active = False
             self._release_t = sim_time
             self._release_pos = (position[0], position[1])

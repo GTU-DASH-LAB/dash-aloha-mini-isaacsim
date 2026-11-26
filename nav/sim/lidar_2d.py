@@ -23,11 +23,12 @@ A1 is triangulation-based -- its effective range degrades on dark and oblique su
 which in a hospital corridor is exactly where the map needs to close.
 
 WHY 10 Hz IS ENOUGH, which is the question a rotating sensor always raises. The policy
-decides at roughly 1 Hz (one decision buys 30 physics steps). A real C1 completes ~10
+decides at 2 Hz in sim time (one decision every 30 physics steps of 1/60 s, i.e. 0.5 s;
+about 1 Hz of wall clock at the sim's ~0.5x realtime). A real C1 completes ~5
 revolutions in that time, so the freshest full revolution handed to any decision is at
 most 100 ms old -- 15 cm of motion at the 1.5 m/s cap, below the 0.13 m position error
 the odometry already carries. A snapshot scan is therefore a faithful model of a 10 Hz
-device read by a 1 Hz consumer, and modelling the spin would add a distortion smaller
+device read by a 2 Hz consumer, and modelling the spin would add a distortion smaller
 than the localisation error it rides on. This stops being true if the control rate rises
 or the robot speeds up; the assumption is stated here so it can be rechecked rather than
 inherited.
@@ -38,10 +39,17 @@ WHAT IS DELIBERATELY NOT MODELLED, and why each is safe to omit *for now*:
     documentation says the same of theirs. That is a feature while the open question is
     whether an occupancy map helps at all -- sensor noise would be a second variable in
     an experiment that already fights a +/-2-of-6-episode noise floor. `noise_sigma_m`
-    exists so noise can be switched on deliberately, as its own robustness study, rather
-    than being present by accident from the start.
+    exists -- on the snapshot `Lidar2D` ONLY; `SweepingLidar2D`, the class the control
+    loop runs, has no noise at all -- so noise can be switched on deliberately, as its own
+    robustness study, rather than being present by accident from the start.
   * DROPOUTS ON DARK / SPECULAR SURFACES. A real DTOF unit loses returns on some
-    materials. Ours never does.
+    materials, and the datasheet's range is 12 m only at 70% reflectivity: 6 m on black
+    (10%). Ours returns everything to 12 m. Harmless for today's consumers -- the guard
+    reads within 1.5 m and the arc filter within ~3.4 m -- but not for anything ranging a
+    distant target.
+  * SCAN GEOMETRY. The real plane is flat to 0-1.5 deg and the head turns CLOCKWISE; ours
+    is perfectly level and sweeps counter-clockwise. Not reversed in the default, because
+    that would change the beam phase against every recorded c1 run.
   * GLASS. This is the one gap that is not merely optimistic, it is qualitative: a real
     lidar sees straight through glass and reports the wall behind it, while PhysX
     reports whatever collider the glass door carries. Two of the hospital episodes have
@@ -62,8 +70,10 @@ on AlohaMini a genuine 360 degree scan needs the unit on a mast clearing the arm
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -110,6 +120,76 @@ LDROBOT_LD19 = LidarSpec(
     points_per_rev=450,
     scan_rate_hz=10.0,
 )
+
+
+# THE LIFT COLUMN, AS THE SCAN PLANE SEES IT. base_link's mesh is a deck (top at ~0.11 m)
+# plus the lift column, which rises to 1.084 m. The nav stages give base_link NO collider
+# -- its convex hull sealed over the wheels, see `fix_wheel_collision.py` -- so PhysX rays
+# pass straight through the column. Before this was modelled the lidar sat at (0, 0, 0.30),
+# i.e. INSIDE the column, and "0% blind" described the colliders rather than the robot: no
+# unit can be mounted there. It is modelled in the SENSOR rather than as a USD collider on
+# purpose: a new rigid shape on base_link is a new contact with the floor and the arms,
+# which is how the wheel bug started, and an occluder only the beam can see has no such
+# side effect. The occluder is the real mesh sliced at the mount height (base_link.STL is
+# authored in the base_link frame, metres). Measured at z = 0.30: mount x = +0.10 -> 21.4%
+# blind (worst arc 77 deg), +0.15 -> 14.2% / 51, +0.20 -> 10.6% / 38, +0.25 -> 8.4% / 30,
+# all dead astern; x = 0 -> 100%.
+BASE_LINK_STL = (Path(__file__).resolve().parents[2]
+                 / "assets/upstream_alohamini1/meshes/base_link.STL")
+COLUMN_Z_M = (0.12, 1.084)       # above the base_link origin: deck top .. column top
+
+
+@functools.lru_cache(maxsize=8)
+def _column_section(z: float) -> np.ndarray:
+    """(M, 2, 2) segments where the plane z cuts base_link.STL, base_link frame."""
+    raw = BASE_LINK_STL.read_bytes()
+    count = int(np.frombuffer(raw, dtype="<u4", count=1, offset=80)[0])
+    rec = np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+    tri = np.frombuffer(raw, dtype=rec, count=count, offset=84)["v"].astype(np.float64)
+    zs = tri[:, :, 2] - z
+    segs = []
+    for t, d in zip(tri, zs):
+        if d.min() > 0 or d.max() < 0:
+            continue
+        pts = []
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            if (d[a] > 0) != (d[b] > 0) and d[a] != d[b]:
+                u = d[a] / (d[a] - d[b])
+                pts.append(t[a, :2] + u * (t[b, :2] - t[a, :2]))
+        if len(pts) == 2:
+            segs.append(pts)
+    return np.asarray(segs, dtype=np.float64).reshape(-1, 2, 2)
+
+
+def column_occlusion(bearings_body: np.ndarray, mount_forward_m: float,
+                     mount_height_m: float) -> np.ndarray:
+    """Per beam, the range at which the lift column blocks it; inf where it does not.
+
+    Ray-segment intersection of each beam from (mount_forward_m, 0) against the mesh
+    section at the mount height. A mount inside the column hits its inner wall within a
+    few centimetres on every beam -- below the C1's 0.05 m minimum on most of them, so the
+    real unit would report nothing there at all, which is the honest answer.
+    """
+    out = np.full(len(bearings_body), np.inf)
+    if not COLUMN_Z_M[0] <= mount_height_m <= COLUMN_Z_M[1] or not BASE_LINK_STL.is_file():
+        return out
+    S = _column_section(round(float(mount_height_m), 4))
+    if len(S) == 0:
+        return out
+    p, q = S[:, 0, :], S[:, 1, :]
+    e = q - p                                       # (M, 2)
+    o = np.array([mount_forward_m, 0.0])
+    for i, b in enumerate(bearings_body):
+        d = np.array([math.cos(float(b)), math.sin(float(b))])
+        den = d[0] * e[:, 1] - d[1] * e[:, 0]        # cross(d, e)
+        ok = np.abs(den) > 1e-12
+        w = p - o
+        t = np.where(ok, (w[:, 0] * e[:, 1] - w[:, 1] * e[:, 0]) / np.where(ok, den, 1), -1)
+        u = np.where(ok, (w[:, 0] * d[1] - w[:, 1] * d[0]) / np.where(ok, den, 1), -1)
+        hit = ok & (t >= 0) & (u >= 0) & (u <= 1)
+        if hit.any():
+            out[i] = float(t[hit].min())
+    return out
 
 
 @dataclass
@@ -171,6 +251,7 @@ class Lidar2D:
         robot_prim_prefix: str = "/World/Aloha",
         noise_sigma_m: float = 0.0,
         seed: int = 0,
+        model_column: bool = True,
     ):
         # 1.30 m is PROVISIONAL and is a mast height, not a measurement: the forward
         # camera had to sit at z~1.21 to clear the column's top corner, so the column is
@@ -188,6 +269,8 @@ class Lidar2D:
         n = spec.points_per_rev
         self.bearings_body = np.linspace(0.0, 2.0 * math.pi, n, endpoint=False
                                          ).astype(np.float32)
+        self._occ = (column_occlusion(self.bearings_body, mount_forward_m, mount_height_m)
+                     if model_column else np.full(n, np.inf))
         self.scans = 0
 
     def _scene_query(self):
@@ -218,7 +301,13 @@ class Lidar2D:
         for i in range(n):
             angle = float(self.bearings_body[i]) + yaw
             direction = (math.cos(angle), math.sin(angle), 0.0)
-            result = query.raycast_closest(origin, direction, self.spec.max_range_m)
+            occ = float(self._occ[i])
+            result = query.raycast_closest(origin, direction,
+                                           min(self.spec.max_range_m, occ))
+            if (not result or not result.get("hit")) and occ < self.spec.max_range_m:
+                # Nothing before the column: the beam ends on the robot itself.
+                ranges[i], hit[i], self_hit[i] = occ, True, True
+                continue
             if not result or not result.get("hit"):
                 continue
             distance = float(result.get("distance", self.spec.max_range_m))
@@ -276,11 +365,17 @@ class SweepingLidar2D:
         mount_height_m: float = 0.30,
         mount_forward_m: float = 0.0,
         robot_prim_prefix: str = "/World/Aloha",
+        model_column: bool = True,
     ):
-        # 0.30 m is measured, not assumed: `check_lidar_2d.py` sweeps 0.20-1.50 m against
-        # this robot's own colliders and finds a 0% blind sector at every height except
-        # 0.80 m, which loses a 39.6 degree arc to the arm bases. The lowest clear mount
-        # wins because a mast is weight, wiring and something to catch on doorframes.
+        # Where it can actually go. The lift column fills the centre from 0.12 to 1.084 m
+        # (see COLUMN_Z_M), so a mount in that band must sit ahead of it; at 0.30 m and
+        # +0.20 m forward `check_lidar_2d.py` measures 10.6% blind in one 38 deg arc dead
+        # astern. Higher is worse below the column top, at lift 0: vertical_link blinds
+        # 0.59-0.75 m (130-155 deg arcs), the arm bases and link1s 0.75-0.85 m, the arm
+        # links 0.87-0.90 m, and the band rises with the lift by up to 0.60 m. The earlier
+        # "0% blind everywhere but 0.80 m" counted colliders only, from inside the column.
+        # The defaults here stay (0.30, 0.0) for callers that pass both; the runner uses
+        # NAV_LIDAR_FORWARD.
         self.spec = spec
         self.mount_height_m = mount_height_m
         self.mount_forward_m = mount_forward_m
@@ -298,8 +393,35 @@ class SweepingLidar2D:
         self._cursor = 0
         self._carry = 0.0
         self._query = None
+        # Fixed in the body frame, so computed once. `model_column=False` reproduces what
+        # runs before 2026-10 saw (the sensor looked through the column); the replay tool
+        # uses it for those runs' labels and nothing else should.
+        self.model_column = model_column
+        self._occ = (column_occlusion(self.bearings_body, mount_forward_m, mount_height_m)
+                     if model_column else np.full(n, np.inf))
         self.rays_cast = 0
         self.revolutions = 0.0
+
+    def reset(self) -> None:
+        """Forget every return. Call on every teleport -- a new episode, a Reset.
+
+        The buffer holds WORLD points, so after a teleport the previous episode's returns
+        are re-expressed around the new pose as obstacles that are not there, and their
+        stamps sit in a sim clock that has since restarted at 0, which makes any age
+        filter accept them (now - stamp < 0). Clearing is half the fix; the caller primes
+        it with one full revolution so the first decision has a scan at all -- otherwise
+        decision 0 of every episode is taken unfiltered.
+        """
+        self._stamp[:] = -np.inf
+        self._hit[:] = False
+        self._self[:] = False
+        self._prim = [""] * self.spec.points_per_rev
+        self._cursor = 0
+        self._carry = 0.0
+
+    def prime(self, position: tuple[float, float, float], yaw: float, now: float) -> int:
+        """One full revolution at rest, so the buffer is complete before the first read."""
+        return self.step(position, yaw, 1.0 / self.spec.scan_rate_hz, now)
 
     def _scene_query(self):
         if self._query is None:
@@ -335,8 +457,20 @@ class SweepingLidar2D:
             self._cursor = (i + 1) % n
             angle = float(self.bearings_body[i]) + yaw
             dx, dy = math.cos(angle), math.sin(angle)
-            result = query.raycast_closest(origin, (dx, dy, 0.0), self.spec.max_range_m)
+            occ = float(self._occ[i])
+            result = query.raycast_closest(origin, (dx, dy, 0.0),
+                                           min(self.spec.max_range_m, occ))
             self._stamp[i] = now
+            if (not result or not result.get("hit")) and occ < self.spec.max_range_m:
+                # The beam ends on the lift column: a self-return, kept as one so the blind
+                # sector shows up in the data, and excluded from every consumer like the
+                # arm hits are.
+                self._hit[i] = True
+                self._self[i] = True
+                self._prim[i] = self.robot_prim_prefix + "/Geometry/base_link#column"
+                self._wx[i] = ox + occ * dx
+                self._wy[i] = oy + occ * dy
+                continue
             if not result or not result.get("hit"):
                 self._hit[i] = False
                 self._self[i] = False

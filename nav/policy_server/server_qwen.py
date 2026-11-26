@@ -52,6 +52,7 @@ import base64
 import binascii
 import collections
 import hashlib
+import json
 import math
 import os
 import re
@@ -73,14 +74,18 @@ from scipy.interpolate import PchipInterpolator
 # but not `nav/`, where the shared code lives. The `menu` format needs it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import (  # noqa: E402
-    ARC_SET, CREEP_MPS, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
+    ARC_SET, CREEP_MPS, MENU_GEOM, DESCRIBE_AFTER_BALK, DESCRIBE_AFTER_RECOVERY, DESCRIBE_SIDED,
+    DESCRIBE_KERB,
     DESCRIBE_OPEN_SET, DESCRIBE_TARGET, DESCRIBE_TARGET_DIR, DESCRIBE_MEMORY,
     parse_heading_word, FREE_SPACE_SYSTEM, FREE_SPACE_SYSTEM_2,
     SELECT_AFTER_BALK, SELECT_AFTER_RECOVERY, SELECT_PREFILL, SELECT_PREFILL_SPEED,
     PIVOT_DEG, PIVOT_RAD, SPEED_CHOICE_FROM_M, direction_word, history_note,
+    odometry_note, spin_filter,
     allocate_labels, arc_clearance, drivable, make_arcs, parse_choice_speed,
     parse_target_distance, pivot_word, plan_from_kappa, render_menu, select_system,
+    select_system_text, text_options,
     speed_for, speed_from_level, stop_label,
+    MENU_CAMERA_KEYS, MenuCamera, camera_keep, default_camera_record, free_space_system,
 )
 
 # The bare default is the Hugging Face id the shipping profile names, not a path on one
@@ -197,6 +202,10 @@ _state: dict = {
     "parse_failures": 0, "empty_plans": 0, "gen_errors": 0,
     # The plan currently in force, in the body frame of the moment generation STARTED.
     "plan": None, "plan_gen_step": None, "reasoning": None,
+    # (x, y, yaw, sim_time) of the robot at the call that STARTED the plan in force, when
+    # the caller sends its pose. See `PredictRequest.pose_world` for why the server keeps
+    # this rather than trusting the caller's own choice of anchor.
+    "plan_gen_pose": None, "anchor_fixes": 0,
     # A CHOSEN PIVOT, in radians, positive to the robot's left, 0.0 for every other
     # decision. It rides beside the plan rather than inside it because a pure rotation
     # cannot be written as waypoints -- every point would be the origin, which
@@ -248,6 +257,17 @@ _state: dict = {
     # select call's attention, which is the one call whose wording we are free to compose
     # and therefore the one worth not diluting.
     "recent": collections.deque(maxlen=6),
+    # QVLA_ODOMETRY: the odometry of the last decision whose description saw the target
+    # ({"turned_deg", "since_s", "target_m"}), so a later decision that has lost it can be
+    # told which way it went. Cleared by /reset with `recent`, i.e. per instruction.
+    "target_seen": None,
+    # Requests that brought their own camera, and the last camera a menu was drawn with
+    # (as recorded). `camera_menus` counts menus actually drawn with a request camera, so
+    # `camera_requests` far above it means cached plans were being re-served, not that
+    # cameras were ignored.
+    "camera_requests": 0,
+    "camera_menus": 0,
+    "last_camera": None,
 }
 _lock = threading.Lock()
 # Serialises GPU decode for `/raw` alone. `_lock` cannot do this job: it is held for
@@ -283,6 +303,23 @@ class PredictRequest(BaseModel):
     delayed_image_paths: list[str] | None = None
     robot_type: str = "wheeled robot"
     yaw_delta_rad: float = 0.0
+    # The robot's own world pose (x, y, yaw) and sim time AT THIS CALL. Optional, and when
+    # both are sent they supersede `time_delay`, the dx,dy tail of `robot_state` and
+    # `yaw_delta_rad` for reframing a cached plan.
+    #
+    # WHY THE SERVER, NOT THE CALLER, PICKS THE ANCHOR. The caller has to compute those
+    # three numbers BEFORE the call, against the start of whichever generation it thinks
+    # produced the plan it is about to receive -- and in async mode it cannot know. When
+    # a generation finishes between two calls, the next call is served THAT plan (and
+    # starts a new generation), while the caller, which only learns of the new start from
+    # the response, still holds the previous start as its anchor. So on one call per
+    # generation the plan was shifted by a whole pick-up period of motion and sliced by a
+    # staleness one period too long: logged `time_delay` cycled 2.0/2.5/3.0 s where the
+    # truth was 1.5/2.0/2.5 (20260905-092943_office_hallway_turn), i.e. 1.5 s of a real
+    # plan discarded every third decision. Only this process knows which generation's plan
+    # it is serving, so it keeps that generation's start pose and reframes against it.
+    pose_world: list[float] | None = None
+    sim_time: float | None = None
     # True for the handful of decisions taken just after the robot reversed out of a
     # wedge. It is a fact about the last few seconds that the camera cannot show -- the
     # view is the same obstacle from a metre further back -- so it has to be told. See
@@ -306,6 +343,10 @@ class PredictRequest(BaseModel):
     # anything. One frame of a stationary robot is the same picture as one frame of a
     # moving one.
     stalled_s: float = 0.0
+    # What the robot has done since the instruction was given, from its own odometry
+    # (sim/turn_odometer.py: turned_deg, net_m, path_m, since_s, recent_turn_deg,
+    # recent_s). Read only with QVLA_ODOMETRY=1; None leaves the prompt as it was.
+    odometry: dict | None = None
     # One revolution of the 2D lidar, as body-frame (x_forward, y_left) metres, already
     # motion-compensated by the caller. None means "no scan", which is what every existing
     # caller sends and which leaves the menu exactly as it was.
@@ -345,6 +386,18 @@ class PredictRequest(BaseModel):
     # images, which is strictly stronger, and taking both would be a contradiction the
     # caller should not be able to express by accident.
     wait_inflight: bool = False
+    # THE CAMERA THIS FRAME WAS TAKEN WITH, for drawing the arc menu. None -- what every
+    # caller written before this field sends -- draws with the server's own level camera
+    # (QVLA_MENU_GEOM), byte for byte as before. A dict carries intrinsics (fx[, fy, cx,
+    # cy] or hfov_deg, with the width/height they refer to), the lens mount (cam_h above
+    # the floor, cam_x forward / cam_y left of the rotation centre) and the LIVE attitude at
+    # frame time (pitch_deg down, roll_deg right-side-down, yaw_deg left), in
+    # nav/sim/g1/camera_geometry.py's convention, plus optionally `arcs` (a subset of this
+    # server's curvatures) and `min_visible_m`. Keys are closed: a typo is a 422, never a
+    # silently level menu. See arc_menu.MenuCamera. A plain dict rather than a nested model
+    # so arc_menu owns the one validator (and so the FastAPI/__future__ module-level model
+    # trap recorded in CLAUDE.md cannot recur here).
+    camera: dict | None = None
 
 
 class PredictResponse(BaseModel):
@@ -359,6 +412,12 @@ class PredictResponse(BaseModel):
     # follow -- the caller is to rotate by this much and then ask again. Defaulted so a
     # caller that predates the field, or one talking to `server.py`, is unaffected.
     pivot_rad: float = 0.0
+    # The age, in sim seconds, the served plan was actually sliced by, and the step its
+    # generation started at. With `pose_world` + `sim_time` this is the server's own
+    # anchor; without them it echoes the caller's `time_delay`. Log this, not the value
+    # the caller sent -- see `PredictRequest.pose_world`.
+    plan_age_s: float | None = None
+    plan_gen_step: int | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -467,7 +526,11 @@ if _ARC_FORMAT not in ("pairs", "arc", "menu"):
 # this format, so the `braking` controller's min(cap, plan) never engages and the only way
 # this policy can slow down is to stop outright. That is what the STOP label is for.
 MENU_SPEED_MPS = float(os.environ.get("QVLA_MENU_SPEED", "0.7"))
-MENU_DIR = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
+# Under nav/results (gitignored), not /tmp: the lidar A/B's decisions.jsonl and menu
+# frames lived in /tmp/qvla-menus and were gone by the time anyone asked how often the
+# clearance filter had dropped an arc. Nothing else recorded it.
+MENU_DIR = Path(os.environ.get(
+    "QVLA_MENU_DIR", str(Path(__file__).resolve().parent.parent / "results" / "menus")))
 # Menus are keyed by the control step, and the step counter restarts with every episode, so
 # a flat directory has the second episode overwriting the first at the same numbers. With
 # a run label from /reset each episode gets its own folder plus a JSONL of what the model
@@ -843,18 +906,36 @@ def reframe(plan: np.ndarray, dx: float, dy: float, dyaw: float,
     rel = plan - np.array([dx, dy])
     out = np.stack([c * rel[:, 0] - s * rel[:, 1],
                     s * rel[:, 0] + c * rel[:, 1]], axis=-1)
-    keep = int(np.ceil(max(0.0, age_s) / DT))
+    # round() first: an age built as a difference of two float times lands a hair above
+    # an exact multiple of DT on ~40% of off-grid calls, and ceil would cut one point late.
+    keep = int(np.ceil(round(max(0.0, age_s) / DT, 9)))
     return out[keep:]
 
 
 # --------------------------------------------------------------------------------------
 # Model
 # --------------------------------------------------------------------------------------
+def _is_quantized(path: str) -> bool:
+    """Does this checkpoint need `qwen_load`'s quantization fixes?
+
+    Derived from the checkpoint rather than taken from a second environment variable that
+    has to agree with `QVLA_MODEL`. A flag saying "this one is FP8" is a copy of a fact
+    the config already states, and this repo has paid twice for a constant that was a
+    second copy of something -- the summary's hardcoded success threshold and the three
+    separate copies of the plan horizon. Both failed by disagreeing silently.
+    """
+    cfg = Path(path) / "config.json"
+    if not cfg.is_file():
+        return True     # a hub id, which for this server has only ever meant the FP8 27B
+    try:
+        return "quantization_config" in json.loads(cfg.read_text())
+    except (OSError, json.JSONDecodeError):
+        return True
+
+
 def _load_model() -> None:
     if _state["model"] is not None:
         return
-    from qwen_load import load_qwen
-
     t0 = time.time()
     print(f"[qvla-server] loading {MODEL_PATH}", flush=True)
     # QVLA_MAX_MEMORY="0:19,1:22" caps per device. Without a cap, device_map="auto" takes
@@ -863,11 +944,36 @@ def _load_model() -> None:
     mm = os.environ.get("QVLA_MAX_MEMORY", "").strip()
     max_memory = ({int(k): float(v) for k, v in
                    (kv.split(":") for kv in mm.split(",") if kv)} if mm else None)
-    # load_qwen carries the two fixes without which this checkpoint is either unloadable
-    # or silently broken -- see qwen_load.py. The second one matters here specifically:
-    # a model whose gate_proj lost its FP8 scale still runs at full speed and emits
-    # gibberish, which a navigation benchmark would score as "the policy drove badly".
-    proc, model = load_qwen(MODEL_PATH, max_memory=max_memory, max_pixels=MAX_PIXELS)
+
+    if _is_quantized(MODEL_PATH):
+        from qwen_load import load_qwen
+        # load_qwen carries the two fixes without which this checkpoint is either
+        # unloadable or silently broken -- see qwen_load.py. The second one matters here
+        # specifically: a model whose gate_proj lost its FP8 scale still runs at full
+        # speed and emits gibberish, which a navigation benchmark would score as "the
+        # policy drove badly".
+        proc, model = load_qwen(MODEL_PATH, max_memory=max_memory, max_pixels=MAX_PIXELS)
+    else:
+        # An unquantized candidate from the survey (`nav/vlm_survey.md`). It needs none of
+        # load_qwen's fixes, and running it THROUGH them would be worse than useless:
+        # `patch_transformers_fp8` and the skip-list repair are shaped for one checkpoint's
+        # bug, and a candidate is measured here precisely to see what it does unmodified.
+        #
+        # Everything downstream reads `_state`, so this is the whole swap -- the menu, the
+        # SIDED chain, STOP gating, the wedge recovery and the speed channel are the same
+        # code for every backend. That is the point: a closed-loop number for a candidate
+        # has to come from the same policy the baseline's 8/13 came from, or it is a
+        # comparison of two policies rather than of two models.
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+        proc = AutoProcessor.from_pretrained(MODEL_PATH, max_pixels=MAX_PIXELS)
+        model = AutoModelForImageTextToText.from_pretrained(
+            MODEL_PATH, dtype=torch.bfloat16,
+            device_map=("auto" if max_memory else "cuda:0"),
+            max_memory=({i: f"{g}GiB" for i, g in max_memory.items()}
+                        if max_memory else None))
+        model.eval()
+        print(f"[qvla-server] unquantized backend, bf16, "
+              f"{sum(p.numel() for p in model.parameters()) / 1e9:.2f}B params", flush=True)
     _state["proc"], _state["model"] = proc, model
     print(f"[qvla-server] ready in {time.time() - t0:.1f}s", flush=True)
 
@@ -1075,6 +1181,15 @@ MENU_FRAMES = max(1, int(os.environ.get("QVLA_MENU_FRAMES", "1")))
 # unreproducible -- the same class of mistake as the shared label RNG.
 MENU_GOAL_DIR = os.environ.get("QVLA_GOAL_DIR", "0").lower() in ("1", "true", "yes")
 
+# Whether the describe question also says that kerbs, steps and raised edges are walls for
+# this robot (arc_menu.DESCRIBE_KERB). Off by default for the same reason as above: every
+# recorded arm ran without it. Reported in /health so a result's config says which ran.
+KERB_PROMPT = os.environ.get("QVLA_KERB_PROMPT", "0").lower() in ("1", "true", "yes")
+# TURN ODOMETRY in the select prompt, plus the full-circle guard (arc_menu.odometry_note).
+# Off by default: every recorded arm ran without it, and a request that sends no
+# `odometry` gets the old prompt even with it on. Reported in /health.
+ODOMETRY = os.environ.get("QVLA_ODOMETRY", "0").lower() in ("1", "true", "yes")
+
 # LIDAR-FILTERED MENU: how far an arc must be drivable to be offered at all, metres.
 #
 # Off unless the caller actually sends a scan, so every arm on disk is untouched and the
@@ -1106,12 +1221,38 @@ MENU_MIN_CLEAR_M = float(os.environ.get("QVLA_MENU_MIN_CLEAR", "1.0"))
 # where a 90 degree wedge could hold roughly one return per arc.
 MENU_MIN_SCAN_POINTS = int(os.environ.get("QVLA_MENU_MIN_POINTS", "50"))
 
+# WHO CHOOSES THE ARC. `vlm` is QVLA. `straight` is the no-model baseline asked for in the
+# MIDI 2026 reviews ("separate the contribution of the VLM"). It loads no weights and
+# answers every decision with the straightest drawn arc at cruise speed. Everything else is
+# unchanged: the menu is still drawn and recorded, and the plan builder, controller, guard,
+# contact layer and recovery reverse are all the same. What it measures is how much of the
+# ladder needs no decision at all. It never answers STOP; like every policy here, it ends
+# on the runner's arrival latch or the timeout. `/health` reports it in `selector`, and
+# `model` names it, so a result file can never be read as a QVLA run.
+#
+# `text` is the TEXT-ONLY ablation of the menu (see `select_system_text` in arc_menu.py):
+# the same model and the same describe call, but the select call sees the camera image
+# with NOTHING drawn on it and the same seven paths listed as words. It answers "is it the
+# drawing that works, or just choosing among a few fixed curvatures?". The model is loaded;
+# only the menu image is not rendered.
+SELECTOR = os.environ.get("QVLA_SELECTOR", "vlm").strip().lower()
+if SELECTOR not in ("vlm", "straight", "text"):
+    raise SystemExit(f"QVLA_SELECTOR must be 'vlm', 'straight' or 'text', got {SELECTOR!r}")
+if SELECTOR != "vlm" and _ARC_FORMAT != "menu":
+    raise SystemExit(f"QVLA_SELECTOR={SELECTOR} needs QVLA_FORMAT=menu")
+if SELECTOR == "text" and (MENU_PIVOTS or MENU_GOAL_DIR):
+    # The text prompt exists only for the shipping profile; a pivot or heading arm would
+    # silently run under words that never mention the pivots or the HEADING.
+    raise SystemExit("QVLA_SELECTOR=text supports neither QVLA_MENU_PIVOTS nor QVLA_GOAL_DIR")
+LOADS_MODEL = SELECTOR in ("vlm", "text")
+
 _STOP_LABEL = stop_label(len(_MENU_ARCS), MENU_PIVOTS)
 
 
 @lru_cache(maxsize=512)
 def _menu_system(stop_allowed: bool, speed_choice: bool,
-                 pivot_labels: tuple[int, int] | None, goal_dir: bool = False) -> str:
+                 pivot_labels: tuple[int, int] | None, goal_dir: bool = False,
+                 camera: MenuCamera | None = None) -> str:
     """The selector system prompt for one combination of the flags that vary per call.
 
     Built through a cache rather than precomputed at import, which is what this was
@@ -1124,9 +1265,18 @@ def _menu_system(stop_allowed: bool, speed_choice: bool,
     call site is how a run ends up with the no-stop rule paired with the wrong answer
     format, and no error is raised when it does.
     """
+    # `camera` is passed ONLY when it asks to be described (`prompt: true`); otherwise None,
+    # so the prompt -- and this cache key -- is the same for every frame of a bobbing head.
     return select_system(_STOP_LABEL, stop_allowed=stop_allowed,
                          speed_choice=speed_choice, pivot_labels=pivot_labels,
-                         goal_dir=goal_dir)
+                         goal_dir=goal_dir, camera=camera)
+
+
+@lru_cache(maxsize=1024)
+def _text_system(stop_allowed: bool, speed_choice: bool, options: str) -> str:
+    """`_menu_system` for QVLA_SELECTOR=text: the paths listed as `options`."""
+    return select_system_text(_STOP_LABEL, options, stop_allowed=stop_allowed,
+                              speed_choice=speed_choice)
 
 # Shuffled per call rather than fixed, because a stable numbering is the one confound that
 # makes this whole approach look like it works when it does not: number the arcs left to
@@ -1163,7 +1313,9 @@ def menu_plan(image_paths: list[str], instruction: str,
               step: int | None,
               recovered: bool = False, kind: str = "",
               stalled_s: float = 0.0,
-              scan_points: list[list[float]] | None = None
+              scan_points: list[list[float]] | None = None,
+              camera: MenuCamera | None = None,
+              odometry: dict | None = None
               ) -> tuple[np.ndarray | None, str, float]:
     """The `menu` format's whole pipeline: two generations, one curvature, one plan.
 
@@ -1195,14 +1347,86 @@ def menu_plan(image_paths: list[str], instruction: str,
     # renumbered.
     clearance = None
     arcs, drawn, dropped = _MENU_ARCS, labels, []
-    if (scan_points and len(scan_points) >= MENU_MIN_SCAN_POINTS
-            and MENU_MIN_CLEAR_M > 0.0):
-        clearance = arc_clearance(_MENU_ARCS, scan_points)
-        arcs, drawn, dropped = drivable(_MENU_ARCS, labels, clearance,
-                                        MENU_MIN_CLEAR_M)
+    use_scan = bool(scan_points and len(scan_points) >= MENU_MIN_SCAN_POINTS
+                    and MENU_MIN_CLEAR_M > 0.0)
+    colours = visible = cam_rec = None
+    if camera is None:
+        # The request brought no camera: the path every recorded menu was drawn on,
+        # statement for statement.
+        if use_scan:
+            clearance = arc_clearance(_MENU_ARCS, scan_points)
+            arcs, drawn, dropped = drivable(_MENU_ARCS, labels, clearance,
+                                            MENU_MIN_CLEAR_M)
+    else:
+        # THE REQUEST'S OWN CAMERA. Its arc subset and visibility floor are filters exactly
+        # like the lidar's: they decide which of the already-drawn labels appear, never
+        # renumber (`drivable`'s docstring has why), so STOP keeps its number and the
+        # shuffle stream is the one every other run drew from. Clearance is computed over
+        # the FULL menu so the record lines up index for index with `labels`.
+        from PIL import Image
+        with Image.open(newest) as _im:            # header only; render_menu decodes it
+            fw, fh = _im.size
+        keep, visible = camera_keep(_MENU_ARCS, camera, fw, fh)
+        sub_arcs = [_MENU_ARCS[i] for i in keep]
+        sub_labels = [labels[i] for i in keep]
+        if use_scan:
+            clearance = arc_clearance(_MENU_ARCS, scan_points)
+            arcs, drawn, _ = drivable(sub_arcs, sub_labels, [clearance[i] for i in keep],
+                                      MENU_MIN_CLEAR_M)
+        else:
+            arcs, drawn = sub_arcs, sub_labels
+        dropped = [lab for lab in labels if lab not in drawn]
+        # Each arc keeps its colour from the full menu, whatever else was dropped.
+        colours = [next(j for j, b in enumerate(_MENU_ARCS) if b is a) for a in arcs]
+        cam_rec = camera.record(fw, fh)
+        with _lock:
+            _state["camera_menus"] += 1
+            _state["last_camera"] = cam_rec
+
+    # THE SPIN GUARD (QVLA_ODOMETRY=1). A full circle one way inside the odometer's window
+    # takes the sharp arcs that way off this menu, like the lidar filter does with arcs into
+    # a wall: labels kept, STOP unmoved, never an empty menu. The sentence itself is built
+    # after the describe call, which is where the TARGET distance it uses comes from; both
+    # are "" / 0 without the flag or without an `odometry` payload.
+    spin = odometry_note(odometry)[1] if ODOMETRY else 0
+    if spin:
+        arcs, drawn, spun = spin_filter(arcs, drawn, spin)
+        dropped = list(dropped) + spun
+        # Each arc keeps its full-menu colour, so the same curve is the same colour
+        # whether or not the guard is on.
+        colours = [next(j for j, b in enumerate(_MENU_ARCS) if b is a) for a in arcs]
+
+    if SELECTOR == "straight":
+        # The no-model baseline. It answers BEFORE the menu is rendered: nothing here looks
+        # at the image, and the runner sends a blank placeholder for exactly that reason
+        # (run_navigation.py, `blind`). It takes the straightest arc still on the menu
+        # after the lidar filter or a request camera, and no other arc. Cruise speed,
+        # because the speed ramp needs the TARGET line, which only the describe call writes.
+        kappa_of = {int(lab): arcs[i].kappa for i, lab in enumerate(drawn)}
+        choice = min(kappa_of, key=lambda lab: abs(kappa_of[lab]))
+        kappa, speed = kappa_of[choice], MENU_SPEED_MPS
+        with _lock:
+            _state["recent"].append(direction_word(kappa))
+        _record(step, "", instruction, labels, choice, kappa, "", "[straight selector]",
+                None, speed, recovered, kind=kind, speed_source="fixed",
+                stalled_s=stalled_s, pivot_labels=pivot_labels,
+                drawn=drawn if (clearance or camera is not None) else None,
+                clearance=clearance, camera=cam_rec, visible=visible)
+        return (plan_from_kappa(kappa, speed, N_WAYPOINTS, DT),
+                f"[straight baseline, no model] [menu] {drawn} -> {choice} "
+                f"-> kappa {kappa:+.2f} @{speed:.2f}m/s", 0.0)
 
     menu = str(out_dir / f"menu_{step if step is not None else 0:08d}.jpg")
-    render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels)
+    if SELECTOR == "text":
+        # Nothing is drawn: the select call is shown the frame as it came off the camera,
+        # and the record names that frame.
+        menu = newest
+    elif camera is None:
+        render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels,
+                    colours=colours)
+    else:
+        render_menu(newest, menu, arcs, drawn, pivot_labels=pivot_labels,
+                    camera=camera, colours=colours)
     by_label = {int(lab): arcs[i].kappa for i, lab in enumerate(drawn)}
     # Positive is a turn to the robot's LEFT, the same sign convention as yaw and as the
     # curvatures, so the runner can hand it straight to the base as a yaw rate.
@@ -1265,7 +1489,8 @@ def menu_plan(image_paths: list[str], instruction: str,
     # single superlative would put two answers to the same question in one reply, and
     # `STAGE_RULE_GOAL` tells the selector to use both. They are one change with two
     # sentences, not two independent knobs.
-    describe = ((DESCRIBE_OPEN_SET if MENU_GOAL_DIR else DESCRIBE_SIDED) + after_note
+    describe = ((DESCRIBE_OPEN_SET if MENU_GOAL_DIR else DESCRIBE_SIDED)
+                + (DESCRIBE_KERB if KERB_PROMPT else "") + after_note
                 + (DESCRIBE_TARGET_DIR if MENU_GOAL_DIR
                    else DESCRIBE_TARGET).format(instruction=instruction)
                 + (DESCRIBE_MEMORY if remembering else ""))
@@ -1280,8 +1505,10 @@ def menu_plan(image_paths: list[str], instruction: str,
     # that runs out truncates precisely the channel this arm exists to add -- and it fails
     # silently, as a `parse_heading_word` of None that reads exactly like a model declining
     # to answer. It also asks for a list where the old question asked for one word.
+    # `free_space_system(None, ...)` IS the constant; a camera only changes it when its
+    # `prompt` flag asks for its own sentence.
     seen, seen_think, _ = think_then_answer(
-        frames, FREE_SPACE_SYSTEM_2 if remembering else FREE_SPACE_SYSTEM, describe,
+        frames, free_space_system(camera, remembering), describe,
         int(LEVEL["describe_think"]),
         int(LEVEL["describe"]) + (40 if remembering else 0) + (40 if MENU_GOAL_DIR else 0))
     seen = seen.strip().replace("\n", " ")
@@ -1301,6 +1528,15 @@ def menu_plan(image_paths: list[str], instruction: str,
     with _lock:
         recent = list(_state["recent"])
     hist = history_note(recent, stalled_s)
+    odo_note = ""
+    if ODOMETRY:
+        with _lock:
+            last_seen = _state["target_seen"]
+            if odometry and target_m is not None:
+                _state["target_seen"] = {"turned_deg": float(odometry.get("turned_deg", 0.0)),
+                                         "since_s": float(odometry.get("since_s", 0.0)),
+                                         "target_m": float(target_m)}
+        odo_note = odometry_note(odometry, target_m, last_seen)[0]
 
     # The heading is repeated as its own line even though `seen` already contains it. Call
     # 2 reads the description as prose, and the whole reason CHAIN scored 72% where SIDED
@@ -1310,6 +1546,7 @@ def menu_plan(image_paths: list[str], instruction: str,
             + (f"The direction the task needs to go next -- HEADING: {heading}\n\n"
                if heading else "")
             + (f"{hist}\n\n" if hist else "")
+            + (f"{odo_note}\n\n" if odo_note else "")
             + ({"wedge": f"{SELECT_AFTER_RECOVERY}\n\n",
                 "balk": f"{SELECT_AFTER_BALK}\n\n"}.get(kind, ""))
             + f"Navigation instruction: {instruction}\n\n"
@@ -1326,7 +1563,13 @@ def menu_plan(image_paths: list[str], instruction: str,
         # A balk takes STOP away for the same reason a wedge does, and with a stronger
         # case: the front was measured CLEAR, so "every drawn path runs into something"
         # is not merely unlikely here, it is known false.
-        [menu], _menu_system(not kind, ask_speed, pivot_labels, MENU_GOAL_DIR), user,
+        [menu],
+        (_text_system(not kind, ask_speed,
+                      text_options([a.kappa for a in arcs], [int(x) for x in drawn]))
+         if SELECTOR == "text" else
+         _menu_system(not kind, ask_speed, pivot_labels, MENU_GOAL_DIR,
+                      camera if camera is not None and camera.prompt else None)),
+        user,
         int(LEVEL["select_think"]), int(LEVEL["answer"]), prefill=prefill)
 
     choice, level = parse_choice_speed(reply)
@@ -1344,12 +1587,16 @@ def menu_plan(image_paths: list[str], instruction: str,
     said = reply[len(prefill):] if reply.startswith(prefill) else reply
     note = ((f"[after {kind}] " if kind else "")
             + (f"[history] {hist}\n" if hist else "")
+            + (f"[odometry] {odo_note}\n" if odo_note else "")
             + f"[free space] {seen}\n"
             # Both lists, not just the survivors. Reading a log that says the model chose
             # from [3, 5, 7] gives no way to tell a clear corridor from a filter that took
             # four arcs away, and those are opposite situations.
             + (f"[lidar] kept {drawn} dropped {dropped} "
                f"(clear {[round(c, 1) for c in clearance]} m)\n" if clearance else "")
+            + (f"[camera] {camera.name or 'request'} pitch {camera.pitch_deg:+.1f} "
+               f"roll {camera.roll_deg:+.1f} h {camera.cam_h:.2f} m; drew {drawn}\n"
+               if camera is not None else "")
             + f"[menu] {drawn} -> {said.strip()[:20]!r}")
     if seen_think or sel_think:
         # The reasoning is kept in the note, which is what `/health` returns as
@@ -1410,8 +1657,10 @@ def menu_plan(image_paths: list[str], instruction: str,
             speed_level=level if ask_speed else None, stalled_s=stalled_s,
             thinking=(seen_think, sel_think), history=hist,
             pivot_rad=pivot, pivot_labels=pivot_labels,
-            drawn=drawn if clearance else None, clearance=clearance,
-            heading=heading)
+            drawn=drawn if (clearance or camera is not None) else None,
+            clearance=clearance, heading=heading,
+            camera=cam_rec, visible=visible,
+            odometry=odometry if ODOMETRY else None, odo_note=odo_note, spin=spin)
     return plan, note, pivot
 
 
@@ -1430,7 +1679,11 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
             # one, so every call raised NameError -- swallowed by the except, printed once
             # per decision, and silently costing the entire per-decision log. 2647 records
             # were lost this way before anyone read the server log instead of the file.
-            heading: str | None = None) -> None:
+            heading: str | None = None,
+            camera: dict | None = None,
+            visible: list[float] | None = None,
+            odometry: dict | None = None, odo_note: str = "",
+            spin: int = 0) -> None:
     """Append one decision to the run's JSONL, next to the menu image it was made on.
 
     Everything needed to redraw the decision later and nothing that has to be recomputed
@@ -1443,7 +1696,6 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
     if not RECORD or run_dir is None:
         return
     try:
-        import json
         with open(run_dir / "decisions.jsonl", "a") as fh:
             fh.write(json.dumps({
                 "step": step, "menu": Path(menu).name, "instruction": instruction,
@@ -1499,6 +1751,19 @@ def _record(step: int | None, menu: str, instruction: str, labels: list[int],
                 # Empty strings at `medium`. Kept whole rather than summarised: this is
                 # the only durable copy of what the expensive levels bought.
                 "think_level": THINK_LEVEL,
+                # Which floor projection drew this menu. A replay that redraws the chosen
+                # arc has to use the same one, or it lands 0.3 m off the arc in the image.
+                "menu_geom": MENU_GEOM,
+                # The camera the menu was drawn with: the request's (intrinsics resolved for
+                # the frame actually drawn on, mount, live pitch/roll/yaw, arc subset) or the
+                # server's own level camera for a request that sent none. `menu_geom` above
+                # describes only the latter.
+                "camera": camera if camera is not None else default_camera_record(),
+                # Metres of each of `labels`' arcs inside the frame; null without a camera.
+                "visible_m": visible,
+                # QVLA_ODOMETRY: what the runner measured, the sentence it became, and
+                # whether the full-circle guard took arcs off this menu (+1 left, -1 right).
+                "odometry": odometry, "odometry_note": odo_note, "spin_guard": spin,
                 "think_describe": thinking[0],
                 "think_select": thinking[1],
             }) + "\n")
@@ -1510,7 +1775,10 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
                        step: int | None, max_new: int, instruction: str = "",
                        recovered: bool = False, epoch: int = 0, kind: str = "",
                        stalled_s: float = 0.0,
-                       scan_points: list[list[float]] | None = None) -> None:
+                       scan_points: list[list[float]] | None = None,
+                       gen_pose: tuple[float, float, float, float] | None = None,
+                       camera: MenuCamera | None = None,
+                       odometry: dict | None = None) -> None:
     """Runs on a background thread so the control loop never waits on decode.
 
     This is the same two-rate idea as TIC-VLA's `predict_async`, one level up: there the
@@ -1526,7 +1794,7 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
         pivot = 0.0
         if _ARC_FORMAT == "menu":
             plan, text, pivot = menu_plan(image_paths, instruction, step, recovered,
-                                          kind, stalled_s, scan_points)
+                                          kind, stalled_s, scan_points, camera, odometry)
         else:
             text = _generate(messages, image_paths, max_new)
             ctrl = parse_arc(text) if _ARC_FORMAT == "arc" else parse_control_points(text)
@@ -1548,6 +1816,7 @@ def _generation_worker(messages: list[dict], image_paths: list[str],
             else:
                 _state["plan"] = plan
                 _state["plan_gen_step"] = step
+                _state["plan_gen_pose"] = gen_pose
                 # Installed together and cleared together. The pivot belongs to THIS
                 # plan, so a decision that was not a pivot must actively zero the field
                 # -- leaving the previous one in place would have the robot keep turning
@@ -1578,8 +1847,11 @@ def health() -> dict:
     with _lock:
         return {
             "ok": _state["model"] is not None,
-            "model": MODEL_PATH,
-            "mode": ("qvla-arc-menu (selects a drawn path)" if _ARC_FORMAT == "menu"
+            "model": MODEL_PATH if LOADS_MODEL else f"{SELECTOR}-baseline (no model)",
+            "selector": SELECTOR,
+            "mode": ("qvla-text-menu (selects a path listed in text, nothing drawn)"
+                     if SELECTOR == "text" else
+                     "qvla-arc-menu (selects a drawn path)" if _ARC_FORMAT == "menu"
                      else "qvla-direct (no action expert)"),
             # Reported so a probe can never misattribute a result to the wrong format.
             # The three are not comparable: `arc` cannot express an S-curve at all, and
@@ -1608,9 +1880,26 @@ def health() -> dict:
                 # episodes under a different arc set or a different frame count are three
                 # different measurements, and a result file cannot tell them apart.
                 "arc_set": ARC_SET,
+                # `legacy` (lens at the rotation centre, every result before 2026-10) or
+                # `mounted` (the real 0.25 m forward mount). See arc_menu's docstring.
+                "menu_geom": MENU_GEOM,
+                "kerb_prompt": KERB_PROMPT,
+                "odometry_note": ODOMETRY,
                 "n_arcs": len(_MENU_ARCS),
                 "menu_frames": MENU_FRAMES,
                 "menu_seed": int(os.environ.get("QVLA_MENU_SEED", "0")),
+                # Per-request cameras: supported, the keys a request may carry, the camera a
+                # request WITHOUT one is drawn with, and how many menus used one. A runner
+                # for a second body should refuse to drive a server without `supported`.
+                "menu_camera": {
+                    "supported": True,
+                    "keys": list(MENU_CAMERA_KEYS),
+                    "default": default_camera_record(),
+                    "curvatures": [a.kappa for a in _MENU_ARCS],
+                    "requests": _state["camera_requests"],
+                    "menus": _state["camera_menus"],
+                    "last": _state["last_camera"],
+                },
                 "recent": list(_state["recent"])} if _ARC_FORMAT == "menu" else {}),
             "max_pixels": MAX_PIXELS,
             # Whether this server can be driven by a client that does not share its
@@ -1632,6 +1921,11 @@ def health() -> dict:
             # away. A few per run is the recovery working; a lot means the loop is
             # discarding faster than the model can generate and is driving on nothing.
             "stale_discards": _state["stale_discards"],
+            # Serves where the caller's own anchor (`time_delay`) disagreed with the age of
+            # the plan actually served, and the server's anchor was used instead. Expect
+            # about one per generation in async mode; 0 with `pose_world` sent means the
+            # caller and server already agreed, 0 without it means nothing was checked.
+            "anchor_fixes": _state["anchor_fixes"],
             # How many decisions were taken with the robot stopped and waiting, and how
             # many of those the model did not answer in time. `sync_calls` at 0 next to a
             # non-zero `predictions` is the tell that a run believed to be synchronous was
@@ -1710,8 +2004,8 @@ def reset(req: ResetRequest = ResetRequest()) -> dict:
         run_dir.mkdir(parents=True, exist_ok=True)
     with _lock:
         _state.update(pivot_rad=0.0, pivot_served=True)
-        _state.update(plan=None, plan_gen_step=None, reasoning=None, gen_step=None,
-                      run_dir=run_dir, epoch=_state["epoch"] + 1)
+        _state.update(plan=None, plan_gen_step=None, plan_gen_pose=None, reasoning=None,
+                      gen_step=None, run_dir=run_dir, epoch=_state["epoch"] + 1)
         # Inside the lock and before the first decision of the new episode, for the same
         # reason `recent` is cleared here: everything that makes this episode this episode
         # has to be in place before a plan can be asked for.
@@ -1720,6 +2014,7 @@ def reset(req: ResetRequest = ResetRequest()) -> dict:
         # into the first decision of the next would tell the model it had "recently
         # chosen" things it chose in a different building.
         _state["recent"].clear()
+        _state["target_seen"] = None
     return {"ok": True, "run_dir": str(run_dir) if run_dir else None}
 
 
@@ -1745,8 +2040,8 @@ def replan() -> dict:
     with _lock:
         # The pivot goes with the plan. A recovery reverses the robot, which makes the
         # view the pivot was chosen on wrong in exactly the way it makes the plan wrong.
-        _state.update(plan=None, plan_gen_step=None, pivot_rad=0.0, pivot_served=True,
-                      epoch=_state["epoch"] + 1)
+        _state.update(plan=None, plan_gen_step=None, plan_gen_pose=None, pivot_rad=0.0,
+                      pivot_served=True, epoch=_state["epoch"] + 1)
         return {"ok": True, "epoch": _state["epoch"]}
 
 
@@ -1793,6 +2088,196 @@ def raw(req: RawRequest) -> dict:
     return {"text": text, "latency_s": round(dt, 3)}
 
 
+class ExplainRequest(BaseModel):
+    """Where in the image does the answer come from? One frame, one prompt, one answer.
+
+    Two measurements, because on this model neither is enough alone:
+
+    ATTENTION. Qwen3.8-27B has only 16 full-attention layers (3, 7, ..., 63); the other 48 are
+    gated-delta-net linear attention, which never forms an attention matrix. For each of the
+    16, the softmax of the answer position's query against every key is computed BESIDE the
+    real attention call (which runs unchanged), and its mass on the image tokens is kept, per
+    layer, averaged over heads. The image is 18 x 10 = 180 tokens at the default
+    QVLA_MAX_PIXELS (576 x 320 model input, each token ~107 x 108 px of a 1920 x 1080 frame),
+    row-major. It says where those layers READ from, not what the decision depends on, and it
+    is blind to the 48 linear layers.
+
+    OCCLUSION. Grey out `occlusion` x `occlusion` tokens' worth of the frame at a time and
+    re-score the same answer. The drop in log-probability is what that region contributed to
+    THIS answer through the whole model, linear layers included. Costs one forward per
+    region (batched).
+
+    `target` is the answer to explain, as text; None means the model's own greedy answer.
+    Only its first `target_tokens` tokens are explained -- 1 is the decision token of a
+    select call ("3"), which is the usual question.
+    """
+
+    image_paths: list[str] = Field(default_factory=list)
+    images_b64: list[str] | None = None
+    system: str = ""
+    user: str
+    prefill: str = ""
+    target: str | None = None
+    target_tokens: int = 1
+    max_new_tokens: int = 8
+    occlusion: int = 0
+    occ_batch: int = 4
+    top_k: int = 12
+    # Record attention FROM the tokens of this substring of the prompt (its last
+    # occurrence) instead of from the answer position -- "where does the model ground the
+    # word 'staircase'?". The answer is still scored as usual.
+    query_text: str | None = None
+
+
+def _explain(req: ExplainRequest) -> dict:
+    from PIL import Image, ImageDraw
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    from transformers.models.qwen3_5.modeling_qwen3_5 import eager_attention_forward
+
+    proc, model = _state["proc"], _state["model"]
+    path = req.image_paths[0]
+    img = Image.open(path).convert("RGB")
+    prompt = _chat_prompt([path], req.system, req.user, think=False) + req.prefill
+    t0 = time.perf_counter()
+    p_in = proc(text=[prompt], images=[img], return_tensors="pt").to(model.device)
+    L = p_in["input_ids"].shape[1]
+    with torch.no_grad():
+        if req.target is None:
+            out = model.generate(**p_in, max_new_tokens=req.max_new_tokens, **_SAMPLING)
+            tgt = out[0, L:]
+        else:
+            tgt = torch.tensor(proc.tokenizer(req.target, add_special_tokens=False)["input_ids"],
+                               device=model.device)
+    tgt = tgt[:max(1, req.target_tokens)]
+    nt = int(tgt.shape[0])
+    ids = torch.cat([p_in["input_ids"], tgt[None]], 1)
+
+    def per_token(inp: dict, n_new: int) -> dict:
+        # Everything the processor returned except ids/mask, with any per-token tensor
+        # (mm_token_type_ids: 0 = text) extended over the appended answer tokens -- the
+        # rope index reads it against input_ids and refuses a length mismatch.
+        out = {}
+        for k_, v_ in inp.items():
+            if k_ in ("input_ids", "attention_mask"):
+                continue
+            if torch.is_tensor(v_) and v_.dim() == 2 and v_.shape[1] == inp["input_ids"].shape[1]:
+                v_ = torch.cat([v_, v_.new_zeros(v_.shape[0], n_new)], 1)
+            out[k_] = v_
+        return out
+
+    extra = per_token(p_in, nt)
+    qpos = list(range(L - 1, L - 1 + nt))          # these positions PREDICT the target tokens
+    img_idx = (ids[0] == model.config.image_token_id).nonzero().flatten()
+    thw = p_in["image_grid_thw"][0].tolist()
+    merge = int(getattr(model.config.vision_config, "spatial_merge_size", 2))
+    gh, gw = int(thw[1]) // merge, int(thw[2]) // merge
+
+    rec: dict[int, dict] = {}
+    impl = model.config.get_text_config()._attn_implementation or "eager"
+    orig = ALL_ATTENTION_FUNCTIONS.get_interface(impl, eager_attention_forward)
+    q_rec, q_toks = qpos, None
+    if req.query_text:
+        toks = [proc.tokenizer.decode([int(i)]) for i in ids[0, :L].tolist()]
+        at = "".join(toks).rfind(req.query_text)
+        if at < 0:
+            raise HTTPException(status_code=400, detail=f"query_text {req.query_text!r} not in prompt")
+        ends = np.cumsum([len(t) for t in toks])
+        starts = ends - np.array([len(t) for t in toks])
+        q_rec = [i for i in range(len(toks))
+                 if ends[i] > at and starts[i] < at + len(req.query_text)]
+        q_toks = [toks[i] for i in q_rec]
+    qpos_t = torch.tensor(q_rec, device=model.device)
+
+    def recorder(module, q, k, v, *args, **kw):
+        # Pass-through first, whatever the caller's argument layout: the vision tower calls
+        # the same interface with the mask as a keyword (and cu_seqlens), the text layers
+        # positionally. Only Qwen3_5Attention (text) is recorded.
+        out = orig(module, q, k, v, *args, **kw)
+        if type(module).__name__ == "Qwen3_5Attention" and q.shape[2] == ids.shape[1]:
+            qs = q[0][:, qpos_t, :].float()                                 # [H, nq, D]
+            kk = k[0].float()
+            kk = kk.repeat_interleave(qs.shape[0] // kk.shape[0], 0)        # GQA -> [H, S, D]
+            s = (qs @ kk.transpose(-1, -2)) * float(kw.get("scaling") or module.scaling)
+            ar = torch.arange(kk.shape[1], device=s.device)
+            s = s.masked_fill((ar[None, :] > qpos_t[:, None])[None], float("-inf"))
+            a = torch.softmax(s, -1).mean(1)                                # [H, S] over targets
+            on_img = a[:, img_idx]                                          # [H, n_img]
+            rec[int(module.layer_idx)] = {
+                "mass": float(on_img.sum(-1).mean()),
+                "map": (on_img / on_img.sum(-1, keepdim=True).clamp_min(1e-12)).mean(0).cpu(),
+            }
+        return out
+
+    def score(batch_imgs: list) -> list[float]:
+        """log p(target | prompt, image) for each image, same prompt."""
+        b_in = proc(text=[prompt] * len(batch_imgs), images=batch_imgs,
+                    return_tensors="pt").to(model.device)
+        b_ids = torch.cat([b_in["input_ids"], tgt[None].expand(len(batch_imgs), -1)], 1)
+        b_extra = per_token(b_in, nt)
+        lg = model(input_ids=b_ids, attention_mask=torch.ones_like(b_ids), **b_extra,
+                   logits_to_keep=nt + 1).logits[:, :nt].float()
+        lp = torch.log_softmax(lg, -1).gather(-1, tgt[None, :, None].expand(len(batch_imgs), -1, 1))
+        return lp.sum((1, 2)).tolist()
+
+    with torch.no_grad():
+        ALL_ATTENTION_FUNCTIONS[impl] = recorder
+        try:
+            logits = model(input_ids=ids, attention_mask=torch.ones_like(ids), **extra,
+                           logits_to_keep=nt + 1).logits[0, :nt].float()
+        finally:
+            del ALL_ATTENTION_FUNCTIONS[impl]
+        logp = torch.log_softmax(logits, -1)
+        base = float(logp.gather(-1, tgt[:, None]).sum())
+        probs = logp[0].exp()
+        top = torch.topk(probs, req.top_k)
+        alts = [{"token": proc.tokenizer.decode([int(i)]), "p": round(float(p), 5)}
+                for p, i in zip(top.values, top.indices)]
+        occ = None
+        if req.occlusion > 0:
+            kk_ = int(req.occlusion)
+            W, H = img.size
+            cw, ch = W / gw, H / gh
+            cells = [(r, c) for r in range(0, gh, kk_) for c in range(0, gw, kk_)]
+            imgs = []
+            for r, c in cells:
+                im = img.copy()
+                ImageDraw.Draw(im).rectangle([c * cw, r * ch, (c + kk_) * cw - 1,
+                                              (r + kk_) * ch - 1], fill=(128, 128, 128))
+                imgs.append(im)
+            lps: list[float] = []
+            for i in range(0, len(imgs), max(1, req.occ_batch)):
+                lps += score(imgs[i:i + max(1, req.occ_batch)])
+            occ = {"block": kk_, "rows": (gh + kk_ - 1) // kk_, "cols": (gw + kk_ - 1) // kk_,
+                   "drop": [round(base - x, 4) for x in lps]}
+    layers = sorted(rec)
+    return {
+        "target": proc.tokenizer.decode(tgt.tolist()), "target_ids": tgt.tolist(),
+        "logp": round(base, 4), "alternatives": alts,
+        "grid": [gh, gw], "image_size": list(img.size),
+        "model_input": [gw * 16 * merge, gh * 16 * merge], "n_image_tokens": int(img_idx.numel()),
+        "layers": layers,
+        "attention": [[round(float(x), 6) for x in rec[l]["map"]] for l in layers],
+        "image_mass": [round(rec[l]["mass"], 4) for l in layers],
+        "occlusion": occ, "seconds": round(time.perf_counter() - t0, 2),
+        "query_tokens": q_toks,
+    }
+
+
+@app.post("/explain")
+def explain(req: ExplainRequest) -> dict:
+    """Attention and occlusion maps for one answer. A probe endpoint, like /raw."""
+    if _state["model"] is None:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    req.image_paths = _materialize(req.image_paths, req.images_b64)
+    if len(req.image_paths) != 1 or not Path(req.image_paths[0]).is_file():
+        raise HTTPException(status_code=400, detail="exactly one existing image")
+    with _lock:
+        if _state["gen_thread"] is not None:
+            raise HTTPException(status_code=409, detail="a plan generation is in flight")
+    with _raw_gate:                       # the whole call, generation included
+        return _explain(req)
+
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest) -> PredictResponse:
     if _state["model"] is None:
@@ -1829,6 +2314,23 @@ def predict(req: PredictRequest) -> PredictResponse:
         busy = _state["gen_thread"] is not None
         have_plan = _state["plan"] is not None
 
+    # Validated HERE, in the request thread, so a bad camera is the caller's 422 now -- not
+    # a generation error two seconds later that leaves the robot driving the previous plan.
+    # Ignored by the waypoint formats, which draw nothing.
+    menu_camera = None
+    if req.camera is not None and _ARC_FORMAT == "menu":
+        try:
+            menu_camera = MenuCamera.from_request(req.camera, [a.kappa for a in _MENU_ARCS])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"bad camera: {exc}") from None
+        with _lock:
+            _state["camera_requests"] += 1
+
+    gen_pose = None
+    if req.pose_world is not None and len(req.pose_world) >= 3 and req.sim_time is not None:
+        gen_pose = (float(req.pose_world[0]), float(req.pose_world[1]),
+                    float(req.pose_world[2]), float(req.sim_time))
+
     def _spawn() -> threading.Thread:
         """Start a generation on this request's images and register it as the live one."""
         with _lock:
@@ -1837,7 +2339,8 @@ def predict(req: PredictRequest) -> PredictResponse:
             target=_generation_worker,
             args=(messages, list(req.image_paths), req.current_step, max_new,
                   req.instruction, req.recovered, epoch, req.recovery_kind,
-                  req.stalled_s, req.scan_points), daemon=True)
+                  req.stalled_s, req.scan_points, gen_pose, menu_camera, req.odometry),
+            daemon=True)
         with _lock:
             _state["gen_thread"] = th
         th.start()
@@ -1932,6 +2435,8 @@ def predict(req: PredictRequest) -> PredictResponse:
 
     with _lock:
         plan = _state["plan"]
+        plan_gen_pose = _state["plan_gen_pose"]
+        plan_gen_step = _state["plan_gen_step"]
         reasoning = _state["reasoning"]
         _state["predictions"] += 1
         # ONCE per decision, whatever the regime. Under async the same cached plan is
@@ -1947,6 +2452,7 @@ def predict(req: PredictRequest) -> PredictResponse:
         else:
             pivot_rad = 0.0
 
+    age = None
     if plan is None:
         # Still nothing after a blocking wait. Standing still is the only honest answer;
         # a fabricated straight line would score as navigation.
@@ -1955,8 +2461,23 @@ def predict(req: PredictRequest) -> PredictResponse:
         wp = [[0.0, 0.0]] * N_WAYPOINTS
     else:
         dx, dy = (req.robot_state + [0.0] * 6)[4:6]
-        full = reframe(plan, float(dx), float(dy), float(req.yaw_delta_rad), 0.0)
-        live = full[int(np.ceil(max(0.0, float(req.time_delay)) / DT)):]
+        dyaw, age = float(req.yaw_delta_rad), max(0.0, float(req.time_delay))
+        if gen_pose is not None and plan_gen_pose is not None:
+            # The plan's OWN anchor: world displacement since its generation started,
+            # rotated into that moment's body frame, exactly as the runner computes it.
+            gx, gy, gyaw, gt = plan_gen_pose
+            x, y, yaw, t = gen_pose                  # this call's own pose and time
+            wx, wy = x - gx, y - gy
+            c, s_ = math.cos(gyaw), math.sin(gyaw)
+            dx, dy = c * wx + s_ * wy, -s_ * wx + c * wy
+            dyaw = math.atan2(math.sin(yaw - gyaw), math.cos(yaw - gyaw))
+            own_age = max(0.0, t - gt)
+            if abs(own_age - age) > 1e-3:
+                with _lock:
+                    _state["anchor_fixes"] += 1
+            age = own_age
+        full = reframe(plan, float(dx), float(dy), dyaw, 0.0)
+        live = full[int(np.ceil(round(age / DT, 9))):]   # round: see reframe()
         if len(live) == 0:
             # The plan has been fully consumed and the next one is not ready. Hold its
             # last point -- in the CURRENT frame, so it is still a real place -- rather
@@ -1972,11 +2493,19 @@ def predict(req: PredictRequest) -> PredictResponse:
         kv_cache_available=plan is not None,
         vlm_generation_start_step=started_step,
         pivot_rad=round(pivot_rad, 4),
+        plan_age_s=None if age is None else round(age, 3),
+        plan_gen_step=plan_gen_step,
     )
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    if not LOADS_MODEL:
+        # Nothing to load. The sentinel only satisfies the "model loaded" checks in
+        # /health and /predict; the baseline branch of menu_plan never reaches the model.
+        _state["model"] = f"{SELECTOR}-baseline"
+        print(f"[qvla-server] QVLA_SELECTOR={SELECTOR}: no model loaded", flush=True)
+        return
     _load_model()
 
 

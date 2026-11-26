@@ -133,7 +133,9 @@ pinned through Kit's own `active_gpu`/`physics_gpu` config instead.
 | `sim/summarize_runs.py` | closest approach, `spl`, guard rate across saved runs |
 | `sim/run_navigation.py` | the loop, and the UI's job queue |
 | `sim/controllers.py` | `braking` (default), `pursuit`, `guided`, `holonomic` |
-| `sim/collision_guard.py` | raycast fan — the base does not collide on its own |
+| `sim/collision_guard.py` | raycast fan at 0.30 m — slows/stops before an obstacle |
+| `sim/kinematic_contact.py` | contact response for the teleported base: envelope sweep, move-and-slide |
+| `sim/scene_colliders.py` | session-layer colliders for environment geometry that has none |
 | `ui/` | prompt box, live camera, benchmark examples |
 | `tools/check_policy_sanity.py` | does the output depend on the prompt? |
 | `tools/probe_stop_decision.py` | replay one recorded call, vary only the sentence |
@@ -162,11 +164,18 @@ off the wrong way and never sees the landmark, because the landmark is behind it
 episode in `config/episodes.yaml` is annotated with how far off its goal bearing it
 starts; keep that inside ~30°.
 
-**The base does not collide.** Locomotion is `set_world_poses()` teleportation —
-`../CLAUDE.md` has the full story of why real wheel traction never held up. A
-teleported body has no contact response and will pass through a wall, so
-`collision_guard.py` raycasts ahead instead. That is genuinely weaker than physics: it
-stops the robot, it does not push back.
+**The base has no contact response of its own; two query layers stand in for it.**
+Locomotion is `set_world_poses()` teleportation — `../CLAUDE.md` has the full story of why
+real wheel traction never held up — so PhysX never stops the base. `collision_guard.py`
+raycasts ahead at 0.30 m and slows/stops the robot before an obstacle (its interventions
+are a metric). `kinematic_contact.py` sweeps the robot's whole envelope (deck, column,
+lift, both arms) along every step and clips the step where it would hit, sliding along
+the obstacle: that catches what one 0.30 m plane cannot (a stair underside at arm height,
+a desk top, a kerb). `NAV_CONTACT=0` drives the bare base for A/B runs. Neither pushes
+back or is pushed. Both only see colliders — outdoors the environment's props have none,
+so `scene_colliders.py` copies them into collider meshes in the session layer before play
+(`NAV_SCENE_COLLIDERS=0` skips it). A contact that lasts DynaNav's 3.33 s is recorded as a
+physical collision in `EpisodeResult.contact`; it never ends the episode.
 
 **Inference is asynchronous, the way the paper is.** The policy server calls TIC-VLA's
 `predict_async`, so the ~1.5 s VLM generation runs on a background thread inside the

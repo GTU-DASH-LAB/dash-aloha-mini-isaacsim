@@ -5,6 +5,8 @@
 #   nav/bench.sh --controller pursuit     # the DynaNav-parity baseline
 #   nav/bench.sh --only office_elevator,hospital_red   # just these
 #   nav/bench.sh --from hospital_vending  # resume partway down the ladder
+#   NAV_EPISODES_CONFIG=episodes_full.yaml nav/bench.sh --only hospital_e01,office_e26
+#                                         # any table in nav/config/ (all 85 DynaNav episodes)
 #
 # WHY THIS IS A SHELL LOOP AND NOT A PYTHON ONE. Isaac Sim cannot swap stages cleanly
 # inside one process at this version, and a half-swapped stage fails as a navigation
@@ -18,8 +20,13 @@
 # The runner teleports to `episode.start` before every run, so the baked pose was
 # never load-bearing. 13 builds -> 3.
 #
-# Scenes are cached. A rebuild only happens when the .usda is missing or older than
-# the episode config, so a re-run of the ladder skips straight to driving.
+# Scenes are cached. A stage is BUILT only when its .usda is missing (or when
+# NAV_REBUILD_STAGES=1 says so), and a cached one must pass check_nav_stage.py. It used to
+# be rebuilt -- in place, over the committed nav_<env>.usda -- whenever the episode config
+# was newer than it. That rule predates per-environment stages: the runner teleports to
+# every episode's start, so a newer table does not make a stage stale, and with
+# episodes_full.yaml (2026-10-05) newer than all four stages (2026-09-10) it would have
+# silently re-authored every one of them on the first run of the full table.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -47,7 +54,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-CONFIG="$REPO/nav/config/episodes.yaml"
+# The episode table: nav/config/episodes.yaml, or NAV_EPISODES_CONFIG (absolute, or relative
+# to nav/config/). Exported, so run.sh -> run_navigation.py and resolve_env.py read the
+# SAME table (episode.CONFIG_PATH honours the same variable) and every result records it.
+CONFIG="${NAV_EPISODES_CONFIG:-episodes.yaml}"
+case "$CONFIG" in /*) ;; *) CONFIG="$REPO/nav/config/$CONFIG" ;; esac
+[ -f "$CONFIG" ] || { echo "no episode table at $CONFIG" >&2; exit 2; }
+export NAV_EPISODES_CONFIG="$CONFIG"
 LOGDIR="$REPO/nav/results/logs"
 mkdir -p "$LOGDIR"
 
@@ -108,7 +121,7 @@ for EP in "${EPISODES[@]}"; do
   ENV_NAME="$(python3 nav/sim/resolve_env.py "$EP")" || { ERR=$((ERR+1)); continue; }
   SCENE="$REPO/assets/usd/nav_${ENV_NAME}.usda"
 
-  if [ ! -f "$SCENE" ] || [ "$CONFIG" -nt "$SCENE" ]; then
+  if [ ! -f "$SCENE" ] || [ "${NAV_REBUILD_STAGES:-0}" = "1" ]; then
     echo "-- building $SCENE (serves every $ENV_NAME episode)"
     if ! nav/sim/build_nav_scene.sh "$ENV_NAME" > "$LOGDIR/build_${ENV_NAME}.log" 2>&1; then
       echo "!! BUILD FAILED -- see $LOGDIR/build_${ENV_NAME}.log"
@@ -117,7 +130,21 @@ for EP in "${EPISODES[@]}"; do
     fi
     echo "-- built"
   else
-    echo "-- scene cached ($ENV_NAME)"
+    # A stage file that exists is not a stage that works. The 09-01 outdoor build left a
+    # 1.1 KB stub here that this loop then "cached" for nine days -- hull collider on,
+    # no drives, no cameras. Kit cannot report a failed step through its exit status, so
+    # read the file itself: every build step's artefacts must be in it.
+    if ! python3 nav/sim/check_nav_stage.py "$SCENE" > "$LOGDIR/stagecheck_${ENV_NAME}.log" 2>&1; then
+      echo "!! CACHED STAGE INCOMPLETE -- refusing to run on it:"
+      cat "$LOGDIR/stagecheck_${ENV_NAME}.log"
+      echo "   rebuild it with: nav/sim/build_nav_scene.sh $ENV_NAME"
+      ERR=$((ERR+1)); [ $KEEP_GOING -eq 1 ] && continue || exit 1
+    fi
+    echo "-- scene cached ($ENV_NAME, all four build steps present)"
+    if [ "$CONFIG" -nt "$SCENE" ]; then
+      echo "   (the episode table is newer than this stage; not rebuilt -- the runner teleports to"
+      echo "    each episode's start. NAV_REBUILD_STAGES=1 rebuilds, over the committed file.)"
+    fi
   fi
 
   echo "-- running (this blocks until the episode ends or times out)"
@@ -129,7 +156,13 @@ for EP in "${EPISODES[@]}"; do
   # `hospital_down_hallway2`.
   BEFORE=$(ls -1 nav/results/*_"${EP}_${CONTROLLER}".json 2>/dev/null | wc -l)
 
-  nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
+  # NAV_RUN_TIMEOUT_S (unset = no limit): a cap on one episode's wall time. Kit can hang
+  # (in SimulationApp start-up, and once in close() after the result was already saved), and
+  # bench.sh waits on it forever. `timeout` signals the whole process group, Kit included;
+  # a run cut off this way is reported as a crash (rc 124/137), never as a result.
+  RUN_CAP=()
+  [ -n "${NAV_RUN_TIMEOUT_S:-}" ] && RUN_CAP=(timeout --kill-after=60 "$NAV_RUN_TIMEOUT_S")
+  "${RUN_CAP[@]}" nav/run.sh --episode "$EP" --controller "$CONTROLLER" --no-ui \
       > "$LOGDIR/run_${EP}_${CONTROLLER}.log" 2>&1
   RC=$?
 

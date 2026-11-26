@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -78,9 +79,10 @@ print(f"  episodes    : {len(siblings)} ({', '.join(e.name for e in siblings)})"
 print(f"  authored at : {ep.start} yaw={ep.start_yaw_deg} deg (from '{ep.name}')")
 print(f"  out         : {out_path}\n")
 
+from alohamini1_specs import KIT_GPU0  # noqa: E402
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import omni.usd  # noqa: E402
 from pxr import Sdf, Usd, UsdGeom, UsdLux, UsdPhysics  # noqa: E402
@@ -174,11 +176,21 @@ print(f"Composed prims : {prim_count}")
 print(f"Robot present  : {robot_ok}")
 if prim_count < 100 or not robot_ok:
     print("\nERROR: composition looks empty -- a reference failed to resolve.", file=sys.stderr)
-    kit.close()
-    raise SystemExit(1)
+    # NOT kit.close() + SystemExit(1): close() ends the process with status 0 before the
+    # raise is reached (measured, 2026-10-05). os._exit(1) skips Kit's shutdown and is the
+    # one way found to make python.sh return non-zero (measured: rc=1). The missing
+    # PIPELINE_STEP_OK line fails the build either way.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1)
 
 print("\nLayer authored and verified. The joint drives / wheel colliders / nav camera")
 print("are NOT applied yet -- run build_nav_scene.sh, which chains the pipeline steps.")
 print(f"Serves {len(siblings)} episode(s): {', '.join(e.name for e in siblings)}")
 
+# The pipeline's proof that this step got to the end. Kit's python.sh exits 0 on an
+# uncaught exception and after kit.close() whatever came first (measured 2026-10-05),
+# so the exit status cannot say whether a step worked; build_nav_scene.sh requires
+# this exact line instead. Printed last, just before close.
+print("PIPELINE_STEP_OK build_nav_scene", flush=True)
 kit.close()

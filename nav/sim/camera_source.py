@@ -60,6 +60,23 @@ class _Source:
         Image.fromarray(frame).save(buf, format="JPEG", quality=quality)
         return buf.getvalue()
 
+    def set_rendering(self, on: bool) -> bool:
+        """Switch this camera's render product on or off. Returns whether it took effect.
+
+        Used only by the runner's test mode (NAV_RENDER_ON_DEMAND). Kit renders a render
+        product on every update whether or not anything reads it. This is the switch
+        Replicator itself toggles around attaching annotators
+        (`hydra_texture.set_updates_enabled`), so the annotator survives the off period.
+        `Camera.pause()` is NOT this: it only stops copying out frames that are still
+        being rendered.
+        """
+        rp = getattr(self._camera, "_render_product", None)
+        tex = getattr(rp, "hydra_texture", None)
+        if tex is None:
+            return False
+        tex.set_updates_enabled(bool(on))
+        return True
+
 
 class NavCameraSource(_Source):
     """The robot's forward-facing navigation camera — what the policy is shown.

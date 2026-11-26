@@ -5,17 +5,32 @@ __pycache__/
 *.usd.bak
 .scratch/
 
-# The fourth nav scene, and the ONLY one of the four kept out of git. Its three siblings
-# -- nav_hospital, nav_office, nav_warehouse -- are tracked at 518 lines each; this one is
-# 44 lines, because the scene pipeline was never run on it. No joint drives, no wheel
-# colliders, no camera_nav. `nav/tools/run_sync_study.sh` and `run_bounded_study.sh` both
-# name it as the leading suspect for the 36 km and 51 km path lengths two outdoor episodes
-# recorded, and for the 17.9 km `outdoor_pillars` blow-up in the baseline profile's
-# caveats.
+# The fourth nav scene, and the ONLY one of the four kept out of git, because it references
+# the TIC-VLA submodule by absolute path and resolves to nothing on anyone else's machine.
 #
-# Committing it is the worse option in both directions: it would sit beside three working
-# scenes under a matching name with nothing marking it as a stub, and it references the
-# TIC-VLA submodule by absolute path, so on anyone else's machine it resolves to nothing.
-# Rebuild it with `nav/sim/build_nav_scene.sh outdoor_small` when the pipeline is fixed;
-# until then the outdoor 1/6 result should be read as a scene problem, not a policy one.
+# History worth keeping: until 2026-09-10 this file was a 44-line STUB. The first build
+# crashed after step 1 had saved the layer, and bench.sh treated the stub as a cached stage,
+# so every outdoor run before the 09-10 rebuild drove a robot with no joint drives, no wheel
+# colliders and no camera_nav. build_nav_scene.sh now builds into a temporary file and
+# renames it into place only after all four steps succeed. The km-scale outdoor paths that
+# continued AFTER the rebuild were a separate bug -- the kinematic base never wrote root
+# velocity, see nav/sim/base_drive.py -- fixed 2026-10-05.
 assets/usd/nav_outdoor_small.usda
+# In-progress nav stage builds (nav/sim/build_nav_scene.sh renames one into place only
+# after all four steps succeed). One left behind means a build was killed outright.
+assets/usd/.nav_*.build-*.usda
+assets/usd/.nav_*.build-*.log
+
+# Local Claude Code settings, and Springer's template distribution (not ours to publish).
+.claude/
+midi_conference/LaTeX2e+Proceedings+Template+ZIP/
+# LaTeX build artifacts of the paper. main.bbl stays tracked, for Overleaf and arXiv.
+midi_conference/qvla_paper/*.aux
+midi_conference/qvla_paper/*.blg
+midi_conference/qvla_paper/*.out
+midi_conference/qvla_paper/DescriptionTexts.txt
+# Derived from NVIDIA's pretrained Isaac Lab G1 checkpoint on the Omniverse content CDN,
+# whose redistribution terms have not been checked. Regenerate with
+# nav/tools/g1_export_policy.py (its docstring has the source URL and the command).
+nav/sim/g1/data/policy/*.npz
+*.orig

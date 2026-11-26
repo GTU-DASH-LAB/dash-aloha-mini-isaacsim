@@ -46,7 +46,7 @@ Runs against the live server's `/raw`, which declines while a plan generation is
 flight, so it cannot race a ladder for the GPU. Loading a second copy is not an option --
 the FP8 weights hold 29 of GPU1's 32 GiB.
 
-    nav/tools/probe_instruction_stage.py --run /tmp/qvla-menus/<dir> [--repeats 3]
+    nav/tools/probe_instruction_stage.py --run nav/results/menus/<dir> [--repeats 3]
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def arms(rec: dict, seen: str) -> dict[str, tuple[str, str, bool]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", required=True, help="a /tmp/qvla-menus run directory")
+    ap.add_argument("--run", required=True, help="a nav/results/menus run directory")
     ap.add_argument("--steps", default="0,30",
                     help="decision steps to treat as the failing frames")
     ap.add_argument("--control-steps", default="300,360,510",

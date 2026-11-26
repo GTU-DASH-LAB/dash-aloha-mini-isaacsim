@@ -1,0 +1,147 @@
+== camera-ready campaign `cr`
+   commits: ['6eab02d', '78ea8ab', 'c217a36', 'c217a36+dirty', 'f6e26e4+dirty']   episodes seen: 13   DN-11 subset: 11
+
+arm       rounds        SR/ep   range          SPL    closest m          guard     DN-11 SR   DN-11 SPL phys.coll blown
+ticvla         3 6.33 ± 0.58/13 6-7      0.47 ± 0.03  2.80 ± 0.43 852.00 ± 236.33  6.00 ± 0.00 0.53 ± 0.00 0.67 ± 0.58     0
+qvla           3 7.67 ± 1.15/13 7-9      0.57 ± 0.08  4.92 ± 0.79 1562.33 ± 366.41  7.33 ± 0.58 0.64 ± 0.05 1.67 ± 0.58     0
+straight       3 1.00 ± 0.00/13 1-1      0.08 ± 0.00  7.33 ± 0.00 10511.00 ± 1.00  1.00 ± 0.00 0.09 ± 0.00 4.00 ± 0.00     0
+
+per-episode success rate over rounds:
+   episode                        ticvla     qvla straight
+   office_nearest_elevator          0.00     1.00     1.00
+   hospital_down_hallway            0.33     1.00     0.00
+   hospital_down_hallway2           1.00     1.00     0.00
+   office_passing_hallway           0.00     0.33     0.00
+   hospital_vending_machine         0.33     1.00     0.00
+   hospital_vending_machine2        0.00     1.00     0.00
+   office_hallway_turn              1.00     1.00     0.00
+   office_hallway_turn2             0.33     0.67     0.00
+   hospital_past_wheelchairs        1.00     0.00     0.00
+   hospital_forward_staircase       1.00     0.00     0.00
+   hospital_exit_room               1.00     0.33     0.00
+   warehouse                        0.00     0.33     0.00
+   warehouse_aisle6                 0.33     0.00     0.00
+
+qvla - ticvla: mean per-episode success difference +0.103 over 13 episodes, 95% bootstrap CI [-0.256, +0.462], exact sign-flip p = 0.6865, episodes better/worse/tied 7/4/2
+qvla - straight: mean per-episode success difference +0.513 over 13 episodes, 95% bootstrap CI [+0.282, +0.744], exact sign-flip p = 0.0039, episodes better/worse/tied 9/0/4
+ticvla - straight: mean per-episode success difference +0.410 over 13 episodes, 95% bootstrap CI [+0.077, +0.718], exact sign-flip p = 0.0410, episodes better/worse/tied 9/1/3
+
+Campaign log (one line per episode, with each run's tag):
+2026-11-20T22:09:34+03:00	cr_ticvla_r1	office_nearest_elevator	FAIL office_nearest_elevator/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 15.1 -> closest 7.99 m (final 81.2), closed 47%, spl 0
+2026-11-20T22:17:50+03:00	cr_ticvla_r1	hospital_down_hallway	FAIL hospital_down_hallway/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.4 -> closest 2.02 m (final 35.5), closed 94%, spl 0.00,
+2026-11-20T22:19:40+03:00	cr_ticvla_r1	hospital_down_hallway2	FAIL hospital_down_hallway2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.5 -> closest 32.54 m (final 32.5), closed 0%, spl 0.0
+2026-11-20T22:26:53+03:00	cr_ticvla_r1	office_passing_hallway	FAIL office_passing_hallway/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 36.4 -> closest 2.77 m (final 4.2), closed 92%, spl 0.00
+2026-11-20T22:29:34+03:00	cr_ticvla_r1	hospital_vending_machine	SUCCESS hospital_vending_machine/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.0 -> closest 1.49 m (final 1.5), closed 89%, s
+2026-11-20T22:33:08+03:00	cr_ticvla_r1	hospital_vending_machine2	FAIL hospital_vending_machine2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.0 -> closest 1.54 m (final 18.2), closed 88%, s
+2026-11-20T22:34:57+03:00	cr_ticvla_r1	office_hallway_turn	SUCCESS office_hallway_turn/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.7 -> closest 1.50 m (final 1.5), closed 89%, spl 1.00, p
+2026-11-20T22:38:52+03:00	cr_ticvla_r1	office_hallway_turn2	FAIL office_hallway_turn2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.1 -> closest 1.81 m (final 33.1), closed 86%, spl 0.00, p
+2026-11-20T22:40:07+03:00	cr_ticvla_r1	hospital_past_wheelchairs	SUCCESS hospital_past_wheelchairs/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 15.0 -> closest 1.49 m (final 1.5), closed 90%,
+2026-11-20T22:41:57+03:00	cr_ticvla_r1	hospital_forward_staircase	SUCCESS hospital_forward_staircase/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 21.5 -> closest 1.49 m (final 1.5), closed 93
+2026-11-20T22:43:55+03:00	cr_ticvla_r1	hospital_exit_room	SUCCESS hospital_exit_room/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 25.1 -> closest 1.49 m (final 1.5), closed 94%, spl 0.94, pat
+2026-11-20T22:48:52+03:00	cr_ticvla_r1	warehouse	FAIL warehouse/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 16.5 -> closest 5.78 m (final 19.3), closed 65%, spl 0.00, path 38.1 m, guard 0, c
+2026-11-20T23:01:04+03:00	cr_ticvla_r1	warehouse_aisle6	FAIL warehouse_aisle6/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 34.3 -> closest 9.85 m (final 16.5), closed 71%, spl 0.00, path 103.
+2026-11-20T23:09:03+03:00	cr_ticvla_r1	hospital_down_hallway2	SUCCESS hospital_down_hallway2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.5 -> closest 1.49 m (final 1.5), closed 95%, spl 1
+2026-11-20T23:50:03+03:00	medium_cr_straight_r1	office_nearest_elevator	SUCCESS office_nearest_elevator/braking/straight-baseline (no model) [menu] @8766: 15.1 -> closest 1.49 m (final 1.5), closed 90
+2026-11-20T23:53:01+03:00	medium_cr_straight_r1	hospital_down_hallway	FAIL hospital_down_hallway/braking/straight-baseline (no model) [menu] @8766: 32.4 -> closest 2.58 m (final 2.6), closed 92%, spl 
+2026-11-20T23:55:33+03:00	medium_cr_straight_r1	hospital_down_hallway2	FAIL hospital_down_hallway2/braking/straight-baseline (no model) [menu] @8766: 32.5 -> closest 2.61 m (final 2.6), closed 92%, sp
+2026-11-20T23:59:00+03:00	medium_cr_straight_r1	office_passing_hallway	FAIL office_passing_hallway/braking/straight-baseline (no model) [menu] @8766: 36.4 -> closest 5.36 m (final 5.4), closed 85%, sp
+2026-11-21T00:00:29+03:00	medium_cr_straight_r1	hospital_vending_machine	FAIL hospital_vending_machine/braking/straight-baseline (no model) [menu] @8766: 13.0 -> closest 3.50 m (final 3.5), closed 73%
+2026-11-21T00:02:18+03:00	medium_cr_straight_r1	hospital_vending_machine2	FAIL hospital_vending_machine2/braking/straight-baseline (no model) [menu] @8766: 13.0 -> closest 3.50 m (final 3.5), closed 7
+2026-11-21T00:05:06+03:00	medium_cr_straight_r1	office_hallway_turn	FAIL office_hallway_turn/braking/straight-baseline (no model) [menu] @8766: 13.7 -> closest 2.92 m (final 3.1), closed 79%, spl 0.00
+2026-11-21T00:07:26+03:00	medium_cr_straight_r1	office_hallway_turn2	FAIL office_hallway_turn2/braking/straight-baseline (no model) [menu] @8766: 13.1 -> closest 2.92 m (final 3.1), closed 78%, spl 0.
+2026-11-21T00:09:30+03:00	medium_cr_straight_r1	hospital_past_wheelchairs	FAIL hospital_past_wheelchairs/braking/straight-baseline (no model) [menu] @8766: 15.0 -> closest 2.16 m (final 2.2), closed 8
+2026-11-21T00:11:47+03:00	medium_cr_straight_r1	hospital_forward_staircase	FAIL hospital_forward_staircase/braking/straight-baseline (no model) [menu] @8766: 21.5 -> closest 19.55 m (final 21.4), clos
+2026-11-21T00:15:02+03:00	medium_cr_straight_r1	hospital_exit_room	FAIL hospital_exit_room/braking/straight-baseline (no model) [menu] @8766: 25.1 -> closest 24.90 m (final 25.4), closed 1%, spl 0.00,
+2026-11-21T00:17:34+03:00	medium_cr_straight_r1	warehouse	FAIL warehouse/braking/straight-baseline (no model) [menu] @8766: 16.5 -> closest 6.96 m (final 7.0), closed 58%, spl 0.00, path 18.9 m, guard
+2026-11-21T00:25:27+03:00	medium_cr_straight_r1	warehouse_aisle6	FAIL warehouse_aisle6/braking/straight-baseline (no model) [menu] @8766: 34.3 -> closest 16.78 m (final 16.8), closed 51%, spl 0.00, pa
+2026-11-21T00:28:13+03:00	medium_cr_qvla_r1	office_nearest_elevator	SUCCESS office_nearest_elevator/braking/Qwen3.8-27B-FP8 [menu] @8766: 15.1 -> closest 1.49 m (final 1.5), closed 90%, spl 1.00, path
+2026-11-21T00:31:08+03:00	medium_cr_qvla_r1	hospital_down_hallway	SUCCESS hospital_down_hallway/braking/Qwen3.8-27B-FP8 [menu] @8766: 32.4 -> closest 1.49 m (final 1.5), closed 95%, spl 1.00, path 31.
+2026-11-21T00:34:15+03:00	medium_cr_qvla_r1	hospital_down_hallway2	SUCCESS hospital_down_hallway2/braking/Qwen3.8-27B-FP8 [menu] @8766: 32.5 -> closest 1.49 m (final 1.5), closed 95%, spl 1.00, path 3
+2026-11-21T00:40:28+03:00	medium_cr_qvla_r1	office_passing_hallway	FAIL office_passing_hallway/braking/Qwen3.8-27B-FP8 [menu] @8766: 36.4 -> closest 5.35 m (final 5.4), closed 85%, spl 0.00, path 38.3
+2026-11-21T00:41:54+03:00	medium_cr_qvla_r1	hospital_vending_machine	SUCCESS hospital_vending_machine/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.0 -> closest 1.49 m (final 1.5), closed 89%, spl 1.00, pa
+2026-11-21T00:43:19+03:00	medium_cr_qvla_r1	hospital_vending_machine2	SUCCESS hospital_vending_machine2/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.0 -> closest 1.49 m (final 1.5), closed 89%, spl 1.00, 
+2026-11-21T00:45:04+03:00	medium_cr_qvla_r1	office_hallway_turn	SUCCESS office_hallway_turn/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.7 -> closest 1.50 m (final 1.5), closed 89%, spl 0.96, path 14.4 m,
+2026-11-21T00:47:24+03:00	medium_cr_qvla_r1	office_hallway_turn2	SUCCESS office_hallway_turn2/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.1 -> closest 1.50 m (final 1.5), closed 89%, spl 0.83, path 15.8 
+2026-11-21T00:51:03+03:00	medium_cr_qvla_r1	hospital_past_wheelchairs	FAIL hospital_past_wheelchairs/braking/Qwen3.8-27B-FP8 [menu] @8766: 15.0 -> closest 2.81 m (final 2.8), closed 81%, spl 0.00, pat
+2026-11-21T00:54:35+03:00	medium_cr_qvla_r1	hospital_forward_staircase	FAIL hospital_forward_staircase/braking/Qwen3.8-27B-FP8 [menu] @8766: 21.5 -> closest 17.44 m (final 23.6), closed 19%, spl 0.00,
+2026-11-21T00:59:38+03:00	medium_cr_qvla_r1	hospital_exit_room	FAIL hospital_exit_room/braking/Qwen3.8-27B-FP8 [menu] @8766: 25.1 -> closest 18.10 m (final 37.4), closed 28%, spl 0.00, path 42.6 m, gu
+2026-11-21T01:03:19+03:00	medium_cr_qvla_r1	warehouse	FAIL warehouse/braking/Qwen3.8-27B-FP8 [menu] @8766: 16.5 -> closest 6.37 m (final 13.2), closed 61%, spl 0.00, path 28.0 m, guard 57, contact 0 s
+2026-11-21T01:15:37+03:00	medium_cr_qvla_r1	warehouse_aisle6	FAIL warehouse_aisle6/braking/Qwen3.8-27B-FP8 [menu] @8766: 34.3 -> closest 14.93 m (final 14.9), closed 57%, spl 0.00, path 26.2 m, guard 
+2026-11-21T01:19:02+03:00	cr_ticvla_r2	office_nearest_elevator	FAIL office_nearest_elevator/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 15.1 -> closest 3.56 m (final 22.2), closed 76%, spl 0
+2026-11-21T01:21:41+03:00	cr_ticvla_r2	hospital_down_hallway	SUCCESS hospital_down_hallway/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.4 -> closest 1.49 m (final 1.5), closed 95%, spl 0.9
+2026-11-21T01:24:05+03:00	cr_ticvla_r2	hospital_down_hallway2	SUCCESS hospital_down_hallway2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.5 -> closest 1.49 m (final 1.5), closed 95%, spl 1
+2026-11-21T01:30:15+03:00	cr_ticvla_r2	office_passing_hallway	FAIL office_passing_hallway/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 36.4 -> closest 4.95 m (final 5.1), closed 86%, spl 0.00
+2026-11-21T01:32:32+03:00	cr_ticvla_r2	hospital_vending_machine	FAIL hospital_vending_machine/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.0 -> closest 2.00 m (final 9.3), closed 85%, spl 
+2026-11-21T01:35:18+03:00	cr_ticvla_r2	hospital_vending_machine2	FAIL hospital_vending_machine2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.0 -> closest 1.83 m (final 26.3), closed 86%, s
+2026-11-21T01:37:04+03:00	cr_ticvla_r2	office_hallway_turn	SUCCESS office_hallway_turn/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.7 -> closest 1.50 m (final 1.5), closed 89%, spl 1.00, p
+2026-11-21T01:40:53+03:00	cr_ticvla_r2	office_hallway_turn2	FAIL office_hallway_turn2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.1 -> closest 1.68 m (final 32.3), closed 87%, spl 0.00, p
+2026-11-21T01:42:07+03:00	cr_ticvla_r2	hospital_past_wheelchairs	SUCCESS hospital_past_wheelchairs/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 15.0 -> closest 1.49 m (final 1.5), closed 90%,
+2026-11-21T01:43:58+03:00	cr_ticvla_r2	hospital_forward_staircase	SUCCESS hospital_forward_staircase/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 21.5 -> closest 1.49 m (final 1.5), closed 93
+2026-11-21T01:45:57+03:00	cr_ticvla_r2	hospital_exit_room	SUCCESS hospital_exit_room/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 25.1 -> closest 1.49 m (final 1.5), closed 94%, spl 0.94, pat
+2026-11-21T01:49:40+03:00	cr_ticvla_r2	warehouse	FAIL warehouse/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 16.5 -> closest 5.46 m (final 20.9), closed 67%, spl 0.00, path 40.1 m, guard 0, c
+2026-11-21T02:01:49+03:00	cr_ticvla_r2	warehouse_aisle6	FAIL warehouse_aisle6/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 34.3 -> closest 10.09 m (final 16.0), closed 71%, spl 0.00, path 107
+2026-11-21T02:03:10+03:00	medium_cr_straight_r2	office_nearest_elevator	SUCCESS office_nearest_elevator/braking/straight-baseline (no model) [menu] @8766: 15.1 -> closest 1.49 m (final 1.5), closed 90
+2026-11-21T02:05:44+03:00	medium_cr_straight_r2	hospital_down_hallway	FAIL hospital_down_hallway/braking/straight-baseline (no model) [menu] @8766: 32.4 -> closest 2.59 m (final 2.6), closed 92%, spl 
+2026-11-21T02:08:18+03:00	medium_cr_straight_r2	hospital_down_hallway2	FAIL hospital_down_hallway2/braking/straight-baseline (no model) [menu] @8766: 32.5 -> closest 2.61 m (final 2.6), closed 92%, sp
+2026-11-21T02:11:45+03:00	medium_cr_straight_r2	office_passing_hallway	FAIL office_passing_hallway/braking/straight-baseline (no model) [menu] @8766: 36.4 -> closest 5.36 m (final 5.4), closed 85%, sp
+2026-11-21T02:13:15+03:00	medium_cr_straight_r2	hospital_vending_machine	FAIL hospital_vending_machine/braking/straight-baseline (no model) [menu] @8766: 13.0 -> closest 3.50 m (final 3.5), closed 73%
+2026-11-21T02:15:04+03:00	medium_cr_straight_r2	hospital_vending_machine2	FAIL hospital_vending_machine2/braking/straight-baseline (no model) [menu] @8766: 13.0 -> closest 3.50 m (final 3.5), closed 7
+2026-11-21T02:17:53+03:00	medium_cr_straight_r2	office_hallway_turn	FAIL office_hallway_turn/braking/straight-baseline (no model) [menu] @8766: 13.7 -> closest 2.92 m (final 3.1), closed 79%, spl 0.00
+2026-11-21T02:20:14+03:00	medium_cr_straight_r2	office_hallway_turn2	FAIL office_hallway_turn2/braking/straight-baseline (no model) [menu] @8766: 13.1 -> closest 2.92 m (final 3.1), closed 78%, spl 0.
+2026-11-21T02:22:19+03:00	medium_cr_straight_r2	hospital_past_wheelchairs	FAIL hospital_past_wheelchairs/braking/straight-baseline (no model) [menu] @8766: 15.0 -> closest 2.16 m (final 2.2), closed 8
+2026-11-21T02:24:36+03:00	medium_cr_straight_r2	hospital_forward_staircase	FAIL hospital_forward_staircase/braking/straight-baseline (no model) [menu] @8766: 21.5 -> closest 19.55 m (final 21.4), clos
+2026-11-21T02:27:53+03:00	medium_cr_straight_r2	hospital_exit_room	FAIL hospital_exit_room/braking/straight-baseline (no model) [menu] @8766: 25.1 -> closest 24.90 m (final 25.4), closed 1%, spl 0.00,
+2026-11-21T02:30:23+03:00	medium_cr_straight_r2	warehouse	FAIL warehouse/braking/straight-baseline (no model) [menu] @8766: 16.5 -> closest 6.96 m (final 7.0), closed 58%, spl 0.00, path 18.9 m, guard
+2026-11-21T02:38:17+03:00	medium_cr_straight_r2	warehouse_aisle6	FAIL warehouse_aisle6/braking/straight-baseline (no model) [menu] @8766: 34.3 -> closest 16.78 m (final 16.8), closed 51%, spl 0.00, pa
+2026-11-21T02:40:54+03:00	medium_cr_qvla_r2	office_nearest_elevator	SUCCESS office_nearest_elevator/braking/Qwen3.8-27B-FP8 [menu] @8766: 15.1 -> closest 1.49 m (final 1.5), closed 90%, spl 1.00, path
+2026-11-21T02:43:50+03:00	medium_cr_qvla_r2	hospital_down_hallway	SUCCESS hospital_down_hallway/braking/Qwen3.8-27B-FP8 [menu] @8766: 32.4 -> closest 1.49 m (final 1.5), closed 95%, spl 1.00, path 31.
+2026-11-21T02:46:58+03:00	medium_cr_qvla_r2	hospital_down_hallway2	SUCCESS hospital_down_hallway2/braking/Qwen3.8-27B-FP8 [menu] @8766: 32.5 -> closest 1.50 m (final 1.5), closed 95%, spl 1.00, path 3
+2026-11-21T02:53:09+03:00	medium_cr_qvla_r2	office_passing_hallway	FAIL office_passing_hallway/braking/Qwen3.8-27B-FP8 [menu] @8766: 36.4 -> closest 5.35 m (final 5.4), closed 85%, spl 0.00, path 38.3
+2026-11-21T02:54:34+03:00	medium_cr_qvla_r2	hospital_vending_machine	SUCCESS hospital_vending_machine/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.0 -> closest 1.49 m (final 1.5), closed 89%, spl 1.00, pa
+2026-11-21T02:56:06+03:00	medium_cr_qvla_r2	hospital_vending_machine2	SUCCESS hospital_vending_machine2/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.0 -> closest 1.50 m (final 1.5), closed 89%, spl 1.00, 
+2026-11-21T02:58:03+03:00	medium_cr_qvla_r2	office_hallway_turn	SUCCESS office_hallway_turn/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.7 -> closest 1.50 m (final 1.5), closed 89%, spl 0.93, path 14.8 m,
+2026-11-21T03:01:54+03:00	medium_cr_qvla_r2	office_hallway_turn2	FAIL office_hallway_turn2/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.1 -> closest 2.50 m (final 3.7), closed 81%, spl 0.00, path 19.3 m, 
+2026-11-21T03:05:36+03:00	medium_cr_qvla_r2	hospital_past_wheelchairs	FAIL hospital_past_wheelchairs/braking/Qwen3.8-27B-FP8 [menu] @8766: 15.0 -> closest 2.44 m (final 2.4), closed 84%, spl 0.00, pat
+2026-11-21T03:09:05+03:00	medium_cr_qvla_r2	hospital_forward_staircase	FAIL hospital_forward_staircase/braking/Qwen3.8-27B-FP8 [menu] @8766: 21.5 -> closest 18.67 m (final 23.5), closed 13%, spl 0.00,
+2026-11-21T03:12:47+03:00	medium_cr_qvla_r2	hospital_exit_room	SUCCESS hospital_exit_room/braking/Qwen3.8-27B-FP8 [menu] @8766: 25.1 -> closest 1.49 m (final 1.5), closed 94%, spl 0.76, path 32.9 m, g
+2026-11-21T03:16:28+03:00	medium_cr_qvla_r2	warehouse	FAIL warehouse/braking/Qwen3.8-27B-FP8 [menu] @8766: 16.5 -> closest 6.37 m (final 11.9), closed 61%, spl 0.00, path 27.1 m, guard 89, contact 0 s
+2026-11-21T03:28:38+03:00	medium_cr_qvla_r2	warehouse_aisle6	FAIL warehouse_aisle6/braking/Qwen3.8-27B-FP8 [menu] @8766: 34.3 -> closest 14.89 m (final 14.9), closed 57%, spl 0.00, path 26.6 m, guard 
+2026-11-21T03:32:00+03:00	cr_ticvla_r3	office_nearest_elevator	FAIL office_nearest_elevator/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 15.1 -> closest 3.17 m (final 22.0), closed 79%, spl 0
+2026-11-21T03:36:01+03:00	cr_ticvla_r3	hospital_down_hallway	FAIL hospital_down_hallway/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.4 -> closest 2.49 m (final 22.9), closed 92%, spl 0.00,
+2026-11-21T03:38:21+03:00	cr_ticvla_r3	hospital_down_hallway2	SUCCESS hospital_down_hallway2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 32.5 -> closest 1.50 m (final 1.5), closed 95%, spl 1
+2026-11-21T03:44:38+03:00	cr_ticvla_r3	office_passing_hallway	FAIL office_passing_hallway/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 36.4 -> closest 5.14 m (final 5.1), closed 86%, spl 0.00
+2026-11-21T03:46:54+03:00	cr_ticvla_r3	hospital_vending_machine	FAIL hospital_vending_machine/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.0 -> closest 1.75 m (final 8.6), closed 87%, spl 
+2026-11-21T03:49:41+03:00	cr_ticvla_r3	hospital_vending_machine2	FAIL hospital_vending_machine2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.0 -> closest 1.75 m (final 24.0), closed 87%, s
+2026-11-21T03:51:42+03:00	cr_ticvla_r3	office_hallway_turn	SUCCESS office_hallway_turn/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.7 -> closest 1.50 m (final 1.5), closed 89%, spl 1.00, p
+2026-11-21T03:53:30+03:00	cr_ticvla_r3	office_hallway_turn2	SUCCESS office_hallway_turn2/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 13.1 -> closest 1.49 m (final 1.5), closed 89%, spl 1.00,
+2026-11-21T03:54:56+03:00	cr_ticvla_r3	hospital_past_wheelchairs	SUCCESS hospital_past_wheelchairs/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 15.0 -> closest 1.50 m (final 1.5), closed 90%,
+2026-11-21T03:56:32+03:00	cr_ticvla_r3	hospital_forward_staircase	SUCCESS hospital_forward_staircase/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 21.5 -> closest 1.49 m (final 1.5), closed 93
+2026-11-21T03:58:27+03:00	cr_ticvla_r3	hospital_exit_room	SUCCESS hospital_exit_room/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 25.1 -> closest 1.49 m (final 1.5), closed 94%, spl 0.95, pat
+2026-11-21T04:02:10+03:00	cr_ticvla_r3	warehouse	FAIL warehouse/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 16.5 -> closest 5.33 m (final 22.8), closed 68%, spl 0.00, path 40.4 m, guard 0, c
+2026-11-21T04:07:57+03:00	cr_ticvla_r3	warehouse_aisle6	SUCCESS warehouse_aisle6/braking/TIC-VLA (InternVL3-1B + action expert) @8765: 34.3 -> closest 1.50 m (final 1.5), closed 96%, spl 0.73, path 47
+2026-11-21T04:09:19+03:00	medium_cr_straight_r3	office_nearest_elevator	SUCCESS office_nearest_elevator/braking/straight-baseline (no model) [menu] @8766: 15.1 -> closest 1.49 m (final 1.5), closed 90
+2026-11-21T04:11:53+03:00	medium_cr_straight_r3	hospital_down_hallway	FAIL hospital_down_hallway/braking/straight-baseline (no model) [menu] @8766: 32.4 -> closest 2.59 m (final 2.6), closed 92%, spl 
+2026-11-21T04:14:27+03:00	medium_cr_straight_r3	hospital_down_hallway2	FAIL hospital_down_hallway2/braking/straight-baseline (no model) [menu] @8766: 32.5 -> closest 2.61 m (final 2.6), closed 92%, sp
+2026-11-21T04:17:54+03:00	medium_cr_straight_r3	office_passing_hallway	FAIL office_passing_hallway/braking/straight-baseline (no model) [menu] @8766: 36.4 -> closest 5.36 m (final 5.4), closed 85%, sp
+2026-11-21T04:19:25+03:00	medium_cr_straight_r3	hospital_vending_machine	FAIL hospital_vending_machine/braking/straight-baseline (no model) [menu] @8766: 13.0 -> closest 3.50 m (final 3.5), closed 73%
+2026-11-21T04:21:15+03:00	medium_cr_straight_r3	hospital_vending_machine2	FAIL hospital_vending_machine2/braking/straight-baseline (no model) [menu] @8766: 13.0 -> closest 3.50 m (final 3.5), closed 7
+2026-11-21T04:24:03+03:00	medium_cr_straight_r3	office_hallway_turn	FAIL office_hallway_turn/braking/straight-baseline (no model) [menu] @8766: 13.7 -> closest 2.92 m (final 3.1), closed 79%, spl 0.00
+2026-11-21T04:26:25+03:00	medium_cr_straight_r3	office_hallway_turn2	FAIL office_hallway_turn2/braking/straight-baseline (no model) [menu] @8766: 13.1 -> closest 2.92 m (final 3.1), closed 78%, spl 0.
+2026-11-21T04:28:31+03:00	medium_cr_straight_r3	hospital_past_wheelchairs	FAIL hospital_past_wheelchairs/braking/straight-baseline (no model) [menu] @8766: 15.0 -> closest 2.16 m (final 2.2), closed 8
+2026-11-21T04:30:49+03:00	medium_cr_straight_r3	hospital_forward_staircase	FAIL hospital_forward_staircase/braking/straight-baseline (no model) [menu] @8766: 21.5 -> closest 19.55 m (final 21.4), clos
+2026-11-21T04:34:06+03:00	medium_cr_straight_r3	hospital_exit_room	FAIL hospital_exit_room/braking/straight-baseline (no model) [menu] @8766: 25.1 -> closest 24.90 m (final 25.4), closed 1%, spl 0.00,
+2026-11-21T04:36:39+03:00	medium_cr_straight_r3	warehouse	FAIL warehouse/braking/straight-baseline (no model) [menu] @8766: 16.5 -> closest 6.96 m (final 7.0), closed 58%, spl 0.00, path 18.9 m, guard
+2026-11-21T04:44:36+03:00	medium_cr_straight_r3	warehouse_aisle6	FAIL warehouse_aisle6/braking/straight-baseline (no model) [menu] @8766: 34.3 -> closest 16.78 m (final 16.8), closed 51%, spl 0.00, pa
+2026-11-21T04:47:16+03:00	medium_cr_qvla_r3	office_nearest_elevator	SUCCESS office_nearest_elevator/braking/Qwen3.8-27B-FP8 [menu] @8766: 15.1 -> closest 1.49 m (final 1.5), closed 90%, spl 1.00, path
+2026-11-21T04:50:08+03:00	medium_cr_qvla_r3	hospital_down_hallway	SUCCESS hospital_down_hallway/braking/Qwen3.8-27B-FP8 [menu] @8766: 32.4 -> closest 1.49 m (final 1.5), closed 95%, spl 1.00, path 31.
+2026-11-21T04:53:15+03:00	medium_cr_qvla_r3	hospital_down_hallway2	SUCCESS hospital_down_hallway2/braking/Qwen3.8-27B-FP8 [menu] @8766: 32.5 -> closest 1.50 m (final 1.5), closed 95%, spl 1.00, path 3
+2026-11-21T04:57:17+03:00	medium_cr_qvla_r3	office_passing_hallway	SUCCESS office_passing_hallway/braking/Qwen3.8-27B-FP8 [menu] @8766: 36.4 -> closest 1.50 m (final 1.5), closed 96%, spl 1.00, path 3
+2026-11-21T04:58:55+03:00	medium_cr_qvla_r3	hospital_vending_machine	SUCCESS hospital_vending_machine/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.0 -> closest 1.50 m (final 1.5), closed 88%, spl 0.97, pa
+2026-11-21T05:00:16+03:00	medium_cr_qvla_r3	hospital_vending_machine2	SUCCESS hospital_vending_machine2/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.0 -> closest 1.49 m (final 1.5), closed 89%, spl 1.00, 
+2026-11-21T05:02:49+03:00	medium_cr_qvla_r3	office_hallway_turn	SUCCESS office_hallway_turn/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.7 -> closest 1.50 m (final 1.5), closed 89%, spl 0.83, path 16.6 m,
+2026-11-21T05:06:00+03:00	medium_cr_qvla_r3	office_hallway_turn2	SUCCESS office_hallway_turn2/braking/Qwen3.8-27B-FP8 [menu] @8766: 13.1 -> closest 1.50 m (final 1.5), closed 89%, spl 0.82, path 16.0 
+2026-11-21T05:09:41+03:00	medium_cr_qvla_r3	hospital_past_wheelchairs	FAIL hospital_past_wheelchairs/braking/Qwen3.8-27B-FP8 [menu] @8766: 15.0 -> closest 2.72 m (final 3.5), closed 82%, spl 0.00, pat
+2026-11-21T05:13:10+03:00	medium_cr_qvla_r3	hospital_forward_staircase	FAIL hospital_forward_staircase/braking/Qwen3.8-27B-FP8 [menu] @8766: 21.5 -> closest 9.32 m (final 9.3), closed 57%, spl 0.00, p
+2026-11-21T05:18:22+03:00	medium_cr_qvla_r3	hospital_exit_room	FAIL hospital_exit_room/braking/Qwen3.8-27B-FP8 [menu] @8766: 25.1 -> closest 15.14 m (final 27.3), closed 40%, spl 0.00, path 38.9 m, gu
+2026-11-21T05:20:40+03:00	medium_cr_qvla_r3	warehouse	SUCCESS warehouse/braking/Qwen3.8-27B-FP8 [menu] @8766: 16.5 -> closest 1.49 m (final 1.5), closed 91%, spl 0.99, path 16.7 m, guard 0, contact 0 
+2026-11-21T05:32:50+03:00	medium_cr_qvla_r3	warehouse_aisle6	FAIL warehouse_aisle6/braking/Qwen3.8-27B-FP8 [menu] @8766: 34.3 -> closest 14.97 m (final 15.0), closed 56%, spl 0.00, path 26.2 m, guard 

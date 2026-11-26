@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parents[2]
 # wrong for a 3 a.m. mail.
 TAG = os.environ.get("QVLA_RUN_TAG", "").strip()
 PROGRESS = REPO / f"nav/results/ladder_progress{'_' + TAG if TAG else ''}.log"
-MENUS = Path(os.environ.get("QVLA_MENU_DIR", "/tmp/qvla-menus"))
+MENUS = Path(os.environ.get("QVLA_MENU_DIR", REPO / "nav/results/menus"))
 PORT = os.environ.get("NAV_POLICY_PORT", "8766")
 
 

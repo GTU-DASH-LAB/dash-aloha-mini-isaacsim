@@ -55,6 +55,8 @@ ap.add_argument("--episode", default="hospital_exit_room")
 ap.add_argument("--steps", type=int, default=900, help="physics steps at 60 Hz")
 ap.add_argument("--speed", type=float, default=0.6, help="commanded vx, m/s")
 ap.add_argument("--height", type=float, default=0.30, help="lidar mount height, m")
+ap.add_argument("--forward", type=float, default=0.20,
+                help="lidar mount, m ahead of the rotation centre (the runner's default)")
 ap.add_argument("--stop-fan", type=float, default=0.60)
 ap.add_argument("--stop-scan", type=float, default=0.75)
 args = ap.parse_args()
@@ -66,6 +68,10 @@ scene = REPO / "assets" / "usd" / f"nav_{env_name(ep.scene)}.usda"
 if not scene.is_file():
     raise SystemExit(f"nav scene not built: {scene}\n  nav/sim/build_nav_scene.sh {env_name(ep.scene)}")
 
+# nav/tools/profile.py shadows the stdlib `profile` module, which warp imports while Kit
+# starts, and Kit then fails to load omni.warp.core (see replay_lidar_trace.py). Nothing
+# here imports from nav/tools, so drop it from the path first.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 from isaacsim import SimulationApp  # noqa: E402
 
 kit = SimulationApp({"headless": True, "active_gpu": 0, "physics_gpu": 0, "multi_gpu": False})
@@ -75,7 +81,7 @@ import omni.usd  # noqa: E402
 from isaacsim.core.prims import Articulation  # noqa: E402
 
 from arc_menu import arc_clearance, drivable, make_arcs  # noqa: E402
-from base_drive import KinematicBase  # noqa: E402
+from base_drive import KinematicBase, ground_spawn_pose  # noqa: E402
 from collision_guard import CollisionGuard  # noqa: E402
 from lidar_2d import SweepingLidar2D  # noqa: E402
 
@@ -88,6 +94,13 @@ stage.Load()
 for _ in range(30):
     kit.update()
 
+# As the runner does (run_navigation.setup): PhysX sizes these buffers at play, and at the
+# default 1024 the outdoor stage misses contact pairs at every teleport.
+from physics_setup import raise_gpu_capacities  # noqa: E402
+
+for line in raise_gpu_capacities(stage):
+    print(f"[guard-scan] physics: {line}", flush=True)
+
 timeline = omni.timeline.get_timeline_interface()
 timeline.play()
 for _ in range(10):
@@ -97,11 +110,18 @@ art = Articulation("/World/Aloha/Geometry/base_link")
 art.initialize()
 base = KinematicBase(art, list(art.dof_names))
 base.sync_from_sim()
-base.reset_to(tuple(ep.start), ep.start_yaw_rad)
-for _ in range(10):
-    kit.update()
+# The runner's start: z snapped to the floor (the episode z is DynaNav's Nova Carter
+# height, up to 2.21 m above the terrain outdoors) and a held settle. The robot is lifted
+# out of the probe's way first, as the runner does (base_drive.park_for_probe).
+base.park_for_probe(kit)
+start, spawn = ground_spawn_pose(tuple(ep.start), ep.start_yaw_rad)
+print(f"[guard-scan] spawn: episode z {spawn['episode_z']} -> {spawn['snapped_z']} "
+      f"(floor {spawn['ground_z']})", flush=True)
+base.reset_to(start, ep.start_yaw_rad)
+base.settle(kit, 10, DT)
+base.sync_from_sim()
 
-lidar = SweepingLidar2D(mount_height_m=args.height)
+lidar = SweepingLidar2D(mount_height_m=args.height, mount_forward_m=args.forward)
 guard_fan = CollisionGuard(stop_distance_m=args.stop_fan)
 guard_scan = CollisionGuard(scan=lidar, stop_distance_m=args.stop_scan)
 arcs = make_arcs()

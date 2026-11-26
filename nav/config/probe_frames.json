@@ -1,0 +1,80 @@
+{
+  "frame_dir": "probe_frames",
+  "frame_dir_note": "Relative to THIS file, and that is the whole point. The previous two versions of this manifest pointed at /tmp/alohamini-nav-frames and both rotted; fingerprints caught the rot the second and third time but could not prevent it, because a hand label is a claim about a specific image and /tmp is not a place where a specific image stays put. The twelve labelled frames now live next to the labels, in git, and the SHA check below is a second lock rather than the only one. Absolute paths are still honoured if a future manifest wants one.",
+  "labelled_on": "2026-09-12",
+  "labelled_by": "contact sheets at 320-940 px to shortlist, then every BLOCKED frame opened at full 1920x1080 before its open_side was written down",
+  "relabelled_because": "On 2026-09-10 two more captures were written into /tmp/alohamini-nav-frames on top of the one this manifest was labelled against. The directory ended up holding three episodes layered by index -- 0..400 from 14:36-14:59, 401..600 from 13:38-14:35, and 601..880 surviving from 08-26 -- so the hospital atrium frames at 0/40/80/100/120/140/160/200 became an outdoor strip mall and a grassland with the camera tumbling through a physics blow-up. The SHA check refused to run, which is what it is for. Only the 601..880 block was intact, so the whole set is re-labelled inside it and the four frames whose SHAs still matched (680, 700, 800, 880) are carried over bit-identical and keep their original descriptions.",
+  "rejected": "640 and 870 are corners with no open side at all, and 730/770/780/855 have the centre half-covered by a pillar edge where two labellers would disagree. All were dropped rather than labelled 0 -- a frame nothing is open in cannot score open-side, and mirroring a symmetric wall is not a mirror test. 670 was dropped from the OPEN set instead: straight ahead is genuinely clear through a doorway, but both sides are door panels within 3 m, which makes it a passage rather than open floor.",
+  "balance": "3 frames open left and 3 open right, so a model with a constant side bias scores exactly 50% on the open-side column and cannot be flattered by the set.",
+  "sign": "open_side +1 = the open floor is to the robot's LEFT, -1 = RIGHT, 0 = no clear side",
+  "blocked": [
+    {
+      "frame": 630,
+      "open_side": -1,
+      "sha16": "37e72b68bbd38252",
+      "desc": "office: a closed dark door and a white wall fill the left half and the centre at about 2.5 m; the lit office floor is through the open doorway to the right"
+    },
+    {
+      "frame": 760,
+      "open_side": 1,
+      "sha16": "b5eafad4f211b2e6",
+      "desc": "office lobby: a black glass partition meets the floor across the centre and the whole right side at about 2.5 m; open tiled floor to the left"
+    },
+    {
+      "frame": 790,
+      "open_side": 1,
+      "sha16": "cc9bdbdd33738b8f",
+      "desc": "office lobby: a white louvre screen and its pillar fill the right half, closing the centre at about 3.3 m; a long open aisle runs away to the left"
+    },
+    {
+      "frame": 860,
+      "open_side": -1,
+      "sha16": "1c092aa4d44c6316",
+      "desc": "reception: a wooden counter on the left and a white pillar with the open door's jamb close the centre at about 3.5 m; the corridor is through the doorway to the right"
+    },
+    {
+      "frame": 865,
+      "open_side": -1,
+      "sha16": "a3d57da79db2089c",
+      "desc": "the same reception counter as 860, one step further in, so the counter now fills the left and centre at about 1.5 m; still open to the right"
+    },
+    {
+      "frame": 880,
+      "open_side": 1,
+      "sha16": "6a303a56ce5ec888",
+      "desc": "office lobby: a curved dark-red wall fills the right third; open office floor to the left"
+    }
+  ],
+  "open": [
+    {
+      "frame": 645,
+      "sha16": "f78ebf03c5f5aad5",
+      "desc": "office corridor running straight ahead to a lit room well past 3 m, with a dark door close on the left"
+    },
+    {
+      "frame": 680,
+      "sha16": "c7a0f84daceea7f3",
+      "desc": "office atrium, a long open tiled floor straight ahead"
+    },
+    {
+      "frame": 700,
+      "sha16": "9d8bbed5264f85cd",
+      "desc": "office floor, open straight ahead between desks"
+    },
+    {
+      "frame": 740,
+      "sha16": "457aeb0846c2b4b5",
+      "desc": "office lobby, open floor straight ahead to a glass curtain wall many metres off, with a dark cabinet close on the far left"
+    },
+    {
+      "frame": 800,
+      "sha16": "abd11d582048a950",
+      "desc": "office lobby, a long open aisle straight ahead"
+    },
+    {
+      "frame": 810,
+      "sha16": "af889156cca9b752",
+      "desc": "office floor, an open aisle straight ahead between desks on the left and pillars on the right"
+    }
+  ]
+}

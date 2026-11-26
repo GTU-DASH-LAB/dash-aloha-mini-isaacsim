@@ -45,9 +45,17 @@ args = parser.parse_args()
 
 import os  # noqa: E402
 
+import sys  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))  # scripts/, for alohamini1_specs
+from alohamini1_specs import KIT_GPU0  # noqa: E402
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+# GPU0 only, multi-GPU off: Kit's default multi_gpu runs a CUDA P2P test across both cards
+# at startup, and with the policy server filling GPU1 it fails and BLOCKS on a zenity
+# dialog (alohamini1_specs.KIT_GPU0).
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import omni.usd  # noqa: E402
 from pxr import Usd, UsdGeom, Sdf, UsdPhysics  # noqa: E402

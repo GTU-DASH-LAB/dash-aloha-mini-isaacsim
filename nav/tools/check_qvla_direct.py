@@ -1,11 +1,12 @@
 """Does Q-VLA-direct's text->plan path survive contact with real trajectories?
 
-`server_qwen.py` replaces TIC-VLA's 10.27 M action expert with six numbers written out
-in text. Three things stand between those numbers and a waypoint the controller can
+`server_qwen.py` replaces TIC-VLA's 10.27 M action expert with ten control points written
+out in text (`CTRL_TIMES`, spread over the `HORIZON_S` plan). Three things stand between those numbers and a waypoint the controller can
 steer on, and each can be checked WITHOUT the 27B loaded, which is the point of this
 file -- these are where the bugs live, not in the prompt.
 
-  1. **Densification loss.** Six control points become 30 waypoints. Measured against
+  1. **Densification loss.** Ten control points become `N_WAYPOINTS` (100 at the
+     default 10 s horizon, 30 at QVLA_HORIZON_S=3). Measured against
      real action-expert plans pulled from the live TIC-VLA server, so the question is
      not "is the spline accurate" but "does it lose anything the controller uses".
   2. **Reframing.** The plan is written in the body frame of the moment generation
@@ -22,7 +23,8 @@ file -- these are where the bugs live, not in the prompt.
 Usage:
     /home/gtu-dsa/envs/qvla/bin/python nav/tools/check_qvla_direct.py \\
         --plans /path/to/real_plans.npy      # (N, 30, 2), from the TIC-VLA server
-    # ...or with no --plans, against synthetic arcs.
+    # ...or with no --plans, against synthetic arcs. Real action-expert plans are 3 s
+    # long, so compare them at that horizon: QVLA_HORIZON_S=3.0 ... --plans ...
 """
 
 from __future__ import annotations
@@ -45,12 +47,24 @@ SUCCESS_RADIUS_M = 1.5      # the benchmark's scored threshold
 LOSING_HEADING_DEG = 25.0   # the deficit that actually loses warehouse_aisle6
 
 
+# The most a plan may turn over its whole horizon. `parse_control_points` clamps x to be
+# monotone because this base does not reverse, so a plan that turns past 90 deg is not
+# representable BY DESIGN -- the clamp folds it back. The old generator drew a curvature
+# (+-0.6 1/m at up to 1.2 m/s) that was safe at 3 s, where it turned at most 124 deg and
+# passed at 0.24 m. When the horizon went to 10 s the same curvature turned up to 6.9 rad,
+# more than a full circle, and the check failed at 4.04 m. That measured the generator
+# leaving the valid set, not a densification loss. So it now draws the TOTAL turn and
+# derives the curvature from the horizon, which keeps the test the same at every level.
+MAX_TURN_RAD = math.radians(75.0)
+
+
 def synth(n: int = 24) -> np.ndarray:
     """Arcs in the range the real plans occupy: 0.73 m/s mean, gentle curvature."""
     rng = np.random.default_rng(0)
     out = []
     for _ in range(n):
-        v, k = rng.uniform(0.3, 1.2), rng.uniform(-0.6, 0.6)
+        v = rng.uniform(0.3, 1.2)
+        k = rng.uniform(-MAX_TURN_RAD, MAX_TURN_RAD) / (v * N_WAYPOINTS * DT)
         x, y, th, pts = 0.0, 0.0, 0.0, []
         for _ in range(N_WAYPOINTS):
             th += k * v * DT
@@ -62,7 +76,7 @@ def synth(n: int = 24) -> np.ndarray:
 
 
 def emit(plan: np.ndarray) -> str:
-    """Render a plan the way the model is asked to: six control points, two decimals."""
+    """Render a plan the way the model is asked to: one point per CTRL_TIMES, two decimals."""
     idx = [int(round(t / DT)) - 1 for t in CTRL_TIMES]
     return ("<answer>" + ", ".join(f"({plan[i][0]:.2f}, {plan[i][1]:.2f})" for i in idx)
             + "</answer>")
@@ -72,7 +86,19 @@ def heading(p: np.ndarray, i: int) -> float:
     return math.degrees(math.atan2(p[i][1], p[i][0]))
 
 
-def check_roundtrip(P: np.ndarray) -> bool:
+# Position gate for check 1, by source. Real action-expert plans wiggle between control
+# points, and densify measured 0.13 m against them, so 0.25 m is the "loses nothing the
+# controller uses" bar. A synthetic arc is smooth, so ANY correct interpolant through its
+# exact points lands within millimetres (measured 0.008 m); a bigger error there means the
+# pipeline is wrong, not lossy. 0.25 m let real bugs through -- mutation-tested: a 0.1 s
+# shift of the time base scored 0.12 m and dropping the prepended origin 0.044 m, both
+# passing. At 0.03 m both are caught; plain linear interpolation (0.022 m) is not, and
+# should not be, since at 1 s spacing on a gentle arc it is genuinely close enough.
+POS_GATE_REAL_M = 0.25
+POS_GATE_SYNTH_M = 0.03
+
+
+def check_roundtrip(P: np.ndarray, pos_gate_m: float = POS_GATE_REAL_M) -> bool:
     pos, h1, h3, arc = [], [], [], []
     for p in P:
         ctrl = parse_control_points(emit(p))
@@ -90,7 +116,8 @@ def check_roundtrip(P: np.ndarray) -> bool:
     print(f"  heading err @3.0s    {np.mean(h3):.2f} deg mean, {max(h3):.2f} max")
     print(f"  arc-length error     {np.mean(arc):.4f} m mean   "
           "(this is the requested SPEED, which `braking` obeys)")
-    ok = max(pos) < 0.25 and max(h1) < 5.0
+    ok = max(pos) < pos_gate_m and max(h1) < 5.0
+    print(f"  (position gate {pos_gate_m} m)")
     print(f"  -> {'PASS' if ok else 'FAIL'}")
     return ok
 
@@ -112,8 +139,9 @@ def check_reframe(P: np.ndarray) -> bool:
     heading (a bug in the rotation is invisible at gyaw=0), drive the robot to a later
     point on it, and derive what each remaining waypoint must be in the new body frame
     from the plain world->body transform. `reframe` is then fed exactly what the runner
-    would send it -- dx, dy expressed in the GENERATION frame, per
-    run_navigation.py:518-522 -- and has to agree.
+    would send it -- dx, dy expressed in the GENERATION frame, and dyaw as the heading
+    change since generation, both from the same `gen_starts` anchor in
+    run_navigation.py -- and has to agree.
     """
     worst_pos, worst_head, worst_len = 0.0, 0.0, 0
     for p in P:
@@ -215,15 +243,24 @@ def main() -> int:
 
     if args.plans and Path(args.plans).is_file():
         P = np.load(args.plans)
+        if P.shape[1] != N_WAYPOINTS:
+            # Comparing a 30-point plan against a 100-point densification fails on the
+            # array shapes, which reads as a bug in densify rather than a wrong horizon.
+            print(f"--plans holds {P.shape[1]}-waypoint plans but this horizon densifies to "
+                  f"{N_WAYPOINTS}; rerun with QVLA_HORIZON_S={P.shape[1] * DT:.1f}")
+            return 2
         src = f"{len(P)} REAL action-expert plans from {args.plans}"
+        gate = POS_GATE_REAL_M
     else:
         P = synth()
         src = f"{len(P)} synthetic arcs (no --plans given)"
+        gate = POS_GATE_SYNTH_M
     print(f"source: {src}\n")
 
     results = []
     for title, fn in (
-        ("1. SIX CONTROL POINTS -> 30 WAYPOINTS", lambda: check_roundtrip(P)),
+        (f"1. {len(CTRL_TIMES)} CONTROL POINTS -> {N_WAYPOINTS} WAYPOINTS",
+         lambda: check_roundtrip(P, gate)),
         ("2. REFRAMING A STALE PLAN", lambda: check_reframe(P)),
         ("3. A STALE PLAN RUNS OUT", lambda: check_shrinkage(P)),
         ("4. PARSING AN UNTRAINED MODEL'S OUTPUT", check_parsing),

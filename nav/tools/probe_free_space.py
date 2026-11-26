@@ -46,7 +46,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from arc_menu import CAM_FOV_DEG, CAM_HEIGHT_M  # noqa: E402
-from probe_arc_obstacles import BLOCKED, OPEN  # noqa: E402
+from probe_arc_obstacles import BLOCKED, FRAME_DIR, OPEN  # noqa: E402
 
 # Deliberately NOT the arc-menu system prompt, which is why `probe_arc_selection.ask` is
 # not reused: that prompt talks about numbered paths drawn on the floor, and borrowing it
@@ -81,7 +81,9 @@ def ask(base: str, images: list[str], question: str, max_new: int = 60) -> tuple
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frame-dir", default="/tmp/alohamini-nav-frames")
+    ap.add_argument("--frame-dir", default=str(FRAME_DIR),
+                    help="Defaults to the directory the manifest labelled, so the "
+                         "SHA check and the pixels can never come from two places.")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8766)
     ap.add_argument("--json-out", default=None)

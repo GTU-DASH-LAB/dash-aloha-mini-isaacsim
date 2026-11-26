@@ -13,6 +13,20 @@
 *.log
 ladder_progress.log
 
+# The policy server's raw decision dump (`QVLA_MENU_DIR`): one jpg per decision, ~250 per
+# episode, so a single ladder is thousands of files. Excluded as a directory on purpose --
+# git does not descend into it, so the `!*.jpg` below cannot re-include them. The frames a
+# campaign was decided on are copied out into its own directory and kept from there.
+menus/
+# Pose-by-pose re-renders and lidar sweeps from nav/tools/replay_lidar_trace.py: a frame
+# pair and a 500-beam npz per pose, regenerable from the run's JSON in about a second each.
+replay/
+*.npz
+
+# Raw per-step camera captures (~1000 jpgs, ~265 MB per capture). Excluded as a directory
+# so the `!*.jpg` below cannot re-include them, the same way as menus/.
+frames/
+
 # Old layout, still on disk. Kept as a rule so an archived tree does not reappear.
 videos/
 logs/

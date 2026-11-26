@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from alohamini1_specs import (  # noqa: E402
     ARM_JOINT_GAINS,
     ARM_SOLVER_POSITION_ITERATIONS,
     ARM_SOLVER_VELOCITY_ITERATIONS,
+    KIT_GPU0,
     LIFT_DAMPING,
     LIFT_STIFFNESS,
 )
@@ -32,7 +34,7 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+kit = SimulationApp({"headless": True, **KIT_GPU0})
 
 import omni.usd  # noqa: E402
 from pxr import UsdPhysics, PhysxSchema  # noqa: E402
@@ -76,7 +78,29 @@ def configure_velocity_drive(prim, effort, target=0.0, dof_type="angular"):
     drive.CreateTargetVelocityAttr(float(target))
 
 
+def fail_if_missing(missing: list[str], step: str) -> None:
+    """End the step WITHOUT its sentinel (and without saving) if the robot was not all there.
+
+    These used to be warnings the step printed and walked past, and Kit then exited 0 like
+    it always does, so a build missing a joint drive or a wheel collider was published as
+    complete. None of them fire on a real build (every nav and scene build log on disk),
+    so any of them firing means the stage is not the robot this step was written for.
+    os._exit(1), not kit.close() + SystemExit: close() ends the process with status 0
+    before the raise is reached (measured 2026-10-05).
+    """
+    if not missing:
+        return
+    print(f"\nERROR: {step}: {len(missing)} expected robot prim(s) missing -- NOT saved:",
+          file=sys.stderr)
+    for what in missing:
+        print(f"  - {what}", file=sys.stderr)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1)
+
+
 configured = []
+missing: list[str] = []
 
 for side in ("left", "right"):
     for idx, gains in ARM_JOINT_GAINS.items():
@@ -84,6 +108,7 @@ for side in ("left", "right"):
         prim = stage.GetPrimAtPath(f"{PHYSICS_ROOT}/{joint_name}")
         if not prim.IsValid():
             print(f"WARNING: joint prim not found: {joint_name}")
+            missing.append(f"joint {joint_name}")
             continue
         configure_position_drive(
             prim, gains["stiffness"], gains["damping"], gains["effort"], dof_type="angular"
@@ -98,6 +123,7 @@ if lift_prim.IsValid():
     configured.append("vertical_move")
 else:
     print("WARNING: vertical_move joint prim not found")
+    missing.append("joint vertical_move")
 
 for wheel_name in ("wheel1", "wheel2", "wheel3"):
     prim = stage.GetPrimAtPath(f"{PHYSICS_ROOT}/{wheel_name}")
@@ -106,6 +132,7 @@ for wheel_name in ("wheel1", "wheel2", "wheel3"):
         configured.append(wheel_name)
     else:
         print(f"WARNING: {wheel_name} joint prim not found")
+        missing.append(f"joint {wheel_name}")
 
 # Articulation root solver iteration counts (matches NVIDIA's tuned SO-101 config).
 # Root is base_link (confirmed via debug_stage.py: 'Articulation roots:
@@ -126,10 +153,18 @@ if art_root_prim.IsValid():
     # own adjacent joints (exact convergence, stable base height, unchanged from the
     # disabled case).
     physx_art.CreateEnabledSelfCollisionsAttr(True)
+else:
+    missing.append("articulation root /World/Aloha/Geometry/base_link")
 
 print(f"\nConfigured drives on {len(configured)} joints: {configured}")
 
+fail_if_missing(missing, "configure_physics")
 stage.Save()
 print(f"Saved: {args.scene}")
 
+# The pipeline's proof that this step got to the end. Kit's python.sh exits 0 on an
+# uncaught exception and after kit.close() whatever came first (measured 2026-10-05),
+# so the exit status cannot say whether a step worked; build_nav_scene.sh requires
+# this exact line instead. Printed last, just before close.
+print("PIPELINE_STEP_OK configure_physics", flush=True)
 kit.close()

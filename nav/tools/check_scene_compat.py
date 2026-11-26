@@ -30,9 +30,16 @@ parser.add_argument("--load-seconds", type=float, default=90.0,
 parser.add_argument("--json-out", default=None)
 args = parser.parse_args()
 
+# nav/tools/profile.py shadows the stdlib `profile` module, which warp imports while Kit
+# starts, and Kit then fails to load omni.warp.core (see replay_lidar_trace.py). Nothing
+# here imports from nav/tools, so drop it from the path first.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != Path(__file__).resolve().parent]
 from isaacsim import SimulationApp  # noqa: E402
 
-kit = SimulationApp({"headless": True})
+# GPU0 only, multi-GPU off: Kit's default multi_gpu runs a CUDA P2P test across both cards
+# at startup, and with the policy server filling GPU1 it fails and BLOCKS on a zenity
+# dialog (alohamini1_specs.KIT_GPU0).
+kit = SimulationApp({"headless": True, "active_gpu": 0, "physics_gpu": 0, "multi_gpu": False})
 
 import omni.usd  # noqa: E402
 from pxr import Usd, UsdGeom, Gf  # noqa: E402

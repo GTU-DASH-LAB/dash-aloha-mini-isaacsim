@@ -1110,6 +1110,7 @@ class NavigationRunner:
         instruction: str | None = None,
         controller_name: str | None = None,
         episode: str | None = None,
+        continue_from_here: bool = False,
     ) -> EpisodeResult:
         # Switching episode first, so `instruction=None` picks up the NEW episode's
         # prompt rather than the outgoing one's.
@@ -1158,15 +1159,26 @@ class NavigationRunner:
         # At OUR rest height, not the episode's z: that is DynaNav's Nova Carter spawn
         # height, 0.14-2.21 m above the terrain outdoors, and the drop was what seeded
         # every outdoor blow-up (base_drive.py). Indoors it moves the robot ~1 mm.
-        start, spawn = self._spawn_pose(ep)
-        self.base.reset_to(start, ep.start_yaw_rad)
-        # Let the teleport settle before anything measures it -- HELD level, so the first
-        # decision's frame is taken in the posture the robot drives in (base_drive.settle;
-        # a free settle left pillars' first frame rolled 13 deg), and until it is at rest
-        # rather than for a fixed count. Not over a start with no floor: that episode is not
-        # run (below), and holding it would only let it fall for the whole cap.
-        spawn["settle"] = (self._settle() if spawn.get("ground_z") is not None
-                           else {"skipped": "no_floor"})
+        #
+        # EXCEPT in a long-horizon chain (`continue_from_here`, nav/tools/run_tour.py): there
+        # the next instruction is handed over where the last one stopped, the way a person
+        # gives a robot its next errand, so there is no start line to go back to. The
+        # episode's own `start` is then unused, and `initial_distance` is measured from here.
+        if continue_from_here:
+            pos = self.base.position()
+            start = (float(pos[0]), float(pos[1]), float(pos[2]))
+            spawn = {"continued": True, "ground_z": float(pos[2]),
+                     "start_yaw_deg": round(math.degrees(self.base.yaw), 2)}
+        else:
+            start, spawn = self._spawn_pose(ep)
+            self.base.reset_to(start, ep.start_yaw_rad)
+            # Let the teleport settle before anything measures it -- HELD level, so the first
+            # decision's frame is taken in the posture the robot drives in (base_drive.settle;
+            # a free settle left pillars' first frame rolled 13 deg), and until it is at rest
+            # rather than for a fixed count. Not over a start with no floor: that episode is
+            # not run (below), and holding it would only let it fall for the whole cap.
+            spawn["settle"] = (self._settle() if spawn.get("ground_z") is not None
+                               else {"skipped": "no_floor"})
 
         self.base.sync_from_sim()
         # The settle is not part of the episode: z span, jitter and faults start here.
@@ -1329,7 +1341,12 @@ class NavigationRunner:
             if step % CHASE_EVERY == 0 or step == next_decision_step:
                 self._capture_chase(step)
 
-            if distance <= ep.success_threshold_m:
+            # A heading goal (long-horizon chains only, see Episode.goal_heading_deg) is met
+            # by FACING the direction; it is None for every benchmark episode.
+            facing = (ep.goal_heading_deg is not None and abs(
+                (math.degrees(self.base.yaw) - ep.goal_heading_deg + 180.0) % 360.0 - 180.0)
+                <= ep.heading_tolerance_deg)
+            if distance <= ep.success_threshold_m or facing:
                 success = True
                 break
             if sim_time > ep.timeout_s:

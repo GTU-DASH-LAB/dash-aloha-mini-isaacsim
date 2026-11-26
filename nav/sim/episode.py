@@ -75,6 +75,12 @@ class Episode:
     max_yaw_rate_radps: float
     replan_every_steps: int
     notes: str = ""
+    # Optional: a step that is done when the robot FACES a direction rather than when it
+    # reaches a point (a "turn left into the hallway" handed over in a long-horizon chain,
+    # nav/tools/run_tour.py). World yaw in degrees, and how close counts. None for every
+    # benchmark episode, which therefore behaves exactly as before.
+    goal_heading_deg: float | None = None
+    heading_tolerance_deg: float = 25.0
 
     @property
     def start_yaw_rad(self) -> float:
@@ -192,6 +198,9 @@ def load_episodes(config_path: Path | str = CONFIG_PATH) -> dict[str, Episode]:
                 spec.get("replan_every_steps", defaults["replan_every_steps"])
             ),
             notes=spec.get("notes", ""),
+            goal_heading_deg=(float(spec["goal_heading_deg"])
+                              if spec.get("goal_heading_deg") is not None else None),
+            heading_tolerance_deg=float(spec.get("heading_tolerance_deg", 25.0)),
         )
     return episodes
 

@@ -1,0 +1,78 @@
+# A long-horizon, human-in-the-loop demo in DynaNav's hospital: five instructions given one
+# at a time, each only after the robot has arrived at the previous place
+# (nav/tools/run_tour.py). NOT a benchmark: the goals are ours, placed in front of real
+# objects read off the stage (BP_DrinksMachine_2, SM_WheelChair_01a2, Geo_M_Stairs*,
+# SM_MedicalCabinet_01a*, SM_HospitalBed_01b_141), and every leg lies on paths the robot
+# has already driven with the contact layer on. Only step 1's start is used; steps 2-5
+# continue from wherever the previous step stopped (run_episode(continue_from_here=True)),
+# so their `start` / `start_yaw_deg` are the previous goal and the heading toward this one,
+# for reference only.
+#
+# Object positions (world, m):  wheelchair (5.4, 2.1)   drinks machine (10.7, 2.4)
+# staircase (9.0, 11-15)        medicine cabinets (0.3-1.2, 8.3)   blue bed (-13.3, 11.6)
+
+defaults:
+  success_threshold_m: 1.5
+  robot_type: "wheeled robot"
+  max_speed_mps: 1.5
+  max_yaw_rate_radps: 1.2
+  replan_every_steps: 30
+
+episodes:
+  # v3. What the first two runs taught (2026-11-26):
+  #  - "Turn left ..." keeps the model choosing left until the step ends: it cannot tell the
+  #    turn is done (run 1: 52 of 53 hard-left decisions, 32 m of circles). So a turn is its
+  #    own step, finished by FACING the hallway (goal_heading_deg), and the instruction after
+  #    it names where to go, not which way to turn.
+  #  - Each step has to START where its target is visible. Run 2 merged steps 1-2, came in
+  #    beside the drinks machine 1.9 m from the goal point, said STOP (fairly), got backed up
+  #    and turned round -- and every later step began in the wrong place.
+  #  - 2.0 m arrival for our own goals: they are points in front of objects, and "next to the
+  #    drinks machine" from the side is arrived. Step 3 keeps 1.5 m so the robot stops at the
+  #    hallway mouth, where the turn in step 4 lands it in the hallway.
+  hospital_tour_1:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [-3.0, -1.2, 0.01]
+    start_yaw_deg: 0.0
+    goal: [5.4, 0.8, 0.01]
+    success_threshold_m: 2.0
+    instruction: "Go past the reception desk and stop next to the blue wheelchair."
+    timeout_s: 70
+
+  hospital_tour_2:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [5.4, 0.8, 0.01]
+    start_yaw_deg: 17.0
+    goal: [9.52, 2.33, 0.01]
+    success_threshold_m: 2.0
+    instruction: "Keep going straight and stop in front of the drinks machine."
+    timeout_s: 50
+
+  hospital_tour_3:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [9.52, 2.33, 0.01]
+    start_yaw_deg: 100.0
+    goal: [8.2, 9.6, 0.01]
+    instruction: "Turn left and drive to the foot of the staircase."
+    correction: "Stop turning and drive straight to the staircase in front of you."
+    timeout_s: 75
+
+  hospital_tour_4:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [8.0, 8.1, 0.01]
+    start_yaw_deg: 100.0
+    goal: [-12.2, 10.2, 0.01]        # not used for arrival here: the step ends on the heading
+    goal_heading_deg: 180.0          # facing west, down the hallway
+    heading_tolerance_deg: 25.0
+    instruction: "Turn left into the hallway."
+    timeout_s: 30
+
+  hospital_tour_5:
+    scene: "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Hospital/hospital.usd"
+    start: [6.3, 9.8, 0.01]
+    start_yaw_deg: 180.0
+    goal: [-12.2, 10.2, 0.01]        # DynaNav's own goal for the blue hospital bed
+    success_threshold_m: 2.0
+    instruction: "Go straight down the hallway and stop at the blue hospital bed at the end."
+    correction: "Keep going down the hallway; the blue bed is just ahead on your right."
+    timeout_s: 200                   # run 3 was heading at the bed but held at the guard's 15% floor by the hallway wall
